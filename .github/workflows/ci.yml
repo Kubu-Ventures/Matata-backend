@@ -217,6 +217,7 @@ jobs:
           ignore-unfixed: true
           vuln-type: os,library
           exit-code: '1'
+          trivyignores: .trivyignore
           version: v0.69.2
 
   # ── 7. Publish Image (gated — main branch + all security gates green) ─
