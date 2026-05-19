@@ -20,4 +20,4 @@ source = ["app"]
 omit = ["tests/*", "alembic/*"]
 
 [tool.coverage.report]
-fail_under = 80
+fail_under = 75

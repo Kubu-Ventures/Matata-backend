@@ -1,0 +1,248 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+  packages: write
+  pull-requests: read
+
+jobs:
+  # ── 1. Secret Scanning ────────────────────────────────────────
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: TruffleHog Secret Scan
+        uses: trufflesecurity/trufflehog@v3.88.1
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          extra_args: --only-verified
+
+  # ── 2. Build & Code Quality (gate for everything downstream) ──
+  build:
+    name: Build & Code Quality
+    runs-on: ubuntu-latest
+    needs: [secret-scan]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Flake8 Lint Check
+        run: |
+          flake8 app/ tests/ \
+            --max-line-length=88 \
+            --extend-ignore=E203,W503 \
+            --count --statistics
+
+      - name: Black Formatting Check
+        run: black --check app/ tests/
+
+      - name: isort Import Order Check
+        run: isort --check-only app/ tests/
+
+      - name: MyPy Type Check
+        run: mypy app/ --ignore-missing-imports
+
+      - name: Verify .env.example exists
+        run: |
+          if [ ! -f .env.example ]; then
+            echo "Missing .env.example — environment spec is required"
+            exit 1
+          fi
+
+  # ── 3. Dependency Audit (runs after build passes) ─────────────
+  dependency-audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install pip-audit & Safety
+        run: pip install pip-audit safety
+
+      - name: pip-audit vulnerability scan
+        run: pip-audit -r requirements.txt
+
+      - name: Safety dependency check
+        run: safety check -r requirements.txt --full-report --ignore-unpinned-requirements
+        continue-on-error: true
+
+  # ── 4. SAST (runs after build passes) ─────────────────────────
+  sast:
+    name: Static Analysis (SAST)
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Bandit Security Linter
+        run: bandit -r app/ -lll -iii
+
+      - name: Semgrep SAST
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/python
+            p/fastapi
+            p/owasp-top-ten
+            p/jwt
+            p/sql-injection
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  # ── 5. Automated Tests ────────────────────────────────────────
+  test:
+    name: Automated Tests
+    runs-on: ubuntu-latest
+    needs: [build]
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: matata_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://testuser:testpassword@localhost:5432/matata_test
+      REDIS_URL: redis://localhost:6379
+      NODE_ENV: test
+      ENVIRONMENT: test
+      SECRET_KEY: ${{ secrets.TEST_SECRET_KEY }}
+      ALLOWED_ORIGINS: "http://localhost:3000"
+      LOG_LEVEL: error
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Apply Database Migrations
+        run: alembic upgrade head
+
+      - name: Execute Tests & Coverage
+        run: |
+          pytest tests/ \
+            --cov=app \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=75 \
+            -v
+
+      - name: Upload Coverage Report
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+
+  # ── 6. Container Security Scan ────────────────────────────────
+  container-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: docker build --target production -t matata-backend:${{ github.sha }} .
+
+      - name: Trivy Container Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: matata-backend:${{ github.sha }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          vuln-type: os,library
+          exit-code: '1'
+          trivyignores: .trivyignore
+          version: v0.69.2
+
+  # ── 7. Publish Image (gated — main branch + all security gates green) ─
+  publish:
+    name: Publish Container Image
+    runs-on: ubuntu-latest
+    needs: [dependency-audit, sast, test, container-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+            -u ${{ github.actor }} --password-stdin
+
+      - name: Build and Push to Registry
+        run: |
+          docker build --target production \
+            -t ghcr.io/${{ github.repository_owner }}/matata-backend:${{ github.sha }} \
+            -t ghcr.io/${{ github.repository_owner }}/matata-backend:latest .
+          docker push ghcr.io/${{ github.repository_owner }}/matata-backend:${{ github.sha }}
+          docker push ghcr.io/${{ github.repository_owner }}/matata-backend:latest
+
+      # Deployment step intentionally omitted — target infrastructure TBD.
+      # A deploy job will be added here once the hosting platform is decided
+      # (e.g. Render, Railway, Fly.io, AWS ECS, or self-hosted VPS)
