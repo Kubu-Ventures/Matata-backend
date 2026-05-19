@@ -89,7 +89,7 @@ jobs:
         run: pip install pip-audit safety
 
       - name: pip-audit vulnerability scan
-        run: pip-audit -r requirements.txt --severity high
+        run: pip-audit -r requirements.txt
 
       - name: Safety dependency check
         run: safety check -r requirements.txt --full-report
@@ -158,7 +158,7 @@ jobs:
           --health-retries 5
 
     env:
-      DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/matata_test
+      DATABASE_URL: postgresql+asyncpg://testuser:testpassword@localhost:5432/matata_test
       REDIS_URL: redis://localhost:6379
       NODE_ENV: test
       ENVIRONMENT: test
