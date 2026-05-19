@@ -58,6 +58,9 @@ jobs:
       - name: Black Formatting Check
         run: black --check app/ tests/
 
+      - name: isort Import Order Check
+        run: isort --check-only app/ tests/
+
       - name: MyPy Type Check
         run: mypy app/ --ignore-missing-imports
 
@@ -101,14 +104,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bandit Security Linter
-        uses: mdegis/bandit-action@v1.0
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          path: "app/"
-          level: high
-          confidence: high
-          exit_zero: false
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Bandit Security Linter
+        run: bandit -r app/ -lll -iii
 
       - name: Semgrep SAST
         uses: returntocorp/semgrep-action@v1
@@ -157,7 +163,6 @@ jobs:
       NODE_ENV: test
       ENVIRONMENT: test
       SECRET_KEY: ${{ secrets.TEST_SECRET_KEY }}
-      # Stub values — satisfy pydantic-settings at module load in tests
       ALLOWED_ORIGINS: "http://localhost:3000"
       LOG_LEVEL: error
 
