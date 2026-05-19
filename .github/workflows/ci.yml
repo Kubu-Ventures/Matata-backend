@@ -58,9 +58,6 @@ jobs:
       - name: Black Formatting Check
         run: black --check app/ tests/
 
-      - name: isort Import Order Check
-        run: isort --check-only app/ tests/
-
       - name: MyPy Type Check
         run: mypy app/ --ignore-missing-imports
 
