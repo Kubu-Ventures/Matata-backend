@@ -72,10 +72,15 @@ def _create_enums() -> None:
 
 def _drop_enums() -> None:
     for name, values in reversed(_ENUMS):
-        sa.Enum(*values, name=name).drop(op.get_bind(), checkfirst=True)
+        # create_type=False prevents SQLAlchemy from attempting to re-create
+        # the type during the drop call, avoiding spurious errors.
+        sa.Enum(*values, name=name, create_type=False).drop(op.get_bind(), checkfirst=True)
 
 
 def upgrade() -> None:
+    # Enums are created explicitly here so SQLAlchemy's automatic per-table
+    # DDL events find them already present. All sa.Enum() column definitions
+    # below carry create_type=False to prevent that double-creation conflict.
     _create_enums()
 
     # ── building ─────────────────────────────────────────────────────────────
@@ -100,7 +105,9 @@ def upgrade() -> None:
         sa.Column(
             "source",
             sa.Enum(
-                "microsoft_africa", "osm", "manual", name="building_source_enum"
+                "microsoft_africa", "osm", "manual",
+                name="building_source_enum",
+                create_type=False,
             ),
             nullable=False,
         ),
@@ -108,7 +115,9 @@ def upgrade() -> None:
         sa.Column(
             "current_severity",
             sa.Enum(
-                "none", "minimal", "partial", "destroyed", name="damage_severity_enum"
+                "none", "minimal", "partial", "destroyed",
+                name="damage_severity_enum",
+                create_type=False,
             ),
             nullable=False,
             server_default="none",
@@ -154,32 +163,28 @@ def upgrade() -> None:
         sa.Column(
             "crisis_type",
             sa.Enum(
-                "flood",
-                "earthquake",
-                "conflict",
-                "wildfire",
-                "other",
+                "flood", "earthquake", "conflict", "wildfire", "other",
                 name="crisis_type_enum",
+                create_type=False,
             ),
             nullable=False,
         ),
         sa.Column(
             "infrastructure_type",
             sa.Enum(
-                "residential",
-                "commercial",
-                "government",
-                "utilities",
-                "transport",
-                "community",
+                "residential", "commercial", "government",
+                "utilities", "transport", "community",
                 name="infrastructure_type_enum",
+                create_type=False,
             ),
             nullable=False,
         ),
         sa.Column(
             "damage_severity",
             sa.Enum(
-                "minimal", "partial", "destroyed", name="report_damage_severity_enum"
+                "minimal", "partial", "destroyed",
+                name="report_damage_severity_enum",
+                create_type=False,
             ),
             nullable=False,
         ),
@@ -190,20 +195,18 @@ def upgrade() -> None:
         sa.Column(
             "electricity_status",
             sa.Enum(
-                "functional",
-                "non_functional",
-                "unknown",
+                "functional", "non_functional", "unknown",
                 name="electricity_status_enum",
+                create_type=False,
             ),
             nullable=True,
         ),
         sa.Column(
             "health_services_status",
             sa.Enum(
-                "accessible",
-                "inaccessible",
-                "unknown",
+                "accessible", "inaccessible", "unknown",
                 name="health_services_status_enum",
+                create_type=False,
             ),
             nullable=True,
         ),
@@ -214,13 +217,10 @@ def upgrade() -> None:
         sa.Column(
             "photo_status",
             sa.Enum(
-                "pending",
-                "processing",
-                "accepted",
-                "rejected",
-                "insufficient_quality",
-                "ai_processing_failed",
+                "pending", "processing", "accepted", "rejected",
+                "insufficient_quality", "ai_processing_failed",
                 name="photo_status_enum",
+                create_type=False,
             ),
             nullable=False,
             server_default="pending",
@@ -228,11 +228,9 @@ def upgrade() -> None:
         sa.Column(
             "status",
             sa.Enum(
-                "pending",
-                "verified",
-                "rejected",
-                "duplicate",
+                "pending", "verified", "rejected", "duplicate",
                 name="report_status_enum",
+                create_type=False,
             ),
             nullable=False,
             server_default="pending",
@@ -245,10 +243,9 @@ def upgrade() -> None:
         sa.Column(
             "ai_severity_prediction",
             sa.Enum(
-                "minimal",
-                "partial",
-                "destroyed",
+                "minimal", "partial", "destroyed",
                 name="report_damage_severity_enum",
+                create_type=False,
             ),
             nullable=True,
         ),
@@ -376,9 +373,9 @@ def upgrade() -> None:
         sa.Column(
             "type",
             sa.Enum(
-                "analyst_alert",
-                "reporter_photo_request",
+                "analyst_alert", "reporter_photo_request",
                 name="notification_type_enum",
+                create_type=False,
             ),
             nullable=False,
         ),
@@ -392,7 +389,9 @@ def upgrade() -> None:
         sa.Column(
             "status",
             sa.Enum(
-                "pending", "sent", "failed", name="notification_status_enum"
+                "pending", "sent", "failed",
+                name="notification_status_enum",
+                create_type=False,
             ),
             nullable=False,
             server_default="pending",
