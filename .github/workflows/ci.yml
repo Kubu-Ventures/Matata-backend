@@ -181,6 +181,19 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
+      - name: Create app_user role
+        run: |
+          psql -h localhost -U testuser -d matata_test \
+            -c "DO \$\$ BEGIN
+                  IF NOT EXISTS (
+                    SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_user'
+                  ) THEN
+                    CREATE ROLE app_user LOGIN PASSWORD 'testpassword';
+                  END IF;
+                END \$\$;"
+        env:
+          PGPASSWORD: testpassword
+
       - name: Apply Database Migrations
         run: alembic upgrade head
 
