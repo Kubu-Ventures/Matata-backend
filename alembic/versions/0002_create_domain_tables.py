@@ -49,19 +49,30 @@ _ENUMS = [
 
 
 def _create_enums() -> None:
-    """Create all enums via raw SQL so IF NOT EXISTS is honoured unconditionally.
+    """Create all enums idempotently via a PL/pgSQL existence check.
 
-    Using op.execute() with CREATE TYPE ... IF NOT EXISTS bypasses SQLAlchemy's
-    named-type DDL machinery entirely, which is the only reliable way to avoid
-    the DuplicateObjectError that occurs when asyncpg + SQLAlchemy fire
-    before_create table events and ignore create_type=False in some versions.
+    CREATE TYPE has no IF NOT EXISTS clause (unlike CREATE TABLE), so we
+    use a DO block that queries pg_type before issuing the CREATE. This is
+    safe across repeated CI runs and partial-migration rollback scenarios.
     """
     for name, values in _ENUMS:
         quoted = ", ".join(f"'{v}'" for v in values)
-        op.execute(f"CREATE TYPE {name} AS ENUM ({quoted})")  # noqa: S608
+        op.execute(
+            f"""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_type WHERE typname = '{name}'
+                ) THEN
+                    CREATE TYPE {name} AS ENUM ({quoted});
+                END IF;
+            END$$;
+            """
+        )
 
 
 def _drop_enums() -> None:
+    """Drop all enums in reverse creation order, ignoring missing types."""
     for name, _values in reversed(_ENUMS):
         op.execute(f"DROP TYPE IF EXISTS {name}")
 
