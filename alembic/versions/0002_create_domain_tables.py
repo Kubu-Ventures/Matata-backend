@@ -71,12 +71,6 @@ def _enum_col(type_name: str, **kwargs) -> sa.Column:
     We instead pass the type name via type_=sa.text(...) using the
     postgresql ENUM approach through explicit SQL type reference.
     """
-    # Using postgresql.ENUM with create_type=False and no values passed to
-    # the constructor is still buggy in some SA versions. The only 100%
-    # reliable approach: declare the column as the named type via
-    # sa.Column(..., sa.String) and immediately do an ALTER TABLE ... ALTER
-    # COLUMN ... TYPE <enum> USING ...::enum after table creation.
-    # But that's verbose. Instead we use the sa dialect type trick below.
     from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
     return sa.Column(
         PG_ENUM(name=type_name, create_type=False),
@@ -156,12 +150,30 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("external_id", name="uq_building_external_id"),
     )
+
     # Cast text columns to their proper enum types now that both exist.
+    #
+    # FIX: current_severity has a text server_default ('none') that PostgreSQL
+    # cannot automatically cast when changing the column type to an enum — even
+    # though 'none' is a valid damage_severity_enum value. The default must be
+    # dropped first, the type changed, then the default re-applied with an
+    # explicit enum cast. source has no default so it can be converted inline.
     op.execute(
         "ALTER TABLE building "
-        "ALTER COLUMN source TYPE building_source_enum USING source::building_source_enum, "
-        "ALTER COLUMN current_severity TYPE damage_severity_enum USING current_severity::damage_severity_enum"
+        "ALTER COLUMN source TYPE building_source_enum "
+        "    USING source::building_source_enum, "
+        "ALTER COLUMN current_severity DROP DEFAULT"
     )
+    op.execute(
+        "ALTER TABLE building "
+        "ALTER COLUMN current_severity TYPE damage_severity_enum "
+        "    USING current_severity::damage_severity_enum"
+    )
+    op.execute(
+        "ALTER TABLE building "
+        "ALTER COLUMN current_severity SET DEFAULT 'none'::damage_severity_enum"
+    )
+
     op.create_index("ix_building_footprint", "building", ["footprint"], postgresql_using="gist")
     op.create_index("ix_building_centroid", "building", ["centroid"], postgresql_using="gist")
 
@@ -219,7 +231,16 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
-    # Cast all enum-backed text columns in one statement.
+
+    # FIX: photo_status and status have text server_defaults ('pending').
+    # Same pattern as current_severity above — drop defaults, retype, restore.
+    op.execute(
+        """
+        ALTER TABLE report
+            ALTER COLUMN photo_status DROP DEFAULT,
+            ALTER COLUMN status       DROP DEFAULT
+        """
+    )
     op.execute(
         """
         ALTER TABLE report
@@ -239,6 +260,13 @@ def upgrade() -> None:
                 USING status::report_status_enum,
             ALTER COLUMN ai_severity_prediction TYPE report_damage_severity_enum
                 USING ai_severity_prediction::report_damage_severity_enum
+        """
+    )
+    op.execute(
+        """
+        ALTER TABLE report
+            ALTER COLUMN photo_status SET DEFAULT 'pending'::photo_status_enum,
+            ALTER COLUMN status       SET DEFAULT 'pending'::report_status_enum
         """
     )
 
@@ -355,6 +383,9 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
+
+    # FIX: status has a text server_default ('pending') — same pattern.
+    op.execute("ALTER TABLE notification ALTER COLUMN status DROP DEFAULT")
     op.execute(
         """
         ALTER TABLE notification
@@ -364,6 +395,11 @@ def upgrade() -> None:
                 USING status::notification_status_enum
         """
     )
+    op.execute(
+        "ALTER TABLE notification "
+        "ALTER COLUMN status SET DEFAULT 'pending'::notification_status_enum"
+    )
+
     op.create_index("ix_notification_report_id", "notification", ["report_id"])
 
 
