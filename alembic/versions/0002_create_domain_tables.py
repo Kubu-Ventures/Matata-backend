@@ -317,7 +317,19 @@ def upgrade() -> None:
         ),
     )
     # Hard security constraint: app_user must never delete audit records.
-    op.execute("REVOKE DELETE ON audit_log FROM app_user")
+    # Guard with an existence check so this is safe in environments (e.g. CI)
+    # where app_user is not provisioned as a separate role.
+    op.execute(
+        """
+        DO $$ BEGIN
+            IF EXISTS (
+                SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_user'
+            ) THEN
+                REVOKE DELETE ON audit_log FROM app_user;
+            END IF;
+        END $$;
+        """
+    )
 
     # ── analyst_note ──────────────────────────────────────────────────────────
     op.create_table(
@@ -405,7 +417,18 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Re-grant DELETE so teardown can proceed cleanly in CI.
-    op.execute("GRANT DELETE ON audit_log TO app_user")
+    # Guarded for environments where app_user was never provisioned.
+    op.execute(
+        """
+        DO $$ BEGIN
+            IF EXISTS (
+                SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_user'
+            ) THEN
+                GRANT DELETE ON audit_log TO app_user;
+            END IF;
+        END $$;
+        """
+    )
 
     op.drop_table("notification")
     op.drop_table("analyst_note")
