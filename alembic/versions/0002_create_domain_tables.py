@@ -3,14 +3,6 @@
 Revision ID: 0002
 Revises: 0001
 Create Date: 2026-05-27
-
-Covers: building, report (with self-referential duplicate FKs),
-audit_log, analyst_note, notification.
-
-Security note: The application database user (app_user) is explicitly
-denied DELETE on audit_log at the end of upgrade(). downgrade() re-grants
-the permission before dropping the table so the drop can proceed cleanly
-in CI and local teardown scenarios.
 """
 
 from typing import Sequence, Union
@@ -26,7 +18,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 # ---------------------------------------------------------------------------
-# Enum type names — must match the names used in the ORM models.
+# Enum definitions — (name, values) pairs.
 # ---------------------------------------------------------------------------
 _ENUMS = [
     ("building_source_enum", ["microsoft_africa", "osm", "manual"]),
@@ -36,18 +28,9 @@ _ENUMS = [
         "infrastructure_type_enum",
         ["residential", "commercial", "government", "utilities", "transport", "community"],
     ),
-    (
-        "report_damage_severity_enum",
-        ["minimal", "partial", "destroyed"],
-    ),
-    (
-        "electricity_status_enum",
-        ["functional", "non_functional", "unknown"],
-    ),
-    (
-        "health_services_status_enum",
-        ["accessible", "inaccessible", "unknown"],
-    ),
+    ("report_damage_severity_enum", ["minimal", "partial", "destroyed"]),
+    ("electricity_status_enum", ["functional", "non_functional", "unknown"]),
+    ("health_services_status_enum", ["accessible", "inaccessible", "unknown"]),
     (
         "photo_status_enum",
         [
@@ -66,21 +49,24 @@ _ENUMS = [
 
 
 def _create_enums() -> None:
+    """Create all enums via raw SQL so IF NOT EXISTS is honoured unconditionally.
+
+    Using op.execute() with CREATE TYPE ... IF NOT EXISTS bypasses SQLAlchemy's
+    named-type DDL machinery entirely, which is the only reliable way to avoid
+    the DuplicateObjectError that occurs when asyncpg + SQLAlchemy fire
+    before_create table events and ignore create_type=False in some versions.
+    """
     for name, values in _ENUMS:
-        sa.Enum(*values, name=name).create(op.get_bind(), checkfirst=True)
+        quoted = ", ".join(f"'{v}'" for v in values)
+        op.execute(f"CREATE TYPE {name} AS ENUM ({quoted})")  # noqa: S608
 
 
 def _drop_enums() -> None:
-    for name, values in reversed(_ENUMS):
-        # create_type=False prevents SQLAlchemy from attempting to re-create
-        # the type during the drop call, avoiding spurious errors.
-        sa.Enum(*values, name=name, create_type=False).drop(op.get_bind(), checkfirst=True)
+    for name, _values in reversed(_ENUMS):
+        op.execute(f"DROP TYPE IF EXISTS {name}")
 
 
 def upgrade() -> None:
-    # Enums are created explicitly here so SQLAlchemy's automatic per-table
-    # DDL events find them already present. All sa.Enum() column definitions
-    # below carry create_type=False to prevent that double-creation conflict.
     _create_enums()
 
     # ── building ─────────────────────────────────────────────────────────────
@@ -104,21 +90,13 @@ def upgrade() -> None:
         ),
         sa.Column(
             "source",
-            sa.Enum(
-                "microsoft_africa", "osm", "manual",
-                name="building_source_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="building_source_enum", create_type=False),
             nullable=False,
         ),
         sa.Column("external_id", sa.String, nullable=False),
         sa.Column(
             "current_severity",
-            sa.Enum(
-                "none", "minimal", "partial", "destroyed",
-                name="damage_severity_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="damage_severity_enum", create_type=False),
             nullable=False,
             server_default="none",
         ),
@@ -145,7 +123,6 @@ def upgrade() -> None:
     )
 
     # ── report ────────────────────────────────────────────────────────────────
-    # Self-referential FK columns are added after the table exists.
     op.create_table(
         "report",
         sa.Column(
@@ -162,30 +139,17 @@ def upgrade() -> None:
         ),
         sa.Column(
             "crisis_type",
-            sa.Enum(
-                "flood", "earthquake", "conflict", "wildfire", "other",
-                name="crisis_type_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="crisis_type_enum", create_type=False),
             nullable=False,
         ),
         sa.Column(
             "infrastructure_type",
-            sa.Enum(
-                "residential", "commercial", "government",
-                "utilities", "transport", "community",
-                name="infrastructure_type_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="infrastructure_type_enum", create_type=False),
             nullable=False,
         ),
         sa.Column(
             "damage_severity",
-            sa.Enum(
-                "minimal", "partial", "destroyed",
-                name="report_damage_severity_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="report_damage_severity_enum", create_type=False),
             nullable=False,
         ),
         sa.Column("lat", sa.Float, nullable=False),
@@ -194,20 +158,12 @@ def upgrade() -> None:
         sa.Column("landmark_description", sa.Text, nullable=True),
         sa.Column(
             "electricity_status",
-            sa.Enum(
-                "functional", "non_functional", "unknown",
-                name="electricity_status_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="electricity_status_enum", create_type=False),
             nullable=True,
         ),
         sa.Column(
             "health_services_status",
-            sa.Enum(
-                "accessible", "inaccessible", "unknown",
-                name="health_services_status_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="health_services_status_enum", create_type=False),
             nullable=True,
         ),
         sa.Column("most_pressing_needs", sa.Text, nullable=True),
@@ -216,22 +172,13 @@ def upgrade() -> None:
         sa.Column("photo_phash", sa.String(64), nullable=True),
         sa.Column(
             "photo_status",
-            sa.Enum(
-                "pending", "processing", "accepted", "rejected",
-                "insufficient_quality", "ai_processing_failed",
-                name="photo_status_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="photo_status_enum", create_type=False),
             nullable=False,
             server_default="pending",
         ),
         sa.Column(
             "status",
-            sa.Enum(
-                "pending", "verified", "rejected", "duplicate",
-                name="report_status_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="report_status_enum", create_type=False),
             nullable=False,
             server_default="pending",
         ),
@@ -242,18 +189,13 @@ def upgrade() -> None:
         sa.Column("offline_queued_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "ai_severity_prediction",
-            sa.Enum(
-                "minimal", "partial", "destroyed",
-                name="report_damage_severity_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="report_damage_severity_enum", create_type=False),
             nullable=True,
         ),
         sa.Column("ai_confidence", sa.Float, nullable=True),
         sa.Column("ai_quality_score", sa.Float, nullable=True),
         sa.Column("ai_divergence", sa.Boolean, nullable=True),
         sa.Column("footprint_match_confidence", sa.Float, nullable=True),
-        # Self-referential FKs: added as ALTER TABLE after table creation (below)
         sa.Column("duplicate_of_id", sa.UUID(as_uuid=True), nullable=True),
         sa.Column("possible_duplicate_of_id", sa.UUID(as_uuid=True), nullable=True),
         sa.Column("duplicate_score", sa.Float, nullable=True),
@@ -271,21 +213,16 @@ def upgrade() -> None:
         ),
     )
 
-    # Self-referential constraints added after table creation
     op.create_foreign_key(
         "fk_report_duplicate_of",
-        "report",
-        "report",
-        ["duplicate_of_id"],
-        ["id"],
+        "report", "report",
+        ["duplicate_of_id"], ["id"],
         ondelete="SET NULL",
     )
     op.create_foreign_key(
         "fk_report_possible_duplicate_of",
-        "report",
-        "report",
-        ["possible_duplicate_of_id"],
-        ["id"],
+        "report", "report",
+        ["possible_duplicate_of_id"], ["id"],
         ondelete="SET NULL",
     )
 
@@ -326,7 +263,6 @@ def upgrade() -> None:
         ),
     )
 
-    # Hard constraint: app_user must never be able to delete audit records.
     op.execute("REVOKE DELETE ON audit_log FROM app_user")
 
     # ── analyst_note ──────────────────────────────────────────────────────────
@@ -372,11 +308,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "type",
-            sa.Enum(
-                "analyst_alert", "reporter_photo_request",
-                name="notification_type_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="notification_type_enum", create_type=False),
             nullable=False,
         ),
         sa.Column("recipient_hash", sa.String, nullable=False),
@@ -388,11 +320,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "status",
-            sa.Enum(
-                "pending", "sent", "failed",
-                name="notification_status_enum",
-                create_type=False,
-            ),
+            sa.Enum(name="notification_status_enum", create_type=False),
             nullable=False,
             server_default="pending",
         ),
@@ -414,7 +342,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Re-grant DELETE before dropping the table so teardown succeeds in CI
     op.execute("GRANT DELETE ON audit_log TO app_user")
 
     op.drop_table("notification")
