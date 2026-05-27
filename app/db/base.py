@@ -1,3 +1,10 @@
+"""Declarative base and shared mixins.
+
+All domain models must be imported at the bottom of this module so that
+Alembic autogenerate can detect them. Add new model imports here as they
+are created.
+"""
+
 from sqlalchemy import DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -18,5 +25,10 @@ class TimestampMixin:
     )
 
 
-# Import all models here as they are created so Alembic detects them.
-# Example: from app.models.user import User  # noqa: F401
+# ── Model imports for Alembic autogenerate detection ─────────────────────────
+# Each import must remain even if the symbol is not used directly here.
+from app.models.analyst_note import AnalystNote  # noqa: E402, F401
+from app.models.audit_log import AuditLog  # noqa: E402, F401
+from app.models.building import Building  # noqa: E402, F401
+from app.models.notification import Notification  # noqa: E402, F401
+from app.models.report import Report  # noqa: E402, F401
