@@ -69,4 +69,3 @@ class Building(TimestampMixin, Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Building id={self.id} source={self.source} severity={self.current_severity}>"
-    

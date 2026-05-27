@@ -75,9 +75,7 @@ class Report(TimestampMixin, Base):
     lat: Mapped[float] = mapped_column(sa.Float, nullable=False)
     lng: Mapped[float] = mapped_column(sa.Float, nullable=False)
     gps_accuracy_m: Mapped[Optional[float]] = mapped_column(sa.Float, nullable=True)
-    landmark_description: Mapped[Optional[str]] = mapped_column(
-        sa.Text, nullable=True
-    )
+    landmark_description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
 
     # ── Optional operational detail fields ───────────────────────────────────
     electricity_status: Mapped[Optional[ElectricityStatus]] = mapped_column(
@@ -153,7 +151,10 @@ class Report(TimestampMixin, Base):
         "Building", back_populates="reports", lazy="raise"
     )
     analyst_notes: Mapped[List["AnalystNote"]] = relationship(
-        "AnalystNote", back_populates="report", cascade="all, delete-orphan", lazy="raise"
+        "AnalystNote",
+        back_populates="report",
+        cascade="all, delete-orphan",
+        lazy="raise",
     )
     notifications: Mapped[List["Notification"]] = relationship(
         "Notification", back_populates="report", lazy="raise"
@@ -179,4 +180,3 @@ class Report(TimestampMixin, Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Report id={self.id} status={self.status} severity={self.damage_severity}>"
-    
