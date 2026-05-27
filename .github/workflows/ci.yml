@@ -162,7 +162,7 @@ jobs:
       REDIS_URL: redis://localhost:6379
       NODE_ENV: test
       ENVIRONMENT: test
-      SECRET_KEY: ${{ secrets.TEST_SECRET_KEY }}
+      SECRET_KEY: ${{ secrets.TEST_SECRET_KEY || 'ci-insecure-key-not-for-production-use' }}
       ALLOWED_ORIGINS: "http://localhost:3000"
       LOG_LEVEL: error
 
