@@ -18,11 +18,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, TimestampMixin
 from app.models.enums import (
     CrisisType,
-    DamageSeverity,
     ElectricityStatus,
     HealthServicesStatus,
     InfrastructureType,
-    NotificationType,
     PhotoStatus,
     ReportDamageSeverity,
     ReportStatus,
@@ -179,4 +177,7 @@ class Report(TimestampMixin, Base):
     )
 
     def __repr__(self) -> str:  # pragma: no cover
-        return f"<Report id={self.id} status={self.status} severity={self.damage_severity}>"
+        return (
+            f"<Report id={self.id} status={self.status}"
+            f" severity={self.damage_severity}>"
+        )
