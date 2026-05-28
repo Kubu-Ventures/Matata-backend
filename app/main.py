@@ -30,20 +30,25 @@ app.add_middleware(
 )
 
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+async def http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # exc is guaranteed to be HTTPException by the handler registration below,
+    # but the signature must accept Exception to satisfy Starlette's type contract.
+    http_exc = exc if isinstance(exc, HTTPException) else HTTPException(status_code=500)
     return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": exc.detail},
+        status_code=http_exc.status_code,
+        content={"error": http_exc.detail},
     )
 
 
-@app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(
         status_code=500,
         content={"error": "An unexpected error occurred."},
     )
+
+
+app.add_exception_handler(HTTPException, http_exception_handler)
+app.add_exception_handler(Exception, unhandled_exception_handler)
 
 
 @app.get("/health", response_model=HealthResponse)
