@@ -30,7 +30,6 @@ app.add_middleware(
 )
 
 
-@app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
@@ -38,12 +37,15 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     )
 
 
-@app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(
         status_code=500,
         content={"error": "An unexpected error occurred."},
     )
+
+
+app.add_exception_handler(HTTPException, http_exception_handler)
+app.add_exception_handler(Exception, unhandled_exception_handler)
 
 
 @app.get("/health", response_model=HealthResponse)
