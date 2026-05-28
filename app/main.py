@@ -30,10 +30,13 @@ app.add_middleware(
 )
 
 
-async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+async def http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # exc is guaranteed to be HTTPException by the handler registration below,
+    # but the signature must accept Exception to satisfy Starlette's type contract.
+    http_exc = exc if isinstance(exc, HTTPException) else HTTPException(status_code=500)
     return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": exc.detail},
+        status_code=http_exc.status_code,
+        content={"error": http_exc.detail},
     )
 
 
