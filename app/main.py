@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.v1.routes.auth import router as auth_router
 from app.core.config import settings
 from app.schemas.health import HealthResponse
 
@@ -49,6 +50,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
+
+# ── Routers ───────────────────────────────────────────────────────────────────
+app.include_router(auth_router, prefix="/api/v1")
 
 
 @app.get("/health", response_model=HealthResponse)
