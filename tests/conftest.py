@@ -13,9 +13,10 @@ os.environ.setdefault("SMS_GATEWAY", "console")
 os.environ.setdefault("AFRICASTALKING_API_KEY", "")
 os.environ.setdefault("AFRICASTALKING_USERNAME", "")
 
+from unittest.mock import AsyncMock
+
 # ── Now it is safe to import app modules ────────────────────────────────────
 import pytest
-from unittest.mock import AsyncMock
 
 
 @pytest.fixture

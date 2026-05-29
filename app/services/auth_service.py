@@ -200,7 +200,9 @@ def _build_access_token(
         "iat": now,
         "exp": expire,
     }
-    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(
+        payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM
+    )
 
 
 def decode_access_token(token: str) -> dict:
@@ -347,7 +349,9 @@ async def verify_otp(
     await redis.delete(_otp_attempts_key(id_hash))
 
     access_token = _build_access_token(sub=id_hash, role=Role.reporter, tier=tier)
-    refresh_token = await _issue_refresh_token(sub=id_hash, role=Role.reporter, tier=tier, redis=redis)
+    refresh_token = await _issue_refresh_token(
+        sub=id_hash, role=Role.reporter, tier=tier, redis=redis
+    )
 
     logger.info("OTP verified; tokens issued (identifier: %s…)", id_hash[:8])
     return access_token, refresh_token

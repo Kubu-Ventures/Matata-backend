@@ -134,7 +134,9 @@ class AfricasTalkingSMSGateway:
         Raises:
             SMSDeliveryError: On HTTP error or non-success AT response code.
         """
-        message = f"Your CrisisMap verification code is: {otp_code}. Valid for 5 minutes."
+        message = (
+            f"Your CrisisMap verification code is: {otp_code}. Valid for 5 minutes."
+        )
 
         try:
             response = httpx.post(
@@ -155,11 +157,11 @@ class AfricasTalkingSMSGateway:
 
             payload = response.json()
             # AT wraps responses in SMSMessageData; check for delivery errors.
-            recipients = (
-                payload.get("SMSMessageData", {}).get("Recipients", [])
-            )
+            recipients = payload.get("SMSMessageData", {}).get("Recipients", [])
             if not recipients:
-                raise SMSDeliveryError("Africa's Talking returned no recipients in response.")
+                raise SMSDeliveryError(
+                    "Africa's Talking returned no recipients in response."
+                )
 
             # Log delivery status without the phone number.
             status = recipients[0].get("status", "unknown")
@@ -176,7 +178,9 @@ class AfricasTalkingSMSGateway:
             ) from exc
         except httpx.RequestError as exc:
             logger.error("Africa's Talking network error: %s", type(exc).__name__)
-            raise SMSDeliveryError("SMS delivery failed due to a network error.") from exc
+            raise SMSDeliveryError(
+                "SMS delivery failed due to a network error."
+            ) from exc
 
 
 # ---------------------------------------------------------------------------

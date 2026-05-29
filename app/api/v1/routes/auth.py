@@ -275,7 +275,9 @@ async def send_otp(
             detail="Failed to send OTP. Please try again later.",
         ) from exc
 
-    return MessageResponse(message="OTP sent successfully.", )
+    return MessageResponse(
+        message="OTP sent successfully.",
+    )
 
 
 @router.post(
@@ -356,9 +358,7 @@ async def logout(
     redis: Redis = Depends(get_redis),
 ) -> MessageResponse:
     """Revoke the current access token."""
-    raw_token: str | None = (
-        credentials.credentials if credentials else x_session_token
-    )
+    raw_token: str | None = credentials.credentials if credentials else x_session_token
 
     if not raw_token:
         raise HTTPException(

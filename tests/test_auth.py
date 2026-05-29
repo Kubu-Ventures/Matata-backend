@@ -67,28 +67,36 @@ class TestBuildAccessToken:
         assert isinstance(token, str)
 
     def test_payload_contains_expected_claims(self):
-        from app.services.auth_service import Role, _build_access_token
         from app.core.config import settings
+        from app.services.auth_service import Role, _build_access_token
 
         token = _build_access_token(sub="abc123", role=Role.analyst, tier=0)
-        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        payload = jwt.decode(
+            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+        )
         assert payload["sub"] == "abc123"
         assert payload["role"] == "analyst"
         assert "jti" in payload
         assert "exp" in payload
 
     def test_explicit_jti_used(self):
-        from app.services.auth_service import Role, _build_access_token
         from app.core.config import settings
+        from app.services.auth_service import Role, _build_access_token
 
         token = _build_access_token(sub="x", role=Role.reporter, jti="my-jti")
-        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        payload = jwt.decode(
+            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+        )
         assert payload["jti"] == "my-jti"
 
 
 class TestDecodeAccessToken:
     def test_valid_token_decoded(self):
-        from app.services.auth_service import Role, _build_access_token, decode_access_token
+        from app.services.auth_service import (
+            Role,
+            _build_access_token,
+            decode_access_token,
+        )
 
         token = _build_access_token(sub="abc", role=Role.reporter)
         payload = decode_access_token(token)
@@ -101,7 +109,12 @@ class TestDecodeAccessToken:
             decode_access_token("not.a.token")
 
     def test_tampered_token_raises(self):
-        from app.services.auth_service import Role, _build_access_token, InvalidTokenError, decode_access_token
+        from app.services.auth_service import (
+            InvalidTokenError,
+            Role,
+            _build_access_token,
+            decode_access_token,
+        )
 
         token = _build_access_token(sub="abc", role=Role.reporter)
         tampered = token[:-4] + "xxxx"
@@ -119,7 +132,7 @@ class TestIssueAnonymousToken:
 
     @pytest.mark.asyncio
     async def test_role_is_anonymous_reporter(self):
-        from app.services.auth_service import issue_anonymous_token, decode_access_token
+        from app.services.auth_service import decode_access_token, issue_anonymous_token
 
         token = await issue_anonymous_token()
         payload = decode_access_token(token)
@@ -166,7 +179,9 @@ class TestSendOtp:
         from app.services.sms import SMSDeliveryError
 
         with patch("app.services.auth_service.get_sms_gateway") as mock_gw:
-            mock_gw.return_value.send_otp = MagicMock(side_effect=SMSDeliveryError("fail"))
+            mock_gw.return_value.send_otp = MagicMock(
+                side_effect=SMSDeliveryError("fail")
+            )
             with pytest.raises(SMSDeliveryError):
                 await send_otp(_PHONE, mock_redis)
 
@@ -176,10 +191,13 @@ class TestSendOtp:
 class TestVerifyOtp:
     def _make_redis(self, stored_otp=_OTP, attempts=0, locked=False):
         redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda key: (
-            str(_OTP_MAX_ATTEMPTS if locked else attempts).encode() if "attempts" in key
-            else stored_otp.encode() if stored_otp else None
-        ))
+        redis.get = AsyncMock(
+            side_effect=lambda key: (
+                str(_OTP_MAX_ATTEMPTS if locked else attempts).encode()
+                if "attempts" in key
+                else stored_otp.encode() if stored_otp else None
+            )
+        )
         redis.set = AsyncMock()
         redis.delete = AsyncMock()
         redis.incr = AsyncMock(return_value=attempts + 1)
@@ -191,9 +209,9 @@ class TestVerifyOtp:
         from app.services.auth_service import verify_otp
 
         redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda key: (
-            b"0" if "attempts" in key else _OTP.encode()
-        ))
+        redis.get = AsyncMock(
+            side_effect=lambda key: (b"0" if "attempts" in key else _OTP.encode())
+        )
         redis.delete = AsyncMock()
         redis.set = AsyncMock()
 
@@ -203,12 +221,12 @@ class TestVerifyOtp:
 
     @pytest.mark.asyncio
     async def test_wrong_otp_raises_invalid(self):
-        from app.services.auth_service import verify_otp, InvalidOTPError
+        from app.services.auth_service import InvalidOTPError, verify_otp
 
         redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda key: (
-            b"0" if "attempts" in key else b"999999"
-        ))
+        redis.get = AsyncMock(
+            side_effect=lambda key: (b"0" if "attempts" in key else b"999999")
+        )
         redis.incr = AsyncMock(return_value=1)
         redis.expire = AsyncMock()
 
@@ -217,7 +235,7 @@ class TestVerifyOtp:
 
     @pytest.mark.asyncio
     async def test_no_otp_raises_not_found(self):
-        from app.services.auth_service import verify_otp, OTPNotFoundError
+        from app.services.auth_service import OTPNotFoundError, verify_otp
 
         redis = AsyncMock()
         redis.get = AsyncMock(return_value=None)
@@ -227,12 +245,12 @@ class TestVerifyOtp:
 
     @pytest.mark.asyncio
     async def test_locked_out_raises(self):
-        from app.services.auth_service import verify_otp, OTPLockedOutError
+        from app.services.auth_service import OTPLockedOutError, verify_otp
 
         redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda key: (
-            b"5" if "attempts" in key else _OTP.encode()
-        ))
+        redis.get = AsyncMock(
+            side_effect=lambda key: (b"5" if "attempts" in key else _OTP.encode())
+        )
 
         with pytest.raises(OTPLockedOutError):
             await verify_otp(_PHONE, _OTP, redis)
@@ -242,9 +260,9 @@ class TestVerifyOtp:
         from app.services.auth_service import verify_otp
 
         redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda key: (
-            b"0" if "attempts" in key else _OTP.encode()
-        ))
+        redis.get = AsyncMock(
+            side_effect=lambda key: (b"0" if "attempts" in key else _OTP.encode())
+        )
         redis.delete = AsyncMock()
         redis.set = AsyncMock()
 
@@ -259,7 +277,7 @@ _OTP_MAX_ATTEMPTS = 5
 class TestRotateRefreshToken:
     @pytest.mark.asyncio
     async def test_valid_token_returns_new_pair(self):
-        from app.services.auth_service import rotate_refresh_token, Role
+        from app.services.auth_service import Role, rotate_refresh_token
 
         payload = json.dumps({"sub": "abc", "role": "reporter", "tier": 1})
         redis = AsyncMock()
@@ -273,7 +291,7 @@ class TestRotateRefreshToken:
 
     @pytest.mark.asyncio
     async def test_invalid_token_raises(self):
-        from app.services.auth_service import rotate_refresh_token, InvalidTokenError
+        from app.services.auth_service import InvalidTokenError, rotate_refresh_token
 
         redis = AsyncMock()
         redis.get = AsyncMock(return_value=None)
@@ -298,7 +316,7 @@ class TestRotateRefreshToken:
 class TestLogout:
     @pytest.mark.asyncio
     async def test_adds_jti_to_denylist(self):
-        from app.services.auth_service import logout, Role, _build_access_token
+        from app.services.auth_service import Role, _build_access_token, logout
 
         token = _build_access_token(sub="abc", role=Role.reporter)
         redis = AsyncMock()
@@ -309,7 +327,7 @@ class TestLogout:
 
     @pytest.mark.asyncio
     async def test_invalid_token_raises(self):
-        from app.services.auth_service import logout, InvalidTokenError
+        from app.services.auth_service import InvalidTokenError, logout
 
         redis = AsyncMock()
         with pytest.raises(InvalidTokenError):
@@ -319,7 +337,11 @@ class TestLogout:
 class TestVerifyAccessToken:
     @pytest.mark.asyncio
     async def test_valid_token_returns_payload(self):
-        from app.services.auth_service import verify_access_token, Role, _build_access_token
+        from app.services.auth_service import (
+            Role,
+            _build_access_token,
+            verify_access_token,
+        )
 
         token = _build_access_token(sub="abc", role=Role.analyst)
         redis = AsyncMock()
@@ -330,7 +352,12 @@ class TestVerifyAccessToken:
 
     @pytest.mark.asyncio
     async def test_denylisted_token_raises(self):
-        from app.services.auth_service import verify_access_token, Role, _build_access_token, InvalidTokenError
+        from app.services.auth_service import (
+            InvalidTokenError,
+            Role,
+            _build_access_token,
+            verify_access_token,
+        )
 
         token = _build_access_token(sub="abc", role=Role.analyst)
         redis = AsyncMock()
@@ -343,7 +370,7 @@ class TestVerifyAccessToken:
 class TestIssueAnalystToken:
     @pytest.mark.asyncio
     async def test_returns_token_pair(self):
-        from app.services.auth_service import issue_analyst_token, Role
+        from app.services.auth_service import Role, issue_analyst_token
 
         redis = AsyncMock()
         redis.set = AsyncMock()
@@ -354,7 +381,11 @@ class TestIssueAnalystToken:
 
     @pytest.mark.asyncio
     async def test_role_embedded_in_access_token(self):
-        from app.services.auth_service import issue_analyst_token, Role, decode_access_token
+        from app.services.auth_service import (
+            Role,
+            decode_access_token,
+            issue_analyst_token,
+        )
 
         redis = AsyncMock()
         redis.set = AsyncMock()
@@ -365,7 +396,7 @@ class TestIssueAnalystToken:
 
     @pytest.mark.asyncio
     async def test_reporter_role_raises(self):
-        from app.services.auth_service import issue_analyst_token, Role
+        from app.services.auth_service import Role, issue_analyst_token
 
         redis = AsyncMock()
         with pytest.raises(ValueError):
@@ -373,7 +404,11 @@ class TestIssueAnalystToken:
 
     @pytest.mark.asyncio
     async def test_email_not_in_access_token(self):
-        from app.services.auth_service import issue_analyst_token, Role, decode_access_token
+        from app.services.auth_service import (
+            Role,
+            decode_access_token,
+            issue_analyst_token,
+        )
 
         redis = AsyncMock()
         redis.set = AsyncMock()
@@ -423,6 +458,7 @@ class TestAfricasTalkingSMSGateway:
 
     def test_send_otp_raises_on_http_error(self):
         import httpx
+
         from app.services.sms import AfricasTalkingSMSGateway, SMSDeliveryError
 
         with patch("app.services.sms.settings") as mock_settings:
@@ -433,7 +469,9 @@ class TestAfricasTalkingSMSGateway:
         with patch("httpx.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-                "error", request=MagicMock(), response=MagicMock(status_code=500, text="err")
+                "error",
+                request=MagicMock(),
+                response=MagicMock(status_code=500, text="err"),
             )
             mock_post.return_value = mock_response
             with pytest.raises(SMSDeliveryError):
@@ -441,6 +479,7 @@ class TestAfricasTalkingSMSGateway:
 
     def test_send_otp_raises_on_network_error(self):
         import httpx
+
         from app.services.sms import AfricasTalkingSMSGateway, SMSDeliveryError
 
         with patch("app.services.sms.settings") as mock_settings:
@@ -488,7 +527,7 @@ class TestAfricasTalkingSMSGateway:
 
 class TestGetSmsGateway:
     def test_console_gateway(self):
-        from app.services.sms import get_sms_gateway, ConsoleSMSGateway
+        from app.services.sms import ConsoleSMSGateway, get_sms_gateway
 
         with patch("app.services.sms.settings") as s:
             s.SMS_GATEWAY = "console"
@@ -496,7 +535,7 @@ class TestGetSmsGateway:
         assert isinstance(gw, ConsoleSMSGateway)
 
     def test_africastalking_gateway(self):
-        from app.services.sms import get_sms_gateway, AfricasTalkingSMSGateway
+        from app.services.sms import AfricasTalkingSMSGateway, get_sms_gateway
 
         with patch("app.services.sms.settings") as s:
             s.SMS_GATEWAY = "africastalking"
@@ -522,6 +561,7 @@ class TestGetSmsGateway:
 def _make_app():
     """Build a minimal FastAPI app with the auth router mounted."""
     from fastapi import FastAPI
+
     from app.api.v1.routes.auth import router
     from app.core.dependencies import get_redis
 
@@ -702,6 +742,7 @@ class TestRefreshEndpoint:
 class TestLogoutEndpoint:
     def _valid_bearer(self):
         from app.services.auth_service import Role, _build_access_token
+
         return _build_access_token(sub="abc", role=Role.reporter)
 
     def test_valid_token_returns_200(self):
@@ -759,7 +800,8 @@ class TestLogoutEndpoint:
 
 class TestGetCurrentUser:
     def _make_protected_app(self):
-        from fastapi import FastAPI, Depends
+        from fastapi import Depends, FastAPI
+
         from app.api.v1.routes.auth import get_current_user, router
         from app.core.dependencies import get_redis
 
@@ -812,7 +854,8 @@ class TestGetCurrentUser:
 
 class TestRequireRole:
     def _make_role_app(self, *permitted_roles):
-        from fastapi import FastAPI, Depends
+        from fastapi import Depends, FastAPI
+
         from app.api.v1.routes.auth import require_role, router
         from app.core.dependencies import get_redis
         from app.services.auth_service import Role
@@ -839,9 +882,7 @@ class TestRequireRole:
         client = TestClient(app)
         token = _build_access_token(sub="abc", role=Role.analyst)
 
-        resp = client.get(
-            "/analyst-only", headers={"Authorization": f"Bearer {token}"}
-        )
+        resp = client.get("/analyst-only", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200
 
     def test_wrong_role_returns_403(self):
@@ -851,9 +892,7 @@ class TestRequireRole:
         client = TestClient(app)
         token = _build_access_token(sub="abc", role=Role.reporter)
 
-        resp = client.get(
-            "/analyst-only", headers={"Authorization": f"Bearer {token}"}
-        )
+        resp = client.get("/analyst-only", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 403
 
 

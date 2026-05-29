@@ -210,7 +210,10 @@ class TestRunSuccess:
 
         mock_issue.assert_awaited_once()
         _, kwargs = mock_issue.call_args
-        assert kwargs.get("role") == Role.analyst or mock_issue.call_args[0][1] == Role.analyst
+        assert (
+            kwargs.get("role") == Role.analyst
+            or mock_issue.call_args[0][1] == Role.analyst
+        )
 
     @pytest.mark.asyncio
     async def test_issue_analyst_token_email_arg_is_plaintext(self):
@@ -224,9 +227,8 @@ class TestRunSuccess:
 
         call_args = mock_issue.call_args
         # email could be positional or keyword
-        email_arg = (
-            call_args.kwargs.get("email")
-            or (call_args.args[0] if call_args.args else None)
+        email_arg = call_args.kwargs.get("email") or (
+            call_args.args[0] if call_args.args else None
         )
         assert email_arg == _TEST_EMAIL
 
@@ -380,6 +382,6 @@ class TestNoPIIInLogs:
                 await _run(_TEST_EMAIL, "analyst")
 
         for record in caplog.records:
-            assert _TEST_EMAIL not in record.getMessage(), (
-                f"Plaintext e-mail found in log record: {record.getMessage()}"
-            )
+            assert (
+                _TEST_EMAIL not in record.getMessage()
+            ), f"Plaintext e-mail found in log record: {record.getMessage()}"
