@@ -60,7 +60,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--email",
         required=True,
-        help="E-mail address for the new account (never stored in plaintext).",
+        help=("E-mail address for the new account " "(never stored in plaintext)."),
     )
     parser.add_argument(
         "--role",
@@ -86,23 +86,23 @@ async def _run(email: str, role_str: str) -> int:
 
     # ── Validate inputs ───────────────────────────────────────────────────────
     if not _EMAIL_RE.match(email):
-        print(f"[ERROR] Invalid e-mail address supplied.", file=sys.stderr)
+        print("[ERROR] Invalid e-mail address supplied.", file=sys.stderr)
         return 1
 
     try:
         role = Role(role_str)
     except ValueError:
         print(
-            f"[ERROR] '{role_str}' is not a valid elevated role. "
-            f"Choose from: {', '.join(_ELEVATED_ROLES)}",
+            "[ERROR] '{}' is not a valid elevated role. "
+            "Choose from: {}".format(role_str, ", ".join(_ELEVATED_ROLES)),
             file=sys.stderr,
         )
         return 1
 
     if role not in (Role.analyst, Role.responder, Role.admin):
         print(
-            f"[ERROR] '{role_str}' is not a valid elevated role. "
-            f"Choose from: {', '.join(_ELEVATED_ROLES)}",
+            "[ERROR] '{}' is not a valid elevated role. "
+            "Choose from: {}".format(role_str, ", ".join(_ELEVATED_ROLES)),
             file=sys.stderr,
         )
         return 1
@@ -117,7 +117,7 @@ async def _run(email: str, role_str: str) -> int:
             redis=redis,
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"[ERROR] Token issuance failed: {exc}", file=sys.stderr)
+        print("[ERROR] Token issuance failed: {}".format(exc), file=sys.stderr)
         logger.exception("create_analyst: token issuance failed")
         return 1
     finally:
@@ -125,7 +125,7 @@ async def _run(email: str, role_str: str) -> int:
 
     # ── Output tokens ─────────────────────────────────────────────────────────
     # The plaintext e-mail is deliberately NOT printed; only the role is shown.
-    print(f"[OK] Account provisioned with role '{role.value}'.")
+    print("[OK] Account provisioned with role '{}'.".format(role.value))
     print()
     print("Access token (1-hour lifetime):")
     print(access_token)

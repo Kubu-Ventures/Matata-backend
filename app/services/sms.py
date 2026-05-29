@@ -135,7 +135,7 @@ class AfricasTalkingSMSGateway:
             SMSDeliveryError: On HTTP error or non-success AT response code.
         """
         message = (
-            f"Your CrisisMap verification code is: {otp_code}. Valid for 5 minutes."
+            f"Your CrisisMap verification code is: {otp_code}. " "Valid for 5 minutes."
         )
 
         try:

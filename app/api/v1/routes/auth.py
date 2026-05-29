@@ -168,7 +168,10 @@ def require_role(*roles: Role):
 
     Usage::
 
-        @router.get("/analyst/reports", dependencies=[Depends(require_role(Role.analyst))])
+        @router.get(
+            "/analyst/reports",
+            dependencies=[Depends(require_role(Role.analyst))],
+        )
         async def list_reports(): ...
 
     Args:
@@ -275,9 +278,7 @@ async def send_otp(
             detail="Failed to send OTP. Please try again later.",
         ) from exc
 
-    return MessageResponse(
-        message="OTP sent successfully.",
-    )
+    return MessageResponse(message="OTP sent successfully.")
 
 
 @router.post(

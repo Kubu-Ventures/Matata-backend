@@ -19,14 +19,11 @@ Coverage targets
 
 from __future__ import annotations
 
-import re
-import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-# E.164 pattern used to assert that phone-like PII is not printed.
-# For e-mail we assert the literal address does not appear in output.
+# E-mail used as PII in assertions — must never appear in any output.
 _TEST_EMAIL = "analyst@example.com"
 _TEST_ROLE = "analyst"
 _FAKE_ACCESS = "eyJhbGciOiJIUzI1NiJ9.access"
@@ -205,14 +202,14 @@ class TestRunSuccess:
         from app.cli.create_analyst import _run
         from app.services.auth_service import Role
 
-        with _patch_redis() as _r, _patch_issue_token() as mock_issue:
+        with _patch_redis(), _patch_issue_token() as mock_issue:
             await _run(_TEST_EMAIL, "analyst")
 
         mock_issue.assert_awaited_once()
-        _, kwargs = mock_issue.call_args
+        call_args = mock_issue.call_args
         assert (
-            kwargs.get("role") == Role.analyst
-            or mock_issue.call_args[0][1] == Role.analyst
+            call_args.kwargs.get("role") == Role.analyst
+            or call_args.args[1] == Role.analyst
         )
 
     @pytest.mark.asyncio
@@ -384,4 +381,4 @@ class TestNoPIIInLogs:
         for record in caplog.records:
             assert (
                 _TEST_EMAIL not in record.getMessage()
-            ), f"Plaintext e-mail found in log record: {record.getMessage()}"
+            ), "Plaintext e-mail found in log record: {}".format(record.getMessage())

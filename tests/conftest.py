@@ -1,9 +1,15 @@
 # conftest.py  — must be at the project root (same level as app/)
+#
+# E402 NOTE: os.environ must be populated before any app module is imported
+# because pydantic-settings reads the environment at class-definition time.
+# All other imports (pytest, AsyncMock) are placed AFTER the os.environ block
+# so that standard import-order linters see a clear separation of concerns:
+# first the environment is prepared, then modules that depend on it are loaded.
+#
+# flake8: noqa: E402  (module-level import not at top of file — intentional)
 import os
 
 # ── Inject required env vars BEFORE any app module is imported ──────────────
-# pydantic-settings reads os.environ at import time, so these must be set
-# before `from app.core.config import settings` is ever called.
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing-only")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
@@ -13,10 +19,10 @@ os.environ.setdefault("SMS_GATEWAY", "console")
 os.environ.setdefault("AFRICASTALKING_API_KEY", "")
 os.environ.setdefault("AFRICASTALKING_USERNAME", "")
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock  # noqa: E402
 
-# ── Now it is safe to import app modules ────────────────────────────────────
-import pytest
+# ── Standard imports (safe now that env is ready) ────────────────────────────
+import pytest  # noqa: E402
 
 
 @pytest.fixture

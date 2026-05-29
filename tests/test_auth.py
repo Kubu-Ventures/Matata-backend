@@ -14,12 +14,9 @@ Coverage targets
 from __future__ import annotations
 
 import json
-import time
-from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from jose import jwt
 
@@ -30,9 +27,7 @@ from jose import jwt
 _PHONE = "+254700123456"
 _EMAIL = "analyst@example.com"
 _OTP = "123456"
-_ALGORITHM = "HS256"
-_SECRET = "x" * 64
-_SALT = "x" * 32
+_OTP_MAX_ATTEMPTS = 5
 
 
 # ===========================================================================
@@ -72,7 +67,9 @@ class TestBuildAccessToken:
 
         token = _build_access_token(sub="abc123", role=Role.analyst, tier=0)
         payload = jwt.decode(
-            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
         )
         assert payload["sub"] == "abc123"
         assert payload["role"] == "analyst"
@@ -85,7 +82,9 @@ class TestBuildAccessToken:
 
         token = _build_access_token(sub="x", role=Role.reporter, jti="my-jti")
         payload = jwt.decode(
-            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
         )
         assert payload["jti"] == "my-jti"
 
@@ -189,21 +188,6 @@ class TestSendOtp:
 
 
 class TestVerifyOtp:
-    def _make_redis(self, stored_otp=_OTP, attempts=0, locked=False):
-        redis = AsyncMock()
-        redis.get = AsyncMock(
-            side_effect=lambda key: (
-                str(_OTP_MAX_ATTEMPTS if locked else attempts).encode()
-                if "attempts" in key
-                else stored_otp.encode() if stored_otp else None
-            )
-        )
-        redis.set = AsyncMock()
-        redis.delete = AsyncMock()
-        redis.incr = AsyncMock(return_value=attempts + 1)
-        redis.expire = AsyncMock()
-        return redis
-
     @pytest.mark.asyncio
     async def test_valid_otp_returns_tokens(self):
         from app.services.auth_service import verify_otp
@@ -270,14 +254,10 @@ class TestVerifyOtp:
         assert redis.delete.await_count == 2
 
 
-# Import for test above
-_OTP_MAX_ATTEMPTS = 5
-
-
 class TestRotateRefreshToken:
     @pytest.mark.asyncio
     async def test_valid_token_returns_new_pair(self):
-        from app.services.auth_service import Role, rotate_refresh_token
+        from app.services.auth_service import rotate_refresh_token
 
         payload = json.dumps({"sub": "abc", "role": "reporter", "tier": 1})
         redis = AsyncMock()
@@ -623,8 +603,6 @@ class TestSendOtpEndpoint:
 
 class TestVerifyOtpEndpoint:
     def test_valid_otp_returns_tokens(self):
-        from app.services.auth_service import Role
-
         app = _make_app()
         client = TestClient(app)
 
@@ -755,7 +733,7 @@ class TestLogoutEndpoint:
         ):
             resp = client.delete(
                 "/api/v1/auth/logout",
-                headers={"Authorization": f"Bearer {self._valid_bearer()}"},
+                headers={"Authorization": "Bearer {}".format(self._valid_bearer())},
             )
 
         assert resp.status_code == 200
@@ -802,7 +780,7 @@ class TestGetCurrentUser:
     def _make_protected_app(self):
         from fastapi import Depends, FastAPI
 
-        from app.api.v1.routes.auth import get_current_user, router
+        from app.api.v1.routes.auth import get_current_user
         from app.core.dependencies import get_redis
 
         app = FastAPI()
@@ -827,7 +805,9 @@ class TestGetCurrentUser:
         client = TestClient(app)
         token = _build_access_token(sub="abc", role=Role.analyst)
 
-        resp = client.get("/protected", headers={"Authorization": f"Bearer {token}"})
+        resp = client.get(
+            "/protected", headers={"Authorization": "Bearer {}".format(token)}
+        )
         assert resp.status_code == 200
         assert resp.json()["role"] == "analyst"
 
@@ -856,9 +836,8 @@ class TestRequireRole:
     def _make_role_app(self, *permitted_roles):
         from fastapi import Depends, FastAPI
 
-        from app.api.v1.routes.auth import require_role, router
+        from app.api.v1.routes.auth import require_role
         from app.core.dependencies import get_redis
-        from app.services.auth_service import Role
 
         app = FastAPI()
 
@@ -882,7 +861,10 @@ class TestRequireRole:
         client = TestClient(app)
         token = _build_access_token(sub="abc", role=Role.analyst)
 
-        resp = client.get("/analyst-only", headers={"Authorization": f"Bearer {token}"})
+        resp = client.get(
+            "/analyst-only",
+            headers={"Authorization": "Bearer {}".format(token)},
+        )
         assert resp.status_code == 200
 
     def test_wrong_role_returns_403(self):
@@ -892,7 +874,10 @@ class TestRequireRole:
         client = TestClient(app)
         token = _build_access_token(sub="abc", role=Role.reporter)
 
-        resp = client.get("/analyst-only", headers={"Authorization": f"Bearer {token}"})
+        resp = client.get(
+            "/analyst-only",
+            headers={"Authorization": "Bearer {}".format(token)},
+        )
         assert resp.status_code == 403
 
 

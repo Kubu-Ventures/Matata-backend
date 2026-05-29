@@ -321,8 +321,9 @@ async def verify_otp(
     attempts = int(attempts_raw) if attempts_raw else 0
     if attempts >= _OTP_MAX_ATTEMPTS:
         logger.warning("OTP lockout active (identifier: %s…)", id_hash[:8])
+        lockout_minutes = _OTP_LOCKOUT_SECONDS // 60
         raise OTPLockedOutError(
-            f"Too many failed attempts. Try again in {_OTP_LOCKOUT_SECONDS // 60} minutes."
+            f"Too many failed attempts. Try again in {lockout_minutes} minutes."
         )
 
     # ── Retrieve stored OTP ──────────────────────────────────────────────────
