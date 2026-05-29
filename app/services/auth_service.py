@@ -327,12 +327,14 @@ async def verify_otp(
         )
 
     # ── Retrieve stored OTP ──────────────────────────────────────────────────
-    stored_otp: bytes | None = await redis.get(_otp_key(id_hash))
+    stored_otp: str | None = await redis.get(_otp_key(id_hash))
     if stored_otp is None:
         raise OTPNotFoundError("No pending OTP found. Please request a new code.")
 
     # ── Constant-time comparison ─────────────────────────────────────────────
-    if not secrets.compare_digest(stored_otp.decode(), otp_code):
+    # Redis client is created with decode_responses=True so get() returns str,
+    # not bytes. secrets.compare_digest accepts str directly.
+    if not secrets.compare_digest(stored_otp, otp_code):
         # Increment failure counter; set lockout TTL on first failure.
         new_attempts = await redis.incr(_otp_attempts_key(id_hash))
         if new_attempts == 1:
