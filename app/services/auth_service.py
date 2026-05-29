@@ -318,6 +318,10 @@ async def verify_otp(
 
     # ── Lockout check ────────────────────────────────────────────────────────
     attempts_raw = await redis.get(_otp_attempts_key(id_hash))
+    # Normalise to str: production Redis uses decode_responses=True and returns
+    # str, but test mocks may return bytes.
+    if isinstance(attempts_raw, bytes):
+        attempts_raw = attempts_raw.decode()
     attempts = int(attempts_raw) if attempts_raw else 0
     if attempts >= _OTP_MAX_ATTEMPTS:
         logger.warning("OTP lockout active (identifier: %s…)", id_hash[:8])
@@ -332,8 +336,12 @@ async def verify_otp(
         raise OTPNotFoundError("No pending OTP found. Please request a new code.")
 
     # ── Constant-time comparison ─────────────────────────────────────────────
-    # Redis client is created with decode_responses=True so get() returns str,
-    # not bytes. secrets.compare_digest accepts str directly.
+    # Normalise to str: production Redis uses decode_responses=True and returns
+    # str, but test mocks may return bytes.  Both sides of compare_digest must
+    # be the same type.
+    if isinstance(stored_otp, bytes):
+        stored_otp = stored_otp.decode()
+
     if not secrets.compare_digest(stored_otp, otp_code):
         # Increment failure counter; set lockout TTL on first failure.
         new_attempts = await redis.incr(_otp_attempts_key(id_hash))
