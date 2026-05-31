@@ -15,7 +15,7 @@ import sqlalchemy as sa
 from geoalchemy2 import Geometry
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base, TimestampMixin
+from app.db.base_class import Base, TimestampMixin
 from app.models.enums import BuildingSource, DamageSeverity
 
 if TYPE_CHECKING:
