@@ -13,7 +13,7 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base, TimestampMixin
+from app.db.base_class import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.report import Report

@@ -25,17 +25,52 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
-    # ── Phone hashing ────────────────────────────────────────────────────────
+    # ── Phone hashing ─────────────────────────────────────────────────────────
     # Minimum 32 random bytes, base64-encoded.  Used to salt SHA-256 hashes of
     # phone numbers and analyst email addresses so that a raw rainbow table
-    # cannot reverse stored hashes.
+    # cannot reverse stored hashes even if the database is compromised.
     PHONE_HASH_SALT: str = ""
 
     # ── SMS gateway ───────────────────────────────────────────────────────────
-    SMS_GATEWAY: str = "console"  # console | africastalking | twilio
+    SMS_GATEWAY: str = "console"  # console | africastalking
     AFRICASTALKING_API_KEY: str = ""
     AFRICASTALKING_USERNAME: str = ""
 
+    # ── Content moderation ────────────────────────────────────────────────────
+    # MODERATION_PROVIDER=mock        — no AWS required (default, dev/CI).
+    # MODERATION_PROVIDER=rekognition — AWS Rekognition; Free Tier: 5k images/month.
+    #
+    # To use AWS Free Tier:
+    #   1. Create a free account at https://aws.amazon.com/free/
+    #   2. Set MODERATION_PROVIDER=rekognition
+    #   3. Set AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY below.
+    #
+    # To avoid AWS entirely, keep MODERATION_PROVIDER=mock.
+    MODERATION_PROVIDER: str = "mock"
+
+    # ── Object storage (S3 / MinIO / Cloudflare R2) ───────────────────────────
+    # STORAGE_BACKEND=mock — in-memory, no credentials needed (default, dev/CI).
+    # STORAGE_BACKEND=s3   — AWS S3, MinIO, or any S3-compatible service.
+    #
+    # Free options:
+    #   • AWS S3 Free Tier: 5 GB, 20 k GET + 2 k PUT/month for 12 months.
+    #   • MinIO (self-hosted, completely free):
+    #       docker run -p 9000:9000 quay.io/minio/minio server /data
+    #     Then set:  S3_ENDPOINT_URL=http://localhost:9000
+    #                S3_BUCKET_NAME=crisismap
+    #                AWS_ACCESS_KEY_ID=minioadmin
+    #                AWS_SECRET_ACCESS_KEY=minioadmin
+    STORAGE_BACKEND: Literal["mock", "s3"] = "mock"
+
+    # ── AWS credentials (used by Rekognition and/or S3) ───────────────────────
+    AWS_REGION: str = "us-east-1"
+    AWS_ACCESS_KEY_ID: str | None = None
+    AWS_SECRET_ACCESS_KEY: str | None = None
+
+    # ── S3 / MinIO bucket ─────────────────────────────────────────────────────
+    S3_BUCKET_NAME: str | None = None
+    # Leave empty for AWS S3.  MinIO / R2 example: http://localhost:9000
+    S3_ENDPOINT_URL: str | None = None
     # Storage
     storage_backend: str = "mock"
     s3_endpoint_url: str | None = None
@@ -50,7 +85,6 @@ class Settings(BaseSettings):
     )
 
     # ── Derived helpers ───────────────────────────────────────────────────────
-
     @property
     def allowed_origins_list(self) -> list[str]:
         """Split the comma-separated ALLOWED_ORIGINS string into a list."""

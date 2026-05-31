@@ -9,13 +9,19 @@ possible duplicate relationships.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, List, Optional
+from typing import List, Optional
 from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base, TimestampMixin
+from app.db.base_class import Base, TimestampMixin
+
+# Building must be imported at runtime so SQLAlchemy's mapper can resolve the
+# "Building" string in relationship().  The other two are forward-reference-only
+# and can stay behind TYPE_CHECKING to avoid circular import issues.
+from app.models.analyst_note import AnalystNote  # noqa: F401
+from app.models.building import Building  # noqa: F401
 from app.models.enums import (
     CrisisType,
     ElectricityStatus,
@@ -25,11 +31,7 @@ from app.models.enums import (
     ReportDamageSeverity,
     ReportStatus,
 )
-
-if TYPE_CHECKING:
-    from app.models.analyst_note import AnalystNote
-    from app.models.building import Building
-    from app.models.notification import Notification
+from app.models.notification import Notification  # noqa: F401
 
 
 class Report(TimestampMixin, Base):
@@ -145,7 +147,7 @@ class Report(TimestampMixin, Base):
     duplicate_score: Mapped[Optional[float]] = mapped_column(sa.Float, nullable=True)
 
     # ── Relationships ─────────────────────────────────────────────────────────
-    building: Mapped[Optional["Building"]] = relationship(
+    building: Mapped[Optional[Building]] = relationship(
         "Building", back_populates="reports", lazy="raise"
     )
     analyst_notes: Mapped[List["AnalystNote"]] = relationship(

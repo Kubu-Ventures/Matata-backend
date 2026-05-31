@@ -18,6 +18,12 @@ os.environ.setdefault("PHONE_HASH_SALT", "x" * 32)
 os.environ.setdefault("SMS_GATEWAY", "console")
 os.environ.setdefault("AFRICASTALKING_API_KEY", "")
 os.environ.setdefault("AFRICASTALKING_USERNAME", "")
+# ── New env vars added by submission feature ─────────────────────────────────
+os.environ.setdefault("MODERATION_PROVIDER", "mock")
+os.environ.setdefault("STORAGE_BACKEND", "mock")
+os.environ.setdefault("AWS_REGION", "us-east-1")
+os.environ.setdefault("S3_BUCKET_NAME", "")
+os.environ.setdefault("S3_ENDPOINT_URL", "")
 
 from unittest.mock import AsyncMock  # noqa: E402
 
@@ -41,5 +47,6 @@ def mock_redis():
     redis.exists = AsyncMock(return_value=0)
     redis.incr = AsyncMock(return_value=1)
     redis.expire = AsyncMock(return_value=True)
+    redis.xadd = AsyncMock(return_value=True)
     redis.aclose = AsyncMock()
     return redis
