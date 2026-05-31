@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     S3_BUCKET_NAME: str | None = None
     # Leave empty for AWS S3.  MinIO / R2 example: http://localhost:9000
     S3_ENDPOINT_URL: str | None = None
+    # Storage
+    storage_backend: str = "mock"
+    s3_endpoint_url: str | None = None
+    s3_bucket_name: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_region: str = "us-east-1"
 
     model_config = SettingsConfigDict(
         env_file=".env",

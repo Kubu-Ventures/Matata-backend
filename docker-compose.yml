@@ -17,6 +17,7 @@ services:
     command: >
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
   postgres:
     image: postgis/postgis:15-3.4-alpine
     environment:
@@ -40,6 +41,8 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 60s
+
 volumes:
   postgres_data:
