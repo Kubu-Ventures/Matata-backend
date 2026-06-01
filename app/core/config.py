@@ -39,27 +39,11 @@ class Settings(BaseSettings):
     # ── Content moderation ────────────────────────────────────────────────────
     # MODERATION_PROVIDER=mock        — no AWS required (default, dev/CI).
     # MODERATION_PROVIDER=rekognition — AWS Rekognition; Free Tier: 5k images/month.
-    #
-    # To use AWS Free Tier:
-    #   1. Create a free account at https://aws.amazon.com/free/
-    #   2. Set MODERATION_PROVIDER=rekognition
-    #   3. Set AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY below.
-    #
-    # To avoid AWS entirely, keep MODERATION_PROVIDER=mock.
     MODERATION_PROVIDER: str = "mock"
 
     # ── Object storage (S3 / MinIO / Cloudflare R2) ───────────────────────────
     # STORAGE_BACKEND=mock — in-memory, no credentials needed (default, dev/CI).
     # STORAGE_BACKEND=s3   — AWS S3, MinIO, or any S3-compatible service.
-    #
-    # Free options:
-    #   • AWS S3 Free Tier: 5 GB, 20 k GET + 2 k PUT/month for 12 months.
-    #   • MinIO (self-hosted, completely free):
-    #       docker run -p 9000:9000 quay.io/minio/minio server /data
-    #     Then set:  S3_ENDPOINT_URL=http://localhost:9000
-    #                S3_BUCKET_NAME=crisismap
-    #                AWS_ACCESS_KEY_ID=minioadmin
-    #                AWS_SECRET_ACCESS_KEY=minioadmin
     STORAGE_BACKEND: Literal["mock", "s3"] = "mock"
 
     # ── AWS credentials (used by Rekognition and/or S3) ───────────────────────
@@ -71,13 +55,27 @@ class Settings(BaseSettings):
     S3_BUCKET_NAME: str | None = None
     # Leave empty for AWS S3.  MinIO / R2 example: http://localhost:9000
     S3_ENDPOINT_URL: str | None = None
-    # Storage
-    storage_backend: str = "mock"
-    s3_endpoint_url: str | None = None
-    s3_bucket_name: str | None = None
-    aws_access_key_id: str | None = None
-    aws_secret_access_key: str | None = None
-    aws_region: str = "us-east-1"
+
+    # ── GIS worker ────────────────────────────────────────────────────────────
+    # Geocoding provider for landmark-based building matching (spec §9.2 step 3).
+    # nominatim — free OpenStreetMap Nominatim API (default, no key required).
+    # google    — Google Maps Geocoding API (requires GOOGLE_GEOCODING_API_KEY).
+    # mock      — deterministic stub for tests and CI.
+    GEOCODING_PROVIDER: str = "nominatim"
+
+    # Required only when GEOCODING_PROVIDER=google.
+    GOOGLE_GEOCODING_API_KEY: str = ""
+
+    # Nearest-neighbour building search radius in metres (spec §9.2).
+    # Expanded dynamically to min(accuracy_m * 1.5, 100) when GPS accuracy > 50 m.
+    BUILDING_FOOTPRINT_SEARCH_RADIUS_M: int = 30
+
+    # ── Celery ────────────────────────────────────────────────────────────────
+    # Both default to REDIS_URL when left empty, so no change is needed for
+    # development.  Override in production to use separate Redis databases or
+    # a dedicated broker such as RabbitMQ.
+    CELERY_BROKER_URL: str = ""
+    CELERY_RESULT_BACKEND: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
