@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     SMS_GATEWAY: str = "console"  # console | africastalking | twilio
     AFRICASTALKING_API_KEY: str = ""
     AFRICASTALKING_USERNAME: str = ""
+    
+    # Storage
+    storage_backend: str = "mock"
+    s3_endpoint_url: str | None = None
+    s3_bucket_name: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_region: str = "us-east-1"
 
     model_config = SettingsConfigDict(
         env_file=".env",
