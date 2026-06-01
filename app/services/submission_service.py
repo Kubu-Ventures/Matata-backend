@@ -338,17 +338,13 @@ async def create_report(
         offline_queued_at:     Timestamp from offline queue (None for live submissions).
         image_bytes:           Raw photo binary (None for metadata-only offline path).
         image_content_type:    MIME type of the photo.
-        reporter_token:        Raw JWT or session token (hashed immediately,
-                               never stored).
+        reporter_token:        Raw JWT/session token — hashed on receipt, never stored.
         reporter_trust_tier:   Tier from JWT payload (0 for anonymous).
         db:                    Async database session.
         redis:                 Async Redis client.
-        moderation_provider:   Injected for testing; defaults to
-                               factory-created instance.
-        storage_service:       Injected for testing; defaults to
-                               factory-created instance.
-        queue_service:         Injected for testing; defaults to
-                               factory-created instance.
+        moderation_provider:   Injected for testing; defaults to factory instance.
+        storage_service:       Injected for testing; defaults to factory instance.
+        queue_service:         Injected for testing; defaults to factory instance.
 
     Returns:
         The created ``Report`` ORM instance (not yet committed — caller commits).
@@ -404,9 +400,7 @@ async def create_report(
             )
             await db.flush()  # Persist audit log within the current transaction.
 
-            logger.warning(
-                "Stage 2 moderation rejection (actor: %s…)", token_hash[:8]
-            )
+            logger.warning("Stage 2 moderation rejection (actor: %s…)", token_hash[:8])
             # Generic message — do NOT disclose which category triggered rejection.
             raise ModerationRejectionError("Image could not be accepted")
 
@@ -431,9 +425,7 @@ async def create_report(
             )
             # Re-raise as SubmissionError to keep infrastructure details
             # out of the HTTP response.
-            raise SubmissionError(
-                "Photo upload failed. Please try again."
-            ) from exc
+            raise SubmissionError("Photo upload failed. Please try again.") from exc
     else:
         # Metadata-only path (offline sync: metadata POST, then photo PATCH).
         import uuid as _uuid
@@ -559,9 +551,7 @@ async def add_photo_to_report(
             report_id,
             token_hash[:8],
         )
-        raise ReportOwnershipError(
-            "You do not have permission to update this report."
-        )
+        raise ReportOwnershipError("You do not have permission to update this report.")
 
     _moderation = moderation_provider or get_moderation_provider()
     _storage = storage_service or get_storage_service()
@@ -622,9 +612,7 @@ async def add_photo_to_report(
     # ── 6. AI queue job ───────────────────────────────────────────────────────
     await _queue.publish_ai_job(report_id)
 
-    logger.info(
-        "Photo added to report %s (actor: %s…)", report_id, token_hash[:8]
-    )
+    logger.info("Photo added to report %s (actor: %s…)", report_id, token_hash[:8])
     return report
 
 
@@ -656,9 +644,7 @@ async def get_own_report(
         raise ReportNotFoundError(f"Report {report_id} not found.")
 
     if report.reporter_token_hash != token_hash:
-        raise ReportOwnershipError(
-            "You do not have permission to view this report."
-        )
+        raise ReportOwnershipError("You do not have permission to view this report.")
 
     return report
 
@@ -723,9 +709,7 @@ async def get_nearby_reports(
     )
     reports = result.scalars().all()
 
-    def _haversine_m(
-        lat1: float, lng1: float, lat2: float, lng2: float
-    ) -> float:
+    def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
         """Return the great-circle distance between two WGS84 points in metres."""
         R = 6_371_000.0
         phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -750,9 +734,7 @@ async def get_nearby_reports(
                 "lat": rpt.lat,
                 "lng": rpt.lng,
                 "status": (
-                    rpt.status.value
-                    if hasattr(rpt.status, "value")
-                    else rpt.status
+                    rpt.status.value if hasattr(rpt.status, "value") else rpt.status
                 ),
                 "damage_severity": (
                     rpt.damage_severity.value
