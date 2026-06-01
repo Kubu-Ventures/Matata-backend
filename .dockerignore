@@ -1,0 +1,49 @@
+# Version control
+.git
+.gitignore
+
+# Environment — never bake secrets into the image
+.env
+.env.*
+!.env.example
+
+# Tests — not needed at runtime
+tests/
+.pytest_cache/
+coverage.xml
+.coverage
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Python artefacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Alembic versions — migrations are applied at runtime via entrypoint.sh,
+# not baked into the image, so that the same image can migrate any DB state.
+alembic/versions/
+
+# Infrastructure configs — not needed inside the app container
+infra/
+docker-compose*.yml
+Dockerfile
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# CI
+.github/
+.trivyignore
