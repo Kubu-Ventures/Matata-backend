@@ -75,7 +75,7 @@ class ReportCreateSchema(BaseModel):
     landmark_description: Optional[str] = Field(
         default=None,
         max_length=500,
-        description="Textual landmark when GPS is unavailable. Max 500 characters.",
+        description=("Textual landmark when GPS is unavailable. Max 500 characters."),
     )
 
     # ── Optional operational fields ─────────────────────────────────────────
@@ -90,7 +90,9 @@ class ReportCreateSchema(BaseModel):
     most_pressing_needs: Optional[str] = Field(
         default=None,
         max_length=1000,
-        description="Free text describing the most urgent needs. Max 1,000 characters.",
+        description=(
+            "Free text describing the most urgent needs. Max 1,000 characters."
+        ),
     )
     debris_clearing_needed: Optional[bool] = Field(
         default=None,
@@ -98,7 +100,9 @@ class ReportCreateSchema(BaseModel):
     )
     offline_queued_at: Optional[datetime] = Field(
         default=None,
-        description="ISO 8601 timestamp — present only for offline-synced submissions.",
+        description=(
+            "ISO 8601 timestamp — present only for offline-synced submissions."
+        ),
     )
 
     @model_validator(mode="after")
@@ -112,7 +116,8 @@ class ReportCreateSchema(BaseModel):
         has_landmark = bool(self.landmark_description)
         if not has_coords and not has_landmark:
             raise ValueError(
-                "Either (lat, lng) coordinates or a landmark_description must be provided."
+                "Either (lat, lng) coordinates or a landmark_description "
+                "must be provided."
             )
         return self
 
@@ -131,7 +136,9 @@ class ReportCreateResponse(BaseModel):
     )
     building_id: Optional[UUID] = Field(
         default=None,
-        description="Matched building UUID, or null until the GIS worker resolves it.",
+        description=(
+            "Matched building UUID, or null until the GIS worker resolves it."
+        ),
     )
 
 
@@ -185,5 +192,8 @@ class NearbyReportItem(BaseModel):
         ...,
         ge=0.0,
         le=1.0,
-        description="GPS-proximity-based similarity score (0 = distant, 1 = identical location).",
+        description=(
+            "GPS-proximity-based similarity score "
+            "(0 = distant, 1 = identical location)."
+        ),
     )

@@ -597,7 +597,10 @@ async def add_photo_to_report(
         operation="report.photo_added",
         actor_id_hash=token_hash,
         record_id=report_id,
-        before_state={"photo_url": None, "photo_status": PhotoStatus.pending.value},
+        before_state={
+            "photo_url": None,
+            "photo_status": PhotoStatus.pending.value,
+        },
         after_state={
             "photo_url": photo_url,
             "photo_status": PhotoStatus.processing.value,

@@ -9,7 +9,7 @@ possible duplicate relationships.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, List, Optional
+from typing import List, Optional
 from uuid import UUID
 
 import sqlalchemy as sa

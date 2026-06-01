@@ -136,7 +136,7 @@ class TestRekognitionModerationProvider:
 
     @pytest.mark.asyncio
     async def test_passes_when_no_labels(self):
-        aiobotocore = pytest.importorskip("aiobotocore")
+        pytest.importorskip("aiobotocore")  # skip if not installed
         from app.services.moderation_service import RekognitionModerationProvider
 
         provider = RekognitionModerationProvider()
@@ -301,33 +301,33 @@ class TestS3StorageService:
             with pytest.raises(StorageError, match="aiobotocore"):
                 await svc.upload_image("rep", b"bytes")
 
-        @pytest.mark.asyncio
-        async def test_upload_success(self):
-            pytest.importorskip("aiobotocore")
-            from app.services.storage_service import S3StorageService
+    @pytest.mark.asyncio
+    async def test_upload_success(self):
+        pytest.importorskip("aiobotocore")
+        from app.services.storage_service import S3StorageService
 
-            with patch("app.services.storage_service.settings") as s:
-                s.S3_BUCKET_NAME = "bucket"
-                s.AWS_REGION = "us-east-1"
-                s.AWS_ACCESS_KEY_ID = "key"
-                s.AWS_SECRET_ACCESS_KEY = "secret"
-                s.S3_ENDPOINT_URL = ""
-                svc = S3StorageService()
+        with patch("app.services.storage_service.settings") as s:
+            s.S3_BUCKET_NAME = "bucket"
+            s.AWS_REGION = "us-east-1"
+            s.AWS_ACCESS_KEY_ID = "key"
+            s.AWS_SECRET_ACCESS_KEY = "secret"
+            s.S3_ENDPOINT_URL = ""
+            svc = S3StorageService()
 
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client.put_object = AsyncMock()
-            mock_session = MagicMock()
-            mock_session.create_client.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.put_object = AsyncMock()
+        mock_session = MagicMock()
+        mock_session.create_client.return_value = mock_client
 
-            with patch("aiobotocore.session.get_session", return_value=mock_session):
-                key = await svc.upload_image("report-abc", b"bytes")
+        with patch("aiobotocore.session.get_session", return_value=mock_session):
+            key = await svc.upload_image("report-abc", b"bytes")
 
-            assert key.startswith("reports/report-abc/")
-            mock_client.put_object.assert_awaited_once()
-            call_kwargs = mock_client.put_object.call_args.kwargs
-            assert call_kwargs["ServerSideEncryption"] == "AES256"
+        assert key.startswith("reports/report-abc/")
+        mock_client.put_object.assert_awaited_once()
+        call_kwargs = mock_client.put_object.call_args.kwargs
+        assert call_kwargs["ServerSideEncryption"] == "AES256"
 
     @pytest.mark.asyncio
     async def test_upload_raises_storage_error_on_failure(self):
@@ -1099,22 +1099,20 @@ class TestReportCreateSchema:
         )
         assert schema.landmark_description == "near the market"
 
-        def test_requires_location(self):
-            from pydantic import ValidationError
+    def test_requires_location(self):
+        from pydantic import ValidationError
 
-            from app.schemas.report_submission import ReportCreateSchema
+        from app.schemas.report_submission import ReportCreateSchema
 
-            with pytest.raises(ValidationError) as exc_info:
-                ReportCreateSchema(
-                    crisis_type="flood",
-                    infrastructure_type="residential",
-                    damage_severity="partial",
-                )
-            # Pydantic wraps model_validator messages under "Value error, ..."
-            # Check the stringified error contains our custom message fragment.
-            assert "coordinates" in str(exc_info.value) or "landmark" in str(
-                exc_info.value
+        with pytest.raises(ValidationError) as exc_info:
+            ReportCreateSchema(
+                crisis_type="flood",
+                infrastructure_type="residential",
+                damage_severity="partial",
             )
+        # Pydantic wraps model_validator messages under "Value error, ..."
+        # Check the stringified error contains our custom message fragment.
+        assert "coordinates" in str(exc_info.value) or "landmark" in str(exc_info.value)
 
     def test_invalid_crisis_type_rejected(self):
         from pydantic import ValidationError
@@ -1205,9 +1203,12 @@ class TestSubmitReportEndpoint:
         resp = client.post("/api/v1/reports", data={"metadata": "{}"})
         assert resp.status_code == 401
 
-    def test_invalid_metadata_json_returns_422(self):
-        from unittest.mock import patch as _patch
+    def test_missing_auth_no_override_returns_401(self):
+        client = TestClient(_make_app_no_auth_override())
+        resp = client.post("/api/v1/reports", data={"metadata": "{}"})
+        assert resp.status_code == 401
 
+    def test_invalid_metadata_json_returns_422(self):
         app = _make_app_with_overrides()
         client = TestClient(app)
         token = _make_valid_token()
@@ -1332,15 +1333,18 @@ class TestSubmitReportEndpoint:
         assert "id" in data
         assert "status" in data
 
-    def test_missing_auth_returns_401(self):
-        client = TestClient(_make_app_no_auth_override())
-        resp = client.post("/api/v1/reports", data={"metadata": "{}"})
-        assert resp.status_code == 401
-
 
 class TestUploadPhotoEndpoint:
     def test_missing_auth_returns_401(self):
         client = TestClient(_make_app_with_overrides())
+        resp = client.patch(
+            f"/api/v1/reports/{uuid.uuid4()}/photo",
+            files={"photo": ("test.jpg", b"bytes", "image/jpeg")},
+        )
+        assert resp.status_code == 401
+
+    def test_missing_auth_no_override_returns_401(self):
+        client = TestClient(_make_app_no_auth_override())
         resp = client.patch(
             f"/api/v1/reports/{uuid.uuid4()}/photo",
             files={"photo": ("test.jpg", b"bytes", "image/jpeg")},
@@ -1428,18 +1432,15 @@ class TestUploadPhotoEndpoint:
         data = resp.json()
         assert "photo_url" in data
 
-    def test_missing_auth_returns_401(self):
-        client = TestClient(_make_app_no_auth_override())
-        resp = client.patch(
-            f"/api/v1/reports/{uuid.uuid4()}/photo",
-            files={"photo": ("test.jpg", b"bytes", "image/jpeg")},
-        )
-        assert resp.status_code == 401
-
 
 class TestGetReportEndpoint:
     def test_missing_auth_returns_401(self):
         client = TestClient(_make_app_with_overrides())
+        resp = client.get(f"/api/v1/reports/{uuid.uuid4()}")
+        assert resp.status_code == 401
+
+    def test_missing_auth_no_override_returns_401(self):
+        client = TestClient(_make_app_no_auth_override())
         resp = client.get(f"/api/v1/reports/{uuid.uuid4()}")
         assert resp.status_code == 401
 
@@ -1479,11 +1480,6 @@ class TestGetReportEndpoint:
             )
         assert resp.status_code == 403
 
-    def test_missing_auth_returns_401(self):
-        client = TestClient(_make_app_no_auth_override())
-        resp = client.get(f"/api/v1/reports/{uuid.uuid4()}")
-        assert resp.status_code == 401
-
 
 class TestNearbyReportsEndpoint:
     def test_no_auth_required(self):
@@ -1511,8 +1507,6 @@ class TestNearbyReportsEndpoint:
         assert resp.status_code == 422
 
     def test_returns_list_of_nearby_items(self):
-        from datetime import timezone
-
         app = _make_app_with_overrides()
         client = TestClient(app)
 
