@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     SMS_GATEWAY: str = "console"  # console | africastalking | twilio
     AFRICASTALKING_API_KEY: str = ""
     AFRICASTALKING_USERNAME: str = ""
-    
+
     # Storage
     storage_backend: str = "mock"
     s3_endpoint_url: str | None = None
