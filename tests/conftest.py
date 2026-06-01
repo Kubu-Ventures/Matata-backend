@@ -28,7 +28,7 @@ os.environ.setdefault("S3_ENDPOINT_URL", "")
 os.environ.setdefault("GEOCODING_PROVIDER", "mock")
 os.environ.setdefault("GOOGLE_GEOCODING_API_KEY", "")
 os.environ.setdefault("BUILDING_FOOTPRINT_SEARCH_RADIUS_M", "30")
-os.environ.setdefault("CELERY_BROKER_URL", "memory://")   # in-memory, no Redis needed
+os.environ.setdefault("CELERY_BROKER_URL", "memory://")  # in-memory, no Redis needed
 os.environ.setdefault("CELERY_RESULT_BACKEND", "cache+memory://")  # in-memory
 from unittest.mock import AsyncMock  # noqa: E402
 
@@ -46,10 +46,12 @@ def pytest_configure(config):
     3. Tasks execute inline without a running worker.
     """
     from app.workers.celery_app import celery_app
+
     celery_app.conf.update(
         task_always_eager=True,
         task_eager_propagates=True,
     )
+
 
 @pytest.fixture
 def anyio_backend():

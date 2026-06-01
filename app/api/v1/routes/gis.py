@@ -113,12 +113,14 @@ async def match_building(
     # ── Cache result ─────────────────────────────────────────────────────────
     await redis.set(
         cache_key,
-        json.dumps({
-            "building_id": str(match.building_id) if match.building_id else None,
-            "footprint_geojson": match.footprint_geojson,
-            "confidence": match.confidence,
-            "distance_m": match.distance_m,
-        }),
+        json.dumps(
+            {
+                "building_id": str(match.building_id) if match.building_id else None,
+                "footprint_geojson": match.footprint_geojson,
+                "confidence": match.confidence,
+                "distance_m": match.distance_m,
+            }
+        ),
         ex=_CACHE_TTL_S,
     )
 

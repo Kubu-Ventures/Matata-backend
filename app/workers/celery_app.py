@@ -58,7 +58,7 @@ celery_app.conf.update(
     # Worker prefetch: 1 task at a time prevents slow tasks from starving the queue.
     worker_prefetch_multiplier=1,
     # Retry policy defaults
-    task_default_retry_delay=30,   # seconds
+    task_default_retry_delay=30,  # seconds
     task_max_retries=3,
     # Queue routing
     task_routes={

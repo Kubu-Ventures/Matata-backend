@@ -29,7 +29,9 @@ _BUILDING_ID_STR = str(_BUILDING_ID)
 _FOOTPRINT_GEOJSON = '{"type":"Polygon","coordinates":[[[36.8,−1.3],[36.81,−1.3],[36.81,−1.29],[36.8,−1.29],[36.8,−1.3]]]}'
 
 
-def _make_row(building_id=_BUILDING_ID, footprint_geojson=_FOOTPRINT_GEOJSON, distance_m=10.0):
+def _make_row(
+    building_id=_BUILDING_ID, footprint_geojson=_FOOTPRINT_GEOJSON, distance_m=10.0
+):
     """Return a MagicMock that behaves like a SQLAlchemy Row."""
     row = MagicMock()
     row.id = str(building_id)
@@ -321,9 +323,7 @@ class TestGeocodingFactory:
     def test_returns_mock_provider(self, monkeypatch):
         from app.services import geocoding_service
 
-        monkeypatch.setattr(
-            geocoding_service.settings, "GEOCODING_PROVIDER", "mock"
-        )
+        monkeypatch.setattr(geocoding_service.settings, "GEOCODING_PROVIDER", "mock")
         provider = geocoding_service.get_geocoding_provider()
         assert isinstance(provider, geocoding_service.MockGeocodingProvider)
 

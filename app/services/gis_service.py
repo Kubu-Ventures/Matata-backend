@@ -20,7 +20,6 @@ Matching sequence (spec §9.2):
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass
 from typing import Optional
 from uuid import UUID
@@ -116,9 +115,7 @@ class GISService:
 
         # Step 3: landmark geocoding fallback
         if landmark_description and geocoding_provider is not None:
-            match = self._landmark_geocoding(
-                landmark_description, geocoding_provider
-            )
+            match = self._landmark_geocoding(landmark_description, geocoding_provider)
             if match:
                 return match
 
@@ -150,8 +147,7 @@ class GISService:
         # none(0) < minimal(1) < partial(2) < destroyed(3)
         # PostgreSQL enum comparison uses declaration order.
         self._db.execute(
-            text(
-                """
+            text("""
                 UPDATE building
                 SET
                     current_severity = COALESCE(
@@ -173,8 +169,7 @@ class GISService:
                     ),
                     last_report_at = NOW()
                 WHERE id = :building_id
-                """
-            ),
+                """),
             {"building_id": str(building_id)},
         )
         self._db.flush()
@@ -186,8 +181,7 @@ class GISService:
     def _point_in_polygon(self, lat: float, lng: float) -> Optional[BuildingMatch]:
         """Step 1 — exact point-in-polygon query."""
         row = self._db.execute(
-            text(
-                """
+            text("""
                 SELECT
                     id,
                     ST_AsGeoJSON(footprint) AS footprint_geojson
@@ -197,8 +191,7 @@ class GISService:
                     ST_SetSRID(ST_Point(:lng, :lat), 4326)
                 )
                 LIMIT 1
-                """
-            ),
+                """),
             {"lat": lat, "lng": lng},
         ).fetchone()
 
@@ -218,8 +211,7 @@ class GISService:
     ) -> Optional[BuildingMatch]:
         """Step 2 — nearest-centroid within ``search_radius_m`` metres."""
         row = self._db.execute(
-            text(
-                """
+            text("""
                 SELECT
                     id,
                     ST_AsGeoJSON(footprint)                                   AS footprint_geojson,
@@ -235,8 +227,7 @@ class GISService:
                 )
                 ORDER BY distance_m ASC
                 LIMIT 1
-                """
-            ),
+                """),
             {"lat": lat, "lng": lng, "radius_m": search_radius_m},
         ).fetchone()
 
@@ -308,9 +299,7 @@ class GISService:
         Returns:
             Search radius in metres.
         """
-        default = float(
-            getattr(settings, "BUILDING_FOOTPRINT_SEARCH_RADIUS_M", 30)
-        )
+        default = float(getattr(settings, "BUILDING_FOOTPRINT_SEARCH_RADIUS_M", 30))
         if accuracy_m is not None and accuracy_m > 50:
             return min(accuracy_m * 1.5, 100.0)
         return default

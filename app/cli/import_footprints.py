@@ -139,8 +139,7 @@ def _geometry_hash(geometry: dict) -> str:
 # Upsert logic
 # ---------------------------------------------------------------------------
 
-_UPSERT_SQL = text(
-    """
+_UPSERT_SQL = text("""
     INSERT INTO building (
         footprint,
         centroid,
@@ -160,8 +159,7 @@ _UPSERT_SQL = text(
         centroid         = EXCLUDED.centroid,
         updated_at       = NOW()
     RETURNING (xmax = 0) AS inserted
-    """
-)
+    """)
 
 
 def _upsert_batch(
@@ -192,17 +190,13 @@ def _upsert_batch(
 
 def _verify_indexes(db: Session) -> None:
     """Log the status of GIST spatial indexes on the building table."""
-    rows = db.execute(
-        text(
-            """
+    rows = db.execute(text("""
             SELECT indexname, indexdef
             FROM pg_indexes
             WHERE tablename = 'building'
               AND indexdef ILIKE '%gist%'
             ORDER BY indexname
-            """
-        )
-    ).fetchall()
+            """)).fetchall()
 
     if rows:
         for row in rows:

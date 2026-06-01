@@ -93,10 +93,8 @@ def _get_sync_session_factory() -> sessionmaker:
     global _sync_engine, _sync_session_factory
 
     if _sync_session_factory is None:
-        _sync_url = (
-            settings.DATABASE_URL
-            .replace("+asyncpg", "")
-            .replace("+aiosqlite", "")
+        _sync_url = settings.DATABASE_URL.replace("+asyncpg", "").replace(
+            "+aiosqlite", ""
         )
         _sync_engine = create_engine(
             _sync_url,

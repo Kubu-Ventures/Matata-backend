@@ -120,13 +120,11 @@ def _match_building_impl(report_id: str) -> dict:
     try:
         # ── 1. Load report ────────────────────────────────────────────────────
         row = db.execute(
-            text(
-                """
+            text("""
                 SELECT id, lat, lng, gps_accuracy_m, landmark_description
                 FROM report
                 WHERE id = :report_id
-                """
-            ),
+                """),
             {"report_id": str(_report_id)},
         ).fetchone()
 
@@ -153,15 +151,13 @@ def _match_building_impl(report_id: str) -> dict:
         # ── 3. Write match result to report ───────────────────────────────────
         if match.building_id is not None:
             db.execute(
-                text(
-                    """
+                text("""
                     UPDATE report
                     SET
                         building_id                = :building_id,
                         footprint_match_confidence = :confidence
                     WHERE id = :report_id
-                    """
-                ),
+                    """),
                 {
                     "building_id": str(match.building_id),
                     "confidence": match.confidence,
@@ -171,13 +167,11 @@ def _match_building_impl(report_id: str) -> dict:
             gis.update_building_severity(match.building_id)
         else:
             db.execute(
-                text(
-                    """
+                text("""
                     UPDATE report
                     SET footprint_match_confidence = 0.0
                     WHERE id = :report_id
-                    """
-                ),
+                    """),
                 {"report_id": str(_report_id)},
             )
 
