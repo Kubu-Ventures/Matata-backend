@@ -24,11 +24,33 @@ os.environ.setdefault("STORAGE_BACKEND", "mock")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("S3_BUCKET_NAME", "")
 os.environ.setdefault("S3_ENDPOINT_URL", "")
-
+# ── New env vars added by GIS worker feature ─────────────────────────────────
+os.environ.setdefault("GEOCODING_PROVIDER", "mock")
+os.environ.setdefault("GOOGLE_GEOCODING_API_KEY", "")
+os.environ.setdefault("BUILDING_FOOTPRINT_SEARCH_RADIUS_M", "30")
+os.environ.setdefault("CELERY_BROKER_URL", "memory://")  # in-memory, no Redis needed
+os.environ.setdefault("CELERY_RESULT_BACKEND", "cache+memory://")  # in-memory
 from unittest.mock import AsyncMock  # noqa: E402
 
 # ── Standard imports (safe now that env is ready) ────────────────────────────
 import pytest  # noqa: E402
+
+
+# ── Configure Celery for tests after env is ready ────────────────────────────
+def pytest_configure(config):
+    """Force Celery into eager/synchronous mode for all tests.
+
+    This ensures that:
+    1. app.workers.gis_tasks imports successfully (no broker connection attempt).
+    2. @patch targets on app.workers.gis_tasks.* are resolvable.
+    3. Tasks execute inline without a running worker.
+    """
+    from app.workers.celery_app import celery_app
+
+    celery_app.conf.update(
+        task_always_eager=True,
+        task_eager_propagates=True,
+    )
 
 
 @pytest.fixture

@@ -33,6 +33,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
   redis:
     image: redis:7-alpine
     ports:
@@ -43,6 +44,23 @@ services:
       timeout: 5s
       retries: 10
       start_period: 60s
+
+  celery-gis:
+    build:
+      context: .
+      target: development
+    volumes:
+      - .:/app
+    command: >
+      celery -A app.workers.celery_app worker
+      -Q gis --concurrency 2 --loglevel info
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:
