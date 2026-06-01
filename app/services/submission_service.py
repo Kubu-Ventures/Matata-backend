@@ -38,7 +38,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from typing import Optional
+from datetime import datetime
+from typing import Optional, cast  # cast added here
 from uuid import UUID
 
 import bleach
@@ -741,7 +742,7 @@ async def get_nearby_reports(
                     if hasattr(rpt.damage_severity, "value")
                     else rpt.damage_severity
                 ),
-                "created_at": rpt.created_at.isoformat(),
+                "created_at": cast(datetime, rpt.created_at).isoformat(),
                 "similarity_score": round(score, 4),
             }
         )
