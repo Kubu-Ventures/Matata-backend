@@ -338,13 +338,17 @@ async def create_report(
         offline_queued_at:     Timestamp from offline queue (None for live submissions).
         image_bytes:           Raw photo binary (None for metadata-only offline path).
         image_content_type:    MIME type of the photo.
-        reporter_token:        Raw JWT or session token (hashed immediately, never stored).
+        reporter_token:        Raw JWT or session token (hashed immediately,
+                               never stored).
         reporter_trust_tier:   Tier from JWT payload (0 for anonymous).
         db:                    Async database session.
         redis:                 Async Redis client.
-        moderation_provider:   Injected for testing; defaults to factory-created instance.
-        storage_service:       Injected for testing; defaults to factory-created instance.
-        queue_service:         Injected for testing; defaults to factory-created instance.
+        moderation_provider:   Injected for testing; defaults to
+                               factory-created instance.
+        storage_service:       Injected for testing; defaults to
+                               factory-created instance.
+        queue_service:         Injected for testing; defaults to
+                               factory-created instance.
 
     Returns:
         The created ``Report`` ORM instance (not yet committed — caller commits).
