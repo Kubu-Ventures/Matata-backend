@@ -62,5 +62,22 @@ services:
       redis:
         condition: service_healthy
 
+  celery-ai:
+    build:
+      context: .
+      target: development
+    volumes:
+      - .:/app
+    command: >
+      celery -A app.workers.celery_app worker
+      -Q ai --concurrency 2 --loglevel info
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   postgres_data:

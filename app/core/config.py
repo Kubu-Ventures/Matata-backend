@@ -77,6 +77,16 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = ""
     CELERY_RESULT_BACKEND: str = ""
 
+    # ── AI / Vision worker ─────────────────────────────────────────────────────
+    # VISION_PROVIDER=mock        — deterministic stub (default, dev/CI).
+    # VISION_PROVIDER=openai      — GPT-4o (requires OPENAI_API_KEY).
+    # VISION_PROVIDER=anthropic   — Claude claude-opus-4-6 (requires ANTHROPIC_API_KEY).
+    VISION_PROVIDER: str = "mock"
+    OPENAI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
+    # Alert ops when the AI queue depth exceeds this value.
+    AI_PROCESSING_QUEUE_ALERT_DEPTH: int = 500
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

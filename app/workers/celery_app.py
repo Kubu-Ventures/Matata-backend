@@ -37,6 +37,7 @@ celery_app = Celery(
     backend=_result_backend,
     include=[
         "app.workers.gis_tasks",
+        "app.workers.ai_tasks",
     ],
 )
 
@@ -63,6 +64,7 @@ celery_app.conf.update(
     # Queue routing
     task_routes={
         "app.workers.gis_tasks.*": {"queue": "gis"},
+        "app.workers.ai_tasks.*": {"queue": "ai"},
     },
     # Default queue (for tasks without explicit routing)
     task_default_queue="default",
