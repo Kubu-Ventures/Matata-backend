@@ -45,15 +45,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from io import BytesIO
 from typing import Optional
 from uuid import UUID
 
-import imagehash  # type: ignore[import]
 import requests
 from celery import Task
 from celery.exceptions import MaxRetriesExceededError
-from PIL import Image as PILImage  # type: ignore[import]
+from io import BytesIO
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -139,17 +137,26 @@ def _download_image(photo_url: str) -> bytes:
 def _compute_phash(image_bytes: bytes) -> Optional[str]:
     """Compute a 64-bit DCT perceptual hash using the ``imagehash`` library.
 
+    Imports are deferred so that a missing ``imagehash`` package degrades
+    gracefully (returns ``None``) rather than breaking the module import.
+
     Args:
         image_bytes: Raw image binary.
 
     Returns:
-        64-character hex string, or ``None`` on failure.
+        Hex string representation of the pHash, or ``None`` on failure.
     """
     try:
+        import imagehash  # type: ignore[import]
+        from PIL import Image as PILImage  # type: ignore[import]
+
         img = PILImage.open(BytesIO(image_bytes))
         ph = imagehash.phash(img)
-        # imagehash returns a custom ImageHash object; convert to hex string.
+        # imagehash returns a custom ImageHash object; str() gives the hex form.
         return str(ph)
+    except ImportError:
+        logger.warning("imagehash/Pillow not installed — pHash computation skipped")
+        return None
     except Exception as exc:  # noqa: BLE001
         logger.warning("pHash computation failed: %s", type(exc).__name__)
         return None
@@ -177,22 +184,26 @@ def _publish_photo_request_notification(report_id: str, db: Session) -> None:
     ).fetchone()
 
     if row is None:
-        logger.warning("Cannot dispatch photo request: report %s not found", report_id)
+        logger.warning(
+            "Cannot dispatch photo request: report %s not found", report_id
+        )
         return
 
     db.execute(
         text("""
             INSERT INTO notification (type, recipient_hash, report_id, status)
             VALUES (
-                'reporter_photo_request'::notification_type_enum,
+                'reporter_photo_request',
                 :recipient_hash,
                 :report_id,
-                'pending'::notification_status_enum
+                'pending'
             )
         """),
         {"recipient_hash": row.reporter_token_hash, "report_id": report_id},
     )
-    logger.info("Photo-request notification queued for report %s", report_id)
+    logger.info(
+        "Photo-request notification queued for report %s", report_id
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +270,9 @@ def _process_report_image_impl(
         )
 
         if not photo_url:
-            logger.warning("AI task: report %s has no photo_url — skipping", _report_id)
+            logger.warning(
+                "AI task: report %s has no photo_url — skipping", _report_id
+            )
             return {
                 "photo_status": "ai_processing_failed",
                 "ai_quality_score": None,
@@ -297,11 +310,15 @@ def _process_report_image_impl(
                     UPDATE report
                     SET
                         ai_quality_score = :score,
-                        photo_status     = 'insufficient_quality'::photo_status_enum,
-                        updated_at       = NOW()
+                        photo_status     = :photo_status,
+                        updated_at       = CURRENT_TIMESTAMP
                     WHERE id = :report_id
                 """),
-                {"score": result.quality_score, "report_id": str(_report_id)},
+                {
+                    "score": result.quality_score,
+                    "photo_status": "insufficient_quality",
+                    "report_id": str(_report_id),
+                },
             )
             _publish_photo_request_notification(str(_report_id), db)
             db.commit()
@@ -334,12 +351,12 @@ def _process_report_image_impl(
                 UPDATE report
                 SET
                     ai_quality_score        = :quality_score,
-                    ai_severity_prediction  = :severity::report_damage_severity_enum,
+                    ai_severity_prediction  = :severity,
                     ai_confidence           = :confidence,
                     ai_divergence           = :divergence,
                     photo_phash             = :phash,
-                    photo_status            = 'accepted'::photo_status_enum,
-                    updated_at              = NOW()
+                    photo_status            = :photo_status,
+                    updated_at              = CURRENT_TIMESTAMP
                 WHERE id = :report_id
             """),
             {
@@ -348,6 +365,7 @@ def _process_report_image_impl(
                 "confidence": result.ai_confidence,
                 "divergence": divergence,
                 "phash": photo_phash,
+                "photo_status": "accepted",
                 "report_id": str(_report_id),
             },
         )
@@ -454,11 +472,11 @@ def process_report_image(
                         text("""
                             UPDATE report
                             SET
-                                photo_status = 'ai_processing_failed'::photo_status_enum,
-                                updated_at   = NOW()
+                                photo_status = :photo_status,
+                                updated_at   = CURRENT_TIMESTAMP
                             WHERE id = :report_id
                         """),
-                        {"report_id": report_id},
+                        {"photo_status": "ai_processing_failed", "report_id": report_id},
                     )
                     db.commit()
                 finally:

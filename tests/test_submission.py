@@ -127,7 +127,6 @@ class TestRekognitionModerationProvider:
         )
 
         provider = RekognitionModerationProvider()
-        # Simulate aiobotocore being absent by making the import fail.
         with patch.dict(
             "sys.modules", {"aiobotocore": None, "aiobotocore.session": None}
         ):
@@ -136,7 +135,7 @@ class TestRekognitionModerationProvider:
 
     @pytest.mark.asyncio
     async def test_passes_when_no_labels(self):
-        pytest.importorskip("aiobotocore")  # skip if not installed
+        pytest.importorskip("aiobotocore")
         from app.services.moderation_service import RekognitionModerationProvider
 
         provider = RekognitionModerationProvider()
@@ -229,7 +228,6 @@ class TestMockStorageService:
         from app.services.storage_service import MockStorageService
 
         svc = MockStorageService()
-        # Should not raise.
         await svc.delete_image("reports/nonexistent/key.jpg")
 
     def test_satisfies_protocol(self):
@@ -415,7 +413,6 @@ class TestRedisQueueService:
         redis = AsyncMock()
         redis.xadd = AsyncMock(side_effect=RuntimeError("Redis down"))
         svc = RedisQueueService(redis)
-        # Should not raise:
         await svc.publish_gis_job(uuid.uuid4())
         await svc.publish_ai_job(uuid.uuid4())
 
@@ -495,7 +492,6 @@ class TestRateLimitHelper:
         redis = AsyncMock()
         redis.incr = AsyncMock(return_value=1)
         redis.expire = AsyncMock()
-        # Should not raise.
         await _check_rate_limit("hash", redis)
 
     @pytest.mark.asyncio
@@ -506,7 +502,7 @@ class TestRateLimitHelper:
         )
 
         redis = AsyncMock()
-        redis.incr = AsyncMock(return_value=11)  # > 10
+        redis.incr = AsyncMock(return_value=11)
         redis.expire = AsyncMock()
         with pytest.raises(RateLimitExceededError):
             await _check_rate_limit("hash", redis)
@@ -527,7 +523,7 @@ class TestRateLimitHelper:
         from app.services.submission_service import _check_rate_limit
 
         redis = AsyncMock()
-        redis.incr = AsyncMock(return_value=5)  # Not first
+        redis.incr = AsyncMock(return_value=5)
         redis.expire = AsyncMock()
         await _check_rate_limit("hash", redis)
         redis.expire.assert_not_awaited()
@@ -539,12 +535,19 @@ class TestRateLimitHelper:
 
 
 def _make_db_mock():
-    """Return an AsyncSession mock with the minimal interface needed."""
+    """Return an AsyncSession mock with the minimal interface needed.
+
+    scalar_one_or_none() is configured as a plain MagicMock (not AsyncMock)
+    because SQLAlchemy's CursorResult.scalar_one_or_none() is synchronous even
+    when the session is async — only the execute() call itself is awaitable.
+    """
     db = AsyncMock()
     db.add = MagicMock()
     db.flush = AsyncMock()
     db.commit = AsyncMock()
-    db.execute = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none = MagicMock(return_value=None)
+    db.execute = AsyncMock(return_value=mock_result)
     return db
 
 
@@ -621,7 +624,6 @@ class TestCreateReport:
             queue_service=queue,
         )
         assert report.id in queue.gis_jobs
-        # No AI job without a photo.
         assert report.id not in queue.ai_jobs
 
     @pytest.mark.asyncio
@@ -650,7 +652,6 @@ class TestCreateReport:
         assert report.photo_url is not None
         assert report.id in queue.gis_jobs
         assert report.id in queue.ai_jobs
-        # One image should be in mock storage.
         assert len(storage.store) == 1
 
     @pytest.mark.asyncio
@@ -683,9 +684,7 @@ class TestCreateReport:
                 queue_service=MockQueueService(),
             )
 
-        # Nothing written to storage after rejection.
         assert len(storage.store) == 0
-        # Audit log entry was written.
         db.add.assert_called()
         db.flush.assert_awaited()
 
@@ -701,7 +700,7 @@ class TestCreateReport:
 
         db = _make_db_mock()
         redis = _make_redis_mock()
-        redis.incr = AsyncMock(return_value=11)  # Over the limit
+        redis.incr = AsyncMock(return_value=11)
 
         with pytest.raises(RateLimitExceededError):
             await create_report(
@@ -782,9 +781,8 @@ class TestCreateReport:
             storage_service=MockStorageService(),
             queue_service=MockQueueService(),
         )
-        # Raw token must not appear anywhere.
         assert _TOKEN not in (report.reporter_token_hash or "")
-        assert len(report.reporter_token_hash) == 64  # SHA-256 hex
+        assert len(report.reporter_token_hash) == 64
 
 
 # ===========================================================================
@@ -914,7 +912,6 @@ class TestAddPhotoToReport:
                 moderation_provider=provider,
             )
 
-        # Audit log written.
         db.add.assert_called()
 
 
@@ -1017,7 +1014,6 @@ class TestGetNearbyReports:
             lat=1.234, lng=36.789, radius_m=30, db=db, redis=redis
         )
         assert len(results) == 1
-        # Database should not be touched.
         db.execute.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1048,7 +1044,6 @@ class TestGetNearbyReports:
             lat=1.234, lng=36.789, radius_m=30, db=db, redis=redis
         )
         assert isinstance(results, list)
-        # Results cached.
         redis.set.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1066,7 +1061,6 @@ class TestGetNearbyReports:
         redis = _make_redis_mock()
         redis.get = AsyncMock(return_value=None)
 
-        # Should not raise even with excessive radius.
         await get_nearby_reports(lat=0.0, lng=0.0, radius_m=9999, db=db, redis=redis)
 
 
@@ -1110,8 +1104,6 @@ class TestReportCreateSchema:
                 infrastructure_type="residential",
                 damage_severity="partial",
             )
-        # Pydantic wraps model_validator messages under "Value error, ..."
-        # Check the stringified error contains our custom message fragment.
         assert "coordinates" in str(exc_info.value) or "landmark" in str(exc_info.value)
 
     def test_invalid_crisis_type_rejected(self):
@@ -1138,27 +1130,52 @@ class TestReportCreateSchema:
                 crisis_type="flood",
                 infrastructure_type="residential",
                 damage_severity="partial",
-                landmark_description="x" * 501,  # Exceeds 500
+                landmark_description="x" * 501,
             )
 
 
 # ===========================================================================
-# Report routes (integration-style, no real DB/Redis)
+# Route test helpers
 # ===========================================================================
 
+# Minimal valid metadata so form-field validation never fires before auth.
+_VALID_REPORT_METADATA = json.dumps(
+    {
+        "crisis_type": "flood",
+        "infrastructure_type": "residential",
+        "damage_severity": "partial",
+        "lat": 1.0,
+        "lng": 36.0,
+    }
+)
 
-def _make_app_with_overrides():
-    """Build the FastAPI app with all external dependencies mocked out."""
-    from fastapi import FastAPI
+# Fixed user payload returned by the auth override in _make_app_with_overrides.
+_MOCK_USER_PAYLOAD = {
+    "sub": _get_token_hash(),
+    "role": "anonymous_reporter",
+    "jti": "test-jti",
+}
 
-    from app.api.v1.routes.auth import get_current_user
-    from app.api.v1.routes.auth import router as auth_router
-    from app.api.v1.routes.reports import router as reports_router
-    from app.core.dependencies import get_db, get_redis
 
-    app = FastAPI()
+def _make_db_override():
+    """Async generator yielding a DB mock with synchronous scalar_one_or_none."""
+    async def _override():
+        db = AsyncMock()
+        db.add = MagicMock()
+        db.flush = AsyncMock()
+        db.commit = AsyncMock()
+        mock_result = MagicMock()
+        # scalar_one_or_none() is synchronous in SQLAlchemy 2.x CursorResult —
+        # must be MagicMock, NOT AsyncMock, or it returns an unawaited coroutine.
+        mock_result.scalar_one_or_none = MagicMock(return_value=None)
+        db.execute = AsyncMock(return_value=mock_result)
+        yield db
+    return _override
 
-    async def override_redis():
+
+def _make_redis_override():
+    """Async generator yielding a Redis mock."""
+    async def _override():
         redis = AsyncMock()
         redis.incr = AsyncMock(return_value=1)
         redis.expire = AsyncMock()
@@ -1166,65 +1183,77 @@ def _make_app_with_overrides():
         redis.set = AsyncMock()
         redis.xadd = AsyncMock()
         yield redis
+    return _override
 
-    async def override_db():
-        db = AsyncMock()
-        db.add = MagicMock()
-        db.flush = AsyncMock()
-        db.commit = AsyncMock()
-        db.execute = AsyncMock()
-        yield db
+
+def _make_app_with_overrides():
+    """FastAPI app with DB, Redis AND auth all mocked.
+
+    get_current_user is overridden at its definition site in
+    app.api.v1.routes.auth so that BOTH the direct dependency injection AND
+    any re-export via app.core.dependencies are covered.
+    """
+    from fastapi import FastAPI
+
+    from app.api.v1.routes.auth import get_current_user, router as auth_router
+    from app.api.v1.routes.reports import router as reports_router
+    from app.core.dependencies import get_db, get_redis
+
+    app = FastAPI()
 
     async def override_current_user():
-        """Return a fake authenticated user payload."""
-        return {
-            "sub": _get_token_hash(),
-            "role": "anonymous_reporter",
-            "tier": 0,
-        }
+        return _MOCK_USER_PAYLOAD
 
-    app.dependency_overrides[get_redis] = override_redis
-    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_db] = _make_db_override()
+    app.dependency_overrides[get_redis] = _make_redis_override()
     app.dependency_overrides[get_current_user] = override_current_user
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(reports_router, prefix="/api/v1")
     return app
 
 
-def _make_valid_token():
-    from app.services.auth_service import Role, _build_access_token
+def _make_app_no_auth_override():
+    """FastAPI app with DB/Redis mocked but real auth enforcement intact.
 
-    return _build_access_token(sub=_get_token_hash(), role=Role.anonymous_reporter)
+    Used by tests that must verify 401 is returned when no token is supplied.
+    """
+    from fastapi import FastAPI
+
+    from app.api.v1.routes.auth import router as auth_router
+    from app.api.v1.routes.reports import router as reports_router
+    from app.core.dependencies import get_db, get_redis
+
+    app = FastAPI()
+
+    app.dependency_overrides[get_db] = _make_db_override()
+    app.dependency_overrides[get_redis] = _make_redis_override()
+    # get_current_user intentionally NOT overridden — real auth runs.
+    app.include_router(auth_router, prefix="/api/v1")
+    app.include_router(reports_router, prefix="/api/v1")
+    return app
+
+
+# ===========================================================================
+# Report routes (integration-style, no real DB/Redis)
+# ===========================================================================
 
 
 class TestSubmitReportEndpoint:
     def test_missing_auth_returns_401(self):
-        client = TestClient(_make_app_with_overrides())
-        resp = client.post("/api/v1/reports", data={"metadata": "{}"})
-        assert resp.status_code == 401
-
-    def test_missing_auth_no_override_returns_401(self):
+        """No token → auth dependency must reject with 401."""
         client = TestClient(_make_app_no_auth_override())
-        resp = client.post("/api/v1/reports", data={"metadata": "{}"})
+        resp = client.post(
+            "/api/v1/reports", data={"metadata": _VALID_REPORT_METADATA}
+        )
         assert resp.status_code == 401
 
     def test_invalid_metadata_json_returns_422(self):
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-        token = _make_valid_token()
-
-        resp = client.post(
-            "/api/v1/reports",
-            data={"metadata": "not-json"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
+        client = TestClient(_make_app_with_overrides())
+        resp = client.post("/api/v1/reports", data={"metadata": "not-json"})
         assert resp.status_code == 422
 
     def test_missing_location_returns_422(self):
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-        token = _make_valid_token()
-
+        client = TestClient(_make_app_with_overrides())
         metadata = json.dumps(
             {
                 "crisis_type": "flood",
@@ -1233,100 +1262,49 @@ class TestSubmitReportEndpoint:
                 # No lat/lng and no landmark_description
             }
         )
-        resp = client.post(
-            "/api/v1/reports",
-            data={"metadata": metadata},
-            headers={"Authorization": f"Bearer {token}"},
-        )
+        resp = client.post("/api/v1/reports", data={"metadata": metadata})
         assert resp.status_code == 422
 
     def test_rate_limit_returns_429(self):
         from app.services.submission_service import RateLimitExceededError
 
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-        token = _make_valid_token()
-
-        metadata = json.dumps(
-            {
-                "crisis_type": "flood",
-                "infrastructure_type": "residential",
-                "damage_severity": "partial",
-                "lat": 1.0,
-                "lng": 36.0,
-            }
-        )
-
+        client = TestClient(_make_app_with_overrides())
         with patch(
             "app.api.v1.routes.reports.create_report",
             new=AsyncMock(side_effect=RateLimitExceededError("limit")),
         ):
             resp = client.post(
-                "/api/v1/reports",
-                data={"metadata": metadata},
-                headers={"Authorization": f"Bearer {token}"},
+                "/api/v1/reports", data={"metadata": _VALID_REPORT_METADATA}
             )
         assert resp.status_code == 429
 
     def test_moderation_rejection_returns_422(self):
         from app.services.submission_service import ModerationRejectionError
 
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-        token = _make_valid_token()
-
-        metadata = json.dumps(
-            {
-                "crisis_type": "flood",
-                "infrastructure_type": "residential",
-                "damage_severity": "partial",
-                "lat": 1.0,
-                "lng": 36.0,
-            }
-        )
-
+        client = TestClient(_make_app_with_overrides())
         with patch(
             "app.api.v1.routes.reports.create_report",
             new=AsyncMock(side_effect=ModerationRejectionError("bad")),
         ):
             resp = client.post(
-                "/api/v1/reports",
-                data={"metadata": metadata},
-                headers={"Authorization": f"Bearer {token}"},
+                "/api/v1/reports", data={"metadata": _VALID_REPORT_METADATA}
             )
         assert resp.status_code == 422
-        # Generic message — must not reveal rejection reason.
-        body = resp.json()
-        assert "could not be accepted" in body.get("detail", "").lower()
+        assert "could not be accepted" in resp.json().get("detail", "").lower()
 
     def test_successful_submission_returns_201(self):
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-        token = _make_valid_token()
-
-        metadata = json.dumps(
-            {
-                "crisis_type": "flood",
-                "infrastructure_type": "residential",
-                "damage_severity": "partial",
-                "lat": 1.0,
-                "lng": 36.0,
-            }
-        )
-
         mock_report = MagicMock()
         mock_report.id = uuid.uuid4()
         mock_report.status = ReportStatus.pending
         mock_report.building_id = None
 
+        client = TestClient(_make_app_with_overrides())
         with patch(
             "app.api.v1.routes.reports.create_report",
             new=AsyncMock(return_value=mock_report),
         ):
             resp = client.post(
-                "/api/v1/reports",
-                data={"metadata": metadata},
-                headers={"Authorization": f"Bearer {token}"},
+                "/api/v1/reports", data={"metadata": _VALID_REPORT_METADATA}
             )
         assert resp.status_code == 201
         data = resp.json()
@@ -1336,14 +1314,6 @@ class TestSubmitReportEndpoint:
 
 class TestUploadPhotoEndpoint:
     def test_missing_auth_returns_401(self):
-        client = TestClient(_make_app_with_overrides())
-        resp = client.patch(
-            f"/api/v1/reports/{uuid.uuid4()}/photo",
-            files={"photo": ("test.jpg", b"bytes", "image/jpeg")},
-        )
-        assert resp.status_code == 401
-
-    def test_missing_auth_no_override_returns_401(self):
         client = TestClient(_make_app_no_auth_override())
         resp = client.patch(
             f"/api/v1/reports/{uuid.uuid4()}/photo",
@@ -1354,71 +1324,53 @@ class TestUploadPhotoEndpoint:
     def test_not_found_returns_404(self):
         from app.services.submission_service import ReportNotFoundError
 
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-        token = _make_valid_token()
-        rid = uuid.uuid4()
-
+        client = TestClient(_make_app_with_overrides())
         with patch(
             "app.api.v1.routes.reports.add_photo_to_report",
             new=AsyncMock(side_effect=ReportNotFoundError("not found")),
         ):
             resp = client.patch(
-                f"/api/v1/reports/{rid}/photo",
+                f"/api/v1/reports/{uuid.uuid4()}/photo",
                 files={"photo": ("test.jpg", b"bytes", "image/jpeg")},
-                headers={"Authorization": f"Bearer {token}"},
             )
         assert resp.status_code == 404
 
     def test_ownership_error_returns_403(self):
         from app.services.submission_service import ReportOwnershipError
 
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-        token = _make_valid_token()
-        rid = uuid.uuid4()
-
+        client = TestClient(_make_app_with_overrides())
         with patch(
             "app.api.v1.routes.reports.add_photo_to_report",
             new=AsyncMock(side_effect=ReportOwnershipError("forbidden")),
         ):
             resp = client.patch(
-                f"/api/v1/reports/{rid}/photo",
+                f"/api/v1/reports/{uuid.uuid4()}/photo",
                 files={"photo": ("test.jpg", b"bytes", "image/jpeg")},
-                headers={"Authorization": f"Bearer {token}"},
             )
         assert resp.status_code == 403
 
     def test_moderation_rejection_returns_422(self):
         from app.services.submission_service import ModerationRejectionError
 
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-        token = _make_valid_token()
-        rid = uuid.uuid4()
-
+        client = TestClient(_make_app_with_overrides())
         with patch(
             "app.api.v1.routes.reports.add_photo_to_report",
             new=AsyncMock(side_effect=ModerationRejectionError("bad")),
         ):
             resp = client.patch(
-                f"/api/v1/reports/{rid}/photo",
+                f"/api/v1/reports/{uuid.uuid4()}/photo",
                 files={"photo": ("test.jpg", b"bytes", "image/jpeg")},
-                headers={"Authorization": f"Bearer {token}"},
             )
         assert resp.status_code == 422
 
     def test_success_returns_200(self):
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-        token = _make_valid_token()
         rid = uuid.uuid4()
-
         mock_report = MagicMock()
         mock_report.id = rid
         mock_report.photo_url = f"reports/{rid}/abc.jpg"
         mock_report.photo_status = MagicMock(value="processing")
 
+        client = TestClient(_make_app_with_overrides())
         with patch(
             "app.api.v1.routes.reports.add_photo_to_report",
             new=AsyncMock(return_value=mock_report),
@@ -1426,20 +1378,13 @@ class TestUploadPhotoEndpoint:
             resp = client.patch(
                 f"/api/v1/reports/{rid}/photo",
                 files={"photo": ("test.jpg", b"bytes", "image/jpeg")},
-                headers={"Authorization": f"Bearer {token}"},
             )
         assert resp.status_code == 200
-        data = resp.json()
-        assert "photo_url" in data
+        assert "photo_url" in resp.json()
 
 
 class TestGetReportEndpoint:
     def test_missing_auth_returns_401(self):
-        client = TestClient(_make_app_with_overrides())
-        resp = client.get(f"/api/v1/reports/{uuid.uuid4()}")
-        assert resp.status_code == 401
-
-    def test_missing_auth_no_override_returns_401(self):
         client = TestClient(_make_app_no_auth_override())
         resp = client.get(f"/api/v1/reports/{uuid.uuid4()}")
         assert resp.status_code == 401
@@ -1447,46 +1392,29 @@ class TestGetReportEndpoint:
     def test_not_found_returns_404(self):
         from app.services.submission_service import ReportNotFoundError
 
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-        token = _make_valid_token()
-        rid = uuid.uuid4()
-
+        client = TestClient(_make_app_with_overrides())
         with patch(
             "app.api.v1.routes.reports.get_own_report",
             new=AsyncMock(side_effect=ReportNotFoundError("not found")),
         ):
-            resp = client.get(
-                f"/api/v1/reports/{rid}",
-                headers={"Authorization": f"Bearer {token}"},
-            )
+            resp = client.get(f"/api/v1/reports/{uuid.uuid4()}")
         assert resp.status_code == 404
 
     def test_ownership_error_returns_403(self):
         from app.services.submission_service import ReportOwnershipError
 
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-        token = _make_valid_token()
-        rid = uuid.uuid4()
-
+        client = TestClient(_make_app_with_overrides())
         with patch(
             "app.api.v1.routes.reports.get_own_report",
             new=AsyncMock(side_effect=ReportOwnershipError("forbidden")),
         ):
-            resp = client.get(
-                f"/api/v1/reports/{rid}",
-                headers={"Authorization": f"Bearer {token}"},
-            )
+            resp = client.get(f"/api/v1/reports/{uuid.uuid4()}")
         assert resp.status_code == 403
 
 
 class TestNearbyReportsEndpoint:
     def test_no_auth_required(self):
-        """GET /reports/nearby is public — no auth needed."""
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-
+        client = TestClient(_make_app_with_overrides())
         with patch(
             "app.api.v1.routes.reports.get_nearby_reports",
             new=AsyncMock(return_value=[]),
@@ -1503,13 +1431,9 @@ class TestNearbyReportsEndpoint:
     def test_radius_exceeding_100_clamped_in_query_validation(self):
         client = TestClient(_make_app_with_overrides())
         resp = client.get("/api/v1/reports/nearby?lat=1.0&lng=36.0&radius_m=999")
-        # FastAPI query validation should reject values > 100.
         assert resp.status_code == 422
 
     def test_returns_list_of_nearby_items(self):
-        app = _make_app_with_overrides()
-        client = TestClient(app)
-
         mock_results = [
             {
                 "id": str(uuid.uuid4()),
@@ -1522,6 +1446,7 @@ class TestNearbyReportsEndpoint:
             }
         ]
 
+        client = TestClient(_make_app_with_overrides())
         with patch(
             "app.api.v1.routes.reports.get_nearby_reports",
             new=AsyncMock(return_value=mock_results),
@@ -1531,38 +1456,3 @@ class TestNearbyReportsEndpoint:
         data = resp.json()
         assert len(data) == 1
         assert "similarity_score" in data[0]
-
-
-def _make_app_no_auth_override():
-    """App with DB/Redis mocked but real auth dependency (for 401 tests)."""
-    from fastapi import FastAPI
-
-    from app.api.v1.routes.auth import router as auth_router
-    from app.api.v1.routes.reports import router as reports_router
-    from app.core.dependencies import get_db, get_redis
-
-    app = FastAPI()
-
-    async def override_redis():
-        redis = AsyncMock()
-        redis.incr = AsyncMock(return_value=1)
-        redis.expire = AsyncMock()
-        redis.get = AsyncMock(return_value=None)
-        redis.set = AsyncMock()
-        redis.xadd = AsyncMock()
-        yield redis
-
-    async def override_db():
-        db = AsyncMock()
-        db.add = MagicMock()
-        db.flush = AsyncMock()
-        db.commit = AsyncMock()
-        db.execute = AsyncMock()
-        yield db
-
-    app.dependency_overrides[get_redis] = override_redis
-    app.dependency_overrides[get_db] = override_db
-    # Note: get_current_user is NOT overridden — real auth runs.
-    app.include_router(auth_router, prefix="/api/v1")
-    app.include_router(reports_router, prefix="/api/v1")
-    return app
