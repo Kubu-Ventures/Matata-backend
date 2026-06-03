@@ -20,7 +20,7 @@ Retry policy:
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import List, Optional, Tuple, cast
 from uuid import UUID
 
 import redis as sync_redis
@@ -78,10 +78,14 @@ def _invalidate_gis_caches(redis_client: sync_redis.Redis) -> None:
     The heatmap keys use a pattern scan so that all bbox variants are cleared.
     Pattern scans are done with SCAN (non-blocking) rather than KEYS.
     """
-    cursor = 0
+    cursor: int = 0
     pattern = f"{_CACHE_NS}:heatmap:*"
     while True:
-        cursor, keys = redis_client.scan(cursor=cursor, match=pattern, count=100)
+        scan_result = cast(
+            Tuple[int, List[bytes]],
+            redis_client.scan(cursor=cursor, match=pattern, count=100),
+        )
+        cursor, keys = scan_result
         if keys:
             redis_client.delete(*keys)
         if cursor == 0:

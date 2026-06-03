@@ -30,6 +30,10 @@ os.environ.setdefault("GOOGLE_GEOCODING_API_KEY", "")
 os.environ.setdefault("BUILDING_FOOTPRINT_SEARCH_RADIUS_M", "30")
 os.environ.setdefault("CELERY_BROKER_URL", "memory://")  # in-memory, no Redis needed
 os.environ.setdefault("CELERY_RESULT_BACKEND", "cache+memory://")  # in-memory
+os.environ.setdefault("VISION_PROVIDER", "mock")
+os.environ.setdefault("OPENAI_API_KEY", "")
+os.environ.setdefault("ANTHROPIC_API_KEY", "")
+os.environ.setdefault("AI_PROCESSING_QUEUE_ALERT_DEPTH", "500")
 from unittest.mock import AsyncMock  # noqa: E402
 
 # ── Standard imports (safe now that env is ready) ────────────────────────────

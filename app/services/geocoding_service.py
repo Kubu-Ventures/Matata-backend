@@ -122,7 +122,9 @@ _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 # Nominatim usage policy: no more than 1 request/second and a descriptive
 # User-Agent identifying the application.
 _NOMINATIM_HEADERS = {
-    "User-Agent": "CrisisMap/1.0 (Matata crisis-reporting platform; contact: crisismap@example.com)",
+    "User-Agent": (
+        "CrisisMap/1.0 (Matata crisis-reporting platform;" " contact: crisismap@example.com)"
+    ),
     "Accept-Language": "en",
 }
 
@@ -186,7 +188,8 @@ class NominatimGeocodingProvider:
         # Reject coordinates outside Kenya bounding box.
         if not _within_kenya(lat, lng):
             logger.warning(
-                "Nominatim result outside Kenya bounds (lat=%.4f lng=%.4f) — discarded",
+                "Nominatim result outside Kenya bounds"
+                " (lat=%.4f lng=%.4f) — discarded",
                 lat,
                 lng,
             )
