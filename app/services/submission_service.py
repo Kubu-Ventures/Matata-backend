@@ -176,12 +176,20 @@ def _compute_phash(image_bytes: bytes) -> Optional[str]:
         return None
 
     try:
-        with Image.open(BytesIO(image_bytes)) as img:
+        with Image.open(BytesIO(image_bytes)) as _src:
             # DCT-based pHash: resize to 32×32, convert to greyscale, then
             # apply a simplified DCT by averaging 8×8 blocks from the 32×32
             # grid.  This is a fast, dependency-free approximation sufficient
             # for Hamming-distance duplicate detection.
-            img = img.convert("L").resize((32, 32), Image.LANCZOS)
+            #
+            # FIX: open into _src (ImageFile), then assign the converted result
+            # to a new variable typed as Image.Image to avoid the
+            # "Incompatible types in assignment" error (ImageFile vs Image).
+            #
+            # FIX: Image.LANCZOS moved to Image.Resampling.LANCZOS in Pillow
+            # 10.  getattr fallback keeps compatibility with Pillow 9.x.
+            _resample = getattr(Image, "Resampling", Image).LANCZOS
+            img: Image.Image = _src.convert("L").resize((32, 32), _resample)
             pixels = list(img.getdata())
 
         # Compute 8×8 block averages (64 values total).
