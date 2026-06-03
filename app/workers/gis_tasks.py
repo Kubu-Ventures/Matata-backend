@@ -20,7 +20,7 @@ Retry policy:
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, cast
 from uuid import UUID
 
 import redis as sync_redis
@@ -81,13 +81,9 @@ def _invalidate_gis_caches(redis_client: sync_redis.Redis) -> None:
     cursor: int = 0
     pattern = f"{_CACHE_NS}:heatmap:*"
     while True:
-        # FIX: mypy resolves Redis.scan() as Awaitable when the redis-py stubs
-        # are ambiguous between the sync and async clients.  Assigning the
-        # result to an explicitly typed local variable before unpacking gives
-        # mypy the concrete Tuple type it needs and eliminates the
-        # "'Awaitable[Any]' object is not iterable" error.
-        scan_result: Tuple[int, List[bytes]] = redis_client.scan(
-            cursor=cursor, match=pattern, count=100
+        scan_result = cast(
+            Tuple[int, List[bytes]],
+            redis_client.scan(cursor=cursor, match=pattern, count=100),
         )
         cursor, keys = scan_result
         if keys:
