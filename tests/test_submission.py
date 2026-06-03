@@ -1159,6 +1159,7 @@ _MOCK_USER_PAYLOAD = {
 
 def _make_db_override():
     """Async generator yielding a DB mock with synchronous scalar_one_or_none."""
+
     async def _override():
         db = AsyncMock()
         db.add = MagicMock()
@@ -1170,11 +1171,13 @@ def _make_db_override():
         mock_result.scalar_one_or_none = MagicMock(return_value=None)
         db.execute = AsyncMock(return_value=mock_result)
         yield db
+
     return _override
 
 
 def _make_redis_override():
     """Async generator yielding a Redis mock."""
+
     async def _override():
         redis = AsyncMock()
         redis.incr = AsyncMock(return_value=1)
@@ -1183,6 +1186,7 @@ def _make_redis_override():
         redis.set = AsyncMock()
         redis.xadd = AsyncMock()
         yield redis
+
     return _override
 
 
@@ -1195,7 +1199,8 @@ def _make_app_with_overrides():
     """
     from fastapi import FastAPI
 
-    from app.api.v1.routes.auth import get_current_user, router as auth_router
+    from app.api.v1.routes.auth import get_current_user
+    from app.api.v1.routes.auth import router as auth_router
     from app.api.v1.routes.reports import router as reports_router
     from app.core.dependencies import get_db, get_redis
 
@@ -1242,9 +1247,7 @@ class TestSubmitReportEndpoint:
     def test_missing_auth_returns_401(self):
         """No token → auth dependency must reject with 401."""
         client = TestClient(_make_app_no_auth_override())
-        resp = client.post(
-            "/api/v1/reports", data={"metadata": _VALID_REPORT_METADATA}
-        )
+        resp = client.post("/api/v1/reports", data={"metadata": _VALID_REPORT_METADATA})
         assert resp.status_code == 401
 
     def test_invalid_metadata_json_returns_422(self):

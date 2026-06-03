@@ -43,15 +43,14 @@ All database access is synchronous (Celery runs in threads, not an async loop).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
+from io import BytesIO
 from typing import Optional
 from uuid import UUID
 
 import requests
 from celery import Task
 from celery.exceptions import MaxRetriesExceededError
-from io import BytesIO
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -184,9 +183,7 @@ def _publish_photo_request_notification(report_id: str, db: Session) -> None:
     ).fetchone()
 
     if row is None:
-        logger.warning(
-            "Cannot dispatch photo request: report %s not found", report_id
-        )
+        logger.warning("Cannot dispatch photo request: report %s not found", report_id)
         return
 
     db.execute(
@@ -201,9 +198,7 @@ def _publish_photo_request_notification(report_id: str, db: Session) -> None:
         """),
         {"recipient_hash": row.reporter_token_hash, "report_id": report_id},
     )
-    logger.info(
-        "Photo-request notification queued for report %s", report_id
-    )
+    logger.info("Photo-request notification queued for report %s", report_id)
 
 
 # ---------------------------------------------------------------------------
@@ -270,9 +265,7 @@ def _process_report_image_impl(
         )
 
         if not photo_url:
-            logger.warning(
-                "AI task: report %s has no photo_url — skipping", _report_id
-            )
+            logger.warning("AI task: report %s has no photo_url — skipping", _report_id)
             return {
                 "photo_status": "ai_processing_failed",
                 "ai_quality_score": None,
@@ -476,7 +469,10 @@ def process_report_image(
                                 updated_at   = CURRENT_TIMESTAMP
                             WHERE id = :report_id
                         """),
-                        {"photo_status": "ai_processing_failed", "report_id": report_id},
+                        {
+                            "photo_status": "ai_processing_failed",
+                            "report_id": report_id,
+                        },
                     )
                     db.commit()
                 finally:

@@ -27,7 +27,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, field_validator

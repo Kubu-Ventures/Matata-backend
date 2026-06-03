@@ -12,7 +12,7 @@ This module provides:
 
 Matching sequence (spec §9.2):
   1. Point-in-polygon  ``ST_Contains``          → confidence 1.0
-  2. Nearest-neighbour ``ST_DWithin``            → confidence ∝ 1 − distance/radius
+  2. Nearest-neighbour ``ST_DWithin``            → confidence ∝ 1 − dist/radius
   3. Landmark geocoding (when GPS absent)        → confidence ≤ 0.5
   4. Unmapped structure                          → building_id = None
 """
@@ -95,7 +95,8 @@ class GISService:
             accuracy_m:            Device-reported horizontal GPS accuracy in metres.
             landmark_description:  Free-text landmark (used when GPS absent).
             geocoding_provider:    ``GeocodingProvider`` instance; required for the
-                                   landmark path.  Defaults to ``None`` (skip geocoding).
+                                   landmark path.  Defaults to ``None``
+                                   (skip geocoding).
 
         Returns:
             ``BuildingMatch`` with the best available result.
@@ -214,11 +215,13 @@ class GISService:
             text("""
                 SELECT
                     id,
-                    ST_AsGeoJSON(footprint)                                   AS footprint_geojson,
+                    ST_AsGeoJSON(footprint)        AS footprint_geojson,
                     ST_Distance(
                         centroid::geography,
-                        ST_SetSRID(ST_Point(:lng, :lat), 4326)::geography
-                    )                                                          AS distance_m
+                        ST_SetSRID(
+                            ST_Point(:lng, :lat), 4326
+                        )::geography
+                    )                              AS distance_m
                 FROM building
                 WHERE ST_DWithin(
                     centroid::geography,

@@ -14,8 +14,7 @@ PostGIS query logic is tested via a mock SQLAlchemy session.
 from __future__ import annotations
 
 import json
-from typing import Optional
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -26,7 +25,11 @@ import pytest
 
 _BUILDING_ID = uuid4()
 _BUILDING_ID_STR = str(_BUILDING_ID)
-_FOOTPRINT_GEOJSON = '{"type":"Polygon","coordinates":[[[36.8,−1.3],[36.81,−1.3],[36.81,−1.29],[36.8,−1.29],[36.8,−1.3]]]}'
+_FOOTPRINT_GEOJSON = (
+    '{"type":"Polygon","coordinates":[[[36.8,-1.3],'
+    "[36.81,-1.3],[36.81,-1.29],"
+    "[36.8,-1.29],[36.8,-1.3]]]}"
+)
 
 
 def _make_row(

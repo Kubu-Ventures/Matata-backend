@@ -24,7 +24,7 @@ from __future__ import annotations
 import os
 import uuid
 from typing import Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -44,12 +44,9 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "")
 os.environ.setdefault("AI_PROCESSING_QUEUE_ALERT_DEPTH", "500")
 
 from app.services.vision_service import (  # noqa: E402
-    AnthropicVisionProvider,
     ImageAnalysisResult,
     MockVisionProvider,
-    OpenAIVisionProvider,
     VisionAPIError,
-    get_vision_provider,
 )
 from app.workers.ai_tasks import (  # noqa: E402
     _DIVERGENCE_CONFIDENCE_THRESHOLD,
@@ -539,7 +536,6 @@ class TestGetVisionProvider:
             assert isinstance(provider, MockVisionProvider)
 
     def test_invalid_provider_raises(self):
-        import importlib
 
         import app.services.vision_service as vs
 
