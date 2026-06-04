@@ -1,0 +1,589 @@
+"""Duplicate detection Celery task — spec §10.
+
+This module contains the ``score_report`` task, consumed by the default Celery
+worker queue.  It is triggered after both the GIS worker (``gis_tasks``) and
+the AI worker (``ai_tasks``) have completed, so that ``building_id`` and
+``photo_phash`` are present on the report record.
+
+Task responsibilities
+---------------------
+1. Load the target report from the database.
+2. Query up to 500 candidate reports from the same building or within 100 m.
+3. Delegate scoring to ``DuplicateScorer``.
+4. Apply the recommended action inside an atomic database transaction:
+   - AUTO_MERGE  → mark new report as duplicate; update primary photo if newer.
+   - ANALYST_FLAG → set ``possible_duplicate_of_id`` and ``duplicate_score``.
+   - INDEPENDENT  → no-op (report already stored normally).
+5. Write an ``AuditLog`` entry for merge events.
+
+Atomicity guarantee
+-------------------
+The merge update and the audit log write share a single SQLAlchemy transaction.
+If the audit log write raises (e.g., database constraint violation), the entire
+transaction is rolled back so the report retains its original ``pending`` status.
+
+All database access is **synchronous** (Celery runs in threads, not an async
+event loop).  A fresh session is opened per invocation and always closed in the
+``finally`` block.
+
+Retry policy
+------------
+Up to 3 retries with 30-second backoff on any unexpected exception.
+IntegrityError is not retried — it indicates a data problem.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, List, Optional
+from uuid import UUID
+
+from celery import Task
+from celery.exceptions import MaxRetriesExceededError
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Row
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.core.config import settings
+from app.services.duplicate_service import (
+    CandidateReport,
+    DuplicateAction,
+    DuplicateScorer,
+)
+from app.workers.celery_app import celery_app
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Synchronous SQLAlchemy engine (Celery context — no async)
+# ---------------------------------------------------------------------------
+
+_sync_url = settings.DATABASE_URL.replace("+asyncpg", "").replace("+aiosqlite", "")
+
+_sync_engine = create_engine(
+    _sync_url,
+    pool_pre_ping=True,
+    pool_size=2,
+    max_overflow=2,
+)
+
+_SyncSessionLocal = sessionmaker(
+    bind=_sync_engine,
+    autoflush=False,
+    autocommit=False,
+    expire_on_commit=False,
+)
+
+# ---------------------------------------------------------------------------
+# Query constants
+# ---------------------------------------------------------------------------
+
+# Maximum number of candidate reports to evaluate (spec §10)
+_MAX_CANDIDATES: int = 500
+
+# Candidate search radius in metres when no building match is available
+_CANDIDATE_SEARCH_RADIUS_M: float = 100.0
+
+
+# ---------------------------------------------------------------------------
+# Database helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_report(db: Session, report_id: UUID) -> Optional[Any]:
+    """Load target report row from the database.
+
+    Returns:
+        A SQLAlchemy ``Row`` with the required fields, or ``None``.
+    """
+    return db.execute(
+        text("""
+            SELECT
+                id,
+                building_id,
+                lat,
+                lng,
+                photo_phash,
+                photo_url,
+                crisis_type,
+                infrastructure_type,
+                status,
+                created_at
+            FROM report
+            WHERE id = :report_id
+        """),
+        {"report_id": str(report_id)},
+    ).fetchone()
+
+
+def _load_candidates(
+    db: Session,
+    report_id: UUID,
+    building_id: Optional[str],
+    lat: Optional[float],
+    lng: Optional[float],
+) -> list[CandidateReport]:
+    """Fetch up to ``_MAX_CANDIDATES`` candidate reports to score against.
+
+    Candidates are drawn from reports that share the same building footprint
+    OR that fall within ``_CANDIDATE_SEARCH_RADIUS_M`` metres of the incoming
+    report's coordinates — whichever set is broader.
+
+    The incoming report itself is always excluded.
+
+    Args:
+        db:          Active synchronous session.
+        report_id:   UUID of the report being scored (excluded from results).
+        building_id: Matched building UUID string, or ``None``.
+        lat:         WGS84 latitude, or ``None``.
+        lng:         WGS84 longitude, or ``None``.
+
+    Returns:
+        List of ``CandidateReport`` dataclass instances.
+    """
+    # Use an explicit list[Row[Any]] so mypy is satisfied when we call
+    # list() on fetchall() (which returns Sequence[Row[Any]]).
+    rows: List[Row[Any]] = []
+
+    if building_id is not None:
+        # Fetch reports sharing the same building (no PostGIS required)
+        rows = list(
+            db.execute(
+                text("""
+                    SELECT
+                        id,
+                        building_id,
+                        lat,
+                        lng,
+                        photo_phash,
+                        crisis_type,
+                        infrastructure_type
+                    FROM report
+                    WHERE building_id = :building_id
+                      AND id != :report_id
+                      AND status NOT IN ('duplicate')
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                """),
+                {
+                    "building_id": building_id,
+                    "report_id": str(report_id),
+                    "limit": _MAX_CANDIDATES,
+                },
+            ).fetchall()
+        )
+
+    # If no building match OR fewer candidates than the cap, also add
+    # GPS-proximity candidates (using PostGIS ST_DWithin if PostGIS is
+    # available, falling back to a bounding-box pre-filter otherwise).
+    if len(rows) < _MAX_CANDIDATES and lat is not None and lng is not None:
+        remaining = _MAX_CANDIDATES - len(rows)
+        existing_ids = {str(r.id) for r in rows}
+
+        try:
+            geo_rows: List[Row[Any]] = list(
+                db.execute(
+                    text("""
+                        SELECT
+                            id,
+                            building_id,
+                            lat,
+                            lng,
+                            photo_phash,
+                            crisis_type,
+                            infrastructure_type
+                        FROM report
+                        WHERE ST_DWithin(
+                            ST_SetSRID(ST_Point(lng, lat), 4326)::geography,
+                            ST_SetSRID(ST_Point(:lng, :lat), 4326)::geography,
+                            :radius_m
+                        )
+                          AND id != :report_id
+                          AND id != ALL(:existing_ids)
+                          AND status NOT IN ('duplicate')
+                        ORDER BY created_at DESC
+                        LIMIT :limit
+                    """),
+                    {
+                        "lat": lat,
+                        "lng": lng,
+                        "radius_m": _CANDIDATE_SEARCH_RADIUS_M,
+                        "report_id": str(report_id),
+                        "existing_ids": list(existing_ids),
+                        "limit": remaining,
+                    },
+                ).fetchall()
+            )
+            rows.extend(geo_rows)
+        except Exception as exc:  # noqa: BLE001
+            # PostGIS may not be available in the test SQLite environment.
+            # Fall back to a bounding-box approximation (1° ≈ 111 320 m).
+            logger.warning(
+                "PostGIS ST_DWithin unavailable (%s) — using bounding-box fallback",
+                type(exc).__name__,
+            )
+            import math
+
+            lat_delta = _CANDIDATE_SEARCH_RADIUS_M / 111_320.0
+            lng_delta = _CANDIDATE_SEARCH_RADIUS_M / (
+                111_320.0 * math.cos(math.radians(lat))
+            )
+            fallback_rows: List[Row[Any]] = list(
+                db.execute(
+                    text("""
+                        SELECT
+                            id,
+                            building_id,
+                            lat,
+                            lng,
+                            photo_phash,
+                            crisis_type,
+                            infrastructure_type
+                        FROM report
+                        WHERE lat  BETWEEN :min_lat  AND :max_lat
+                          AND lng  BETWEEN :min_lng  AND :max_lng
+                          AND id  != :report_id
+                          AND status NOT IN ('duplicate')
+                        ORDER BY created_at DESC
+                        LIMIT :limit
+                    """),
+                    {
+                        "min_lat": lat - lat_delta,
+                        "max_lat": lat + lat_delta,
+                        "min_lng": lng - lng_delta,
+                        "max_lng": lng + lng_delta,
+                        "report_id": str(report_id),
+                        "limit": remaining,
+                    },
+                ).fetchall()
+            )
+            rows.extend(r for r in fallback_rows if str(r.id) not in existing_ids)
+
+    candidates = []
+    for row in rows:
+        candidates.append(
+            CandidateReport(
+                id=UUID(str(row.id)),
+                building_id=UUID(str(row.building_id)) if row.building_id else None,
+                lat=float(row.lat) if row.lat is not None else None,
+                lng=float(row.lng) if row.lng is not None else None,
+                photo_phash=row.photo_phash,
+                crisis_type=str(row.crisis_type),
+                infrastructure_type=str(row.infrastructure_type),
+            )
+        )
+
+    logger.debug("Loaded %d candidates for report %s", len(candidates), report_id)
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# Action handlers
+# ---------------------------------------------------------------------------
+
+
+def _apply_auto_merge(
+    db: Session,
+    report_id: UUID,
+    primary_id: UUID,
+    new_photo_url: Optional[str],
+    composite_score: float,
+) -> None:
+    """Mark ``report_id`` as a duplicate of ``primary_id`` and update photo.
+
+    All writes share the caller's transaction — the caller is responsible for
+    ``commit()`` and ``rollback()``.  If the audit log INSERT raises, the
+    transaction must be rolled back by the caller.
+
+    Args:
+        db:              Active synchronous session.
+        report_id:       The new report being merged.
+        primary_id:      The existing primary report to merge into.
+        new_photo_url:   Photo URL of the new report (may be None).
+        composite_score: Composite duplicate score for the audit log.
+    """
+    # 1. Mark the incoming report as a duplicate.
+    db.execute(
+        text("""
+            UPDATE report
+            SET
+                status            = 'duplicate',
+                duplicate_of_id   = :primary_id,
+                duplicate_score   = :score,
+                updated_at        = NOW()
+            WHERE id = :report_id
+        """),
+        {
+            "primary_id": str(primary_id),
+            "report_id": str(report_id),
+            "score": composite_score,
+        },
+    )
+
+    # 2. If the new report has a photo, set it as the primary photo on the
+    #    target record (most recently submitted photo wins — spec §10.2).
+    if new_photo_url:
+        db.execute(
+            text("""
+                UPDATE report
+                SET
+                    photo_url  = :photo_url,
+                    updated_at = NOW()
+                WHERE id = :primary_id
+            """),
+            {"photo_url": new_photo_url, "primary_id": str(primary_id)},
+        )
+
+    # 3. Write audit log entry (MUST be inside the same transaction).
+    #    If this raises, the caller's rollback undoes steps 1 and 2.
+    db.execute(
+        text("""
+            INSERT INTO audit_log (
+                operation,
+                actor_id_hash,
+                record_id,
+                before_state,
+                after_state
+            ) VALUES (
+                'report.auto_merge',
+                'system',
+                :record_id,
+                :before_state,
+                :after_state
+            )
+        """),
+        {
+            "record_id": str(report_id),
+            "before_state": '{"status": "pending"}',
+            "after_state": json.dumps(
+                {
+                    "status": "duplicate",
+                    "duplicate_of_id": str(primary_id),
+                    "duplicate_score": composite_score,
+                }
+            ),
+        },
+    )
+
+    logger.info(
+        "Auto-merge: report %s → primary %s (score=%.4f)",
+        report_id,
+        primary_id,
+        composite_score,
+    )
+
+
+def _apply_analyst_flag(
+    db: Session,
+    report_id: UUID,
+    possible_primary_id: UUID,
+    composite_score: float,
+) -> None:
+    """Flag ``report_id`` as a possible duplicate for analyst review.
+
+    Args:
+        db:                  Active synchronous session.
+        report_id:           The report to flag.
+        possible_primary_id: The most likely primary report.
+        composite_score:     Composite duplicate score.
+    """
+    db.execute(
+        text("""
+            UPDATE report
+            SET
+                possible_duplicate_of_id = :primary_id,
+                duplicate_score          = :score,
+                updated_at               = NOW()
+            WHERE id = :report_id
+        """),
+        {
+            "primary_id": str(possible_primary_id),
+            "report_id": str(report_id),
+            "score": composite_score,
+        },
+    )
+
+    logger.info(
+        "Analyst flag: report %s possible duplicate of %s (score=%.4f)",
+        report_id,
+        possible_primary_id,
+        composite_score,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Core implementation — decoupled from Celery for unit testability
+# ---------------------------------------------------------------------------
+
+
+def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
+    """Core duplicate detection logic, decoupled from the Celery task wrapper.
+
+    Extracted into a standalone function so unit tests can call it directly
+    without needing a Celery worker context.
+
+    Args:
+        report_id: UUID string of the ``report`` record to process.
+
+    Returns:
+        Dict with keys: ``action``, ``best_score``, ``primary_id``.
+
+    Raises:
+        Exception: Any non-integrity error is re-raised so the Celery wrapper
+                   can apply the retry policy.
+    """
+    _report_id = UUID(report_id)
+    logger.info("Duplicate detection started for report %s", _report_id)
+
+    db: Session = _SyncSessionLocal()
+    try:
+        # ── 1. Load the target report ─────────────────────────────────────────
+        row = _load_report(db, _report_id)
+        if row is None:
+            logger.error("Duplicate task: report %s not found — skipping", _report_id)
+            return {"action": "skipped", "best_score": 0.0, "primary_id": None}
+
+        building_id_str: Optional[str] = (
+            str(row.building_id) if row.building_id else None
+        )
+        lat: Optional[float] = float(row.lat) if row.lat is not None else None
+        lng: Optional[float] = float(row.lng) if row.lng is not None else None
+
+        # ── 2. Fetch candidate reports ────────────────────────────────────────
+        candidates = _load_candidates(db, _report_id, building_id_str, lat, lng)
+
+        if not candidates:
+            logger.info(
+                "Duplicate task: no candidates found for report %s — independent",
+                _report_id,
+            )
+            return {
+                "action": DuplicateAction.INDEPENDENT,
+                "best_score": 0.0,
+                "primary_id": None,
+            }
+
+        # ── 3. Score ──────────────────────────────────────────────────────────
+        scorer = DuplicateScorer()
+        result = scorer.score(
+            incoming_building_id=(UUID(building_id_str) if building_id_str else None),
+            incoming_lat=lat,
+            incoming_lng=lng,
+            incoming_phash=row.photo_phash,
+            incoming_crisis_type=str(row.crisis_type),
+            incoming_infrastructure_type=str(row.infrastructure_type),
+            candidates=candidates,
+        )
+
+        # ── 4. Apply threshold action (inside a transaction) ──────────────────
+        primary_id: Optional[UUID] = None
+
+        if result.action == DuplicateAction.AUTO_MERGE and result.best_candidate:
+            primary_id = result.best_candidate.candidate.id
+            try:
+                _apply_auto_merge(
+                    db=db,
+                    report_id=_report_id,
+                    primary_id=primary_id,
+                    new_photo_url=row.photo_url,
+                    composite_score=result.best_score,
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.error(
+                    "Duplicate task: auto-merge transaction failed for report %s "
+                    "— rolling back; report status unchanged",
+                    _report_id,
+                )
+                raise
+
+        elif result.action == DuplicateAction.ANALYST_FLAG and result.best_candidate:
+            primary_id = result.best_candidate.candidate.id
+            _apply_analyst_flag(
+                db=db,
+                report_id=_report_id,
+                possible_primary_id=primary_id,
+                composite_score=result.best_score,
+            )
+            db.commit()
+
+        else:
+            # INDEPENDENT — no database writes needed
+            logger.info(
+                "Duplicate task: report %s is independent (best_score=%.4f)",
+                _report_id,
+                result.best_score,
+            )
+
+        return {
+            "action": result.action.value,
+            "best_score": result.best_score,
+            "primary_id": str(primary_id) if primary_id else None,
+        }
+
+    except IntegrityError as exc:
+        db.rollback()
+        logger.error(
+            "Duplicate task: integrity error for report %s: %s",
+            _report_id,
+            exc,
+        )
+        # Do NOT retry integrity errors — they indicate a data problem.
+        return {"action": "error", "best_score": 0.0, "primary_id": None}
+
+    except Exception:
+        db.rollback()
+        raise  # Re-raised so the Celery task wrapper can apply retry policy.
+
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Celery task — thin retry wrapper around _score_report_impl
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    name="app.workers.duplicate_tasks.score_report",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=30,
+    acks_late=True,
+)
+def score_report(self: Task, report_id: str) -> dict:
+    """Score a report against existing records for duplicate detection.
+
+    Triggered after the GIS worker resolves the building match and the AI
+    worker writes ``photo_phash``.  Delegates all logic to
+    ``_score_report_impl`` and handles the Celery retry policy.
+
+    Args:
+        report_id: UUID string of the ``report`` record to process.
+
+    Returns:
+        Dict with keys: ``action``, ``best_score``, ``primary_id``.
+
+    Raises:
+        celery.exceptions.Retry: On transient errors (up to 3 retries).
+    """
+    try:
+        return _score_report_impl(report_id)
+    except Exception as exc:
+        logger.warning(
+            "Duplicate task error for report %s (%s) — will retry",
+            report_id,
+            type(exc).__name__,
+        )
+        try:
+            raise self.retry(exc=exc)
+        except MaxRetriesExceededError:
+            logger.error(
+                "Duplicate task permanently failed for report %s after %d retries",
+                report_id,
+                self.max_retries,
+            )
+            return {"action": "error", "best_score": 0.0, "primary_id": None}
