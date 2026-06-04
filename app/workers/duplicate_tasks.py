@@ -419,25 +419,12 @@ def _apply_analyst_flag(
 
 
 def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
-    """Core duplicate detection logic, decoupled from the Celery task wrapper.
-
-    Extracted into a standalone function so unit tests can call it directly
-    without needing a Celery worker context.
-
-    Args:
-        report_id: UUID string of the ``report`` record to process.
-
-    Returns:
-        Dict with keys: ``action``, ``best_score``, ``primary_id``.
-
-    Raises:
-        Exception: Any non-integrity error is re-raised so the Celery wrapper
-                   can apply the retry policy.
-    """
+    """Core duplicate detection logic, decoupled from the Celery task wrapper."""
     _report_id = UUID(report_id)
     logger.info("Duplicate detection started for report %s", _report_id)
 
     db: Session = _SyncSessionLocal()
+    _rolled_back: bool = False
     try:
         # ── 1. Load the target report ─────────────────────────────────────────
         row = _load_report(db, _report_id)
@@ -493,6 +480,7 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
                 db.commit()
             except Exception:
                 db.rollback()
+                _rolled_back = True
                 logger.error(
                     "Duplicate task: auto-merge transaction failed for report %s "
                     "— rolling back; report status unchanged",
@@ -511,7 +499,6 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
             db.commit()
 
         else:
-            # INDEPENDENT — no database writes needed
             logger.info(
                 "Duplicate task: report %s is independent (best_score=%.4f)",
                 _report_id,
@@ -525,18 +512,19 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
         }
 
     except IntegrityError as exc:
-        db.rollback()
+        if not _rolled_back:
+            db.rollback()
         logger.error(
             "Duplicate task: integrity error for report %s: %s",
             _report_id,
             exc,
         )
-        # Do NOT retry integrity errors — they indicate a data problem.
         return {"action": "error", "best_score": 0.0, "primary_id": None}
 
     except Exception:
-        db.rollback()
-        raise  # Re-raised so the Celery task wrapper can apply retry policy.
+        if not _rolled_back:
+            db.rollback()
+        raise
 
     finally:
         db.close()
