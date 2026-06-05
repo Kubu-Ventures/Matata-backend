@@ -16,6 +16,7 @@ bypassed by any caller, JWT level, URL parameter, or request header.
 Schema follows HDX disaster damage dataset standards; field mapping is
 documented in ``docs/hdx_schema.md``.
 """
+
 from __future__ import annotations
 
 import csv
@@ -33,14 +34,6 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
-from app.models.enums import (
-    CrisisType,
-    ElectricityStatus,
-    HealthServicesStatus,
-    InfrastructureType,
-    ReportDamageSeverity,
-    ReportStatus,
-)
 from app.models.report import Report
 
 logger = logging.getLogger(__name__)
@@ -54,7 +47,7 @@ logger = logging.getLogger(__name__)
 DBF_FIELD_MAP: Dict[str, str] = {
     "report_id": "report_id",
     "building_id": "bldg_id",
-    "crisis_type": "crisis_tp",       # was "crisis_type" (11 chars) — fixed
+    "crisis_type": "crisis_tp",  # was "crisis_type" (11 chars) — fixed
     "infrastructure_type": "infra_type",
     "damage_severity": "dmg_sev",
     "ai_severity_prediction": "ai_sev",
@@ -136,8 +129,8 @@ class Anonymiser:
     _BLOCKED_FIELDS = frozenset(
         {
             "reporter_token_hash",  # full hash — use truncated version only
-            "photo_phash",          # internal dedup field
-            "duplicate_of_id",      # internal reference
+            "photo_phash",  # internal dedup field
+            "duplicate_of_id",  # internal reference
             "possible_duplicate_of_id",
             "duplicate_score",
             "offline_queued_at",
@@ -378,7 +371,7 @@ class ExportService:
     # ------------------------------------------------------------------
 
     async def count_records(self, filters: ExportFilterParams) -> int:
-        """Return the count of records matching *filters* without fetching them."""
+        """Return the count of records matching *filters* without fetching."""
         q = self._build_query(filters)
         count_q = sa.select(sa.func.count()).select_from(q.subquery())
         result = await self._db.execute(count_q)
@@ -388,9 +381,7 @@ class ExportService:
     # Private helpers
     # ------------------------------------------------------------------
 
-    async def _fetch_records(
-        self, filters: ExportFilterParams
-    ) -> List[ExportRecord]:
+    async def _fetch_records(self, filters: ExportFilterParams) -> List[ExportRecord]:
         """Query the database and return anonymised export records."""
         query = self._build_query(filters)
         result = await self._db.execute(query)
@@ -421,7 +412,7 @@ class ExportService:
     async def _fetch_footprint_features(
         self, records: List[ExportRecord]
     ) -> List[Dict[str, Any]]:
-        """Fetch building footprint GeoJSON for records that have a building_id."""
+        """Fetch building footprint GeoJSON for records with a building_id."""
         from sqlalchemy import text
 
         building_ids = list(
@@ -539,7 +530,7 @@ def _build_shapefile_zip(records: List[ExportRecord]) -> bytes:
         _ogr_type_map = {
             "report_id": (ogr.OFTString, 36),
             "bldg_id": (ogr.OFTString, 36),
-            "crisis_tp": (ogr.OFTString, 20),   # was "crisis_type" — fixed to match DBF_FIELD_MAP
+            "crisis_tp": (ogr.OFTString, 20),
             "infra_type": (ogr.OFTString, 20),
             "dmg_sev": (ogr.OFTString, 15),
             "ai_sev": (ogr.OFTString, 15),
@@ -601,7 +592,11 @@ def _build_shapefile_zip(records: List[ExportRecord]) -> bytes:
             for suffix in (".shp", ".dbf", ".shx", ".prj"):
                 file_path = shp_path.replace(".shp", suffix)
                 import os
+
                 if os.path.exists(file_path):
-                    zf.write(file_path, arcname=f"crisismap_export{suffix}")
+                    zf.write(
+                        file_path,
+                        arcname=f"crisismap_export{suffix}",
+                    )
 
         return zip_buffer.getvalue()

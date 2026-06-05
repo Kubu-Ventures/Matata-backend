@@ -20,13 +20,14 @@ regular threads, not an async event loop).  Export generation reuses
 ``ExportService`` logic via a standalone synchronous helper to avoid
 duplicating the format-specific code.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 from celery import Task
 from celery.exceptions import MaxRetriesExceededError
@@ -71,7 +72,8 @@ async def create_export_job(
 
     Args:
         redis:           Async Redis client.
-        fmt:             Export format: ``"geojson"``, ``"csv"``, or ``"shapefile"``.
+        fmt:             Export format: ``"geojson"``, ``"csv"``, or
+                         ``"shapefile"``.
         filter_params:   Serialisable dict of active filter params.
         analyst_id_hash: Anonymised analyst identifier for the audit log.
 
@@ -139,7 +141,8 @@ def _run_export_sync(
     SQLAlchemy session and running the async methods via ``asyncio.run()``.
 
     Args:
-        fmt:             Export format (``"geojson"``, ``"csv"``, ``"shapefile"``).
+        fmt:             Export format (``"geojson"``, ``"csv"``,
+                         ``"shapefile"``).
         filter_params:   Deserialised filter params dict.
         analyst_id_hash: For audit log.
 
@@ -211,14 +214,15 @@ def _upload_export_file(
     fmt: str,
     file_bytes: bytes,
 ) -> tuple[str, str]:
-    """Upload the export file to object storage and return (object_key, presigned_url).
+    """Upload the export file to object storage and return (key, url).
 
     Uses a synchronous S3 client (boto3 or aiobotocore sync path).
     Falls back to a mock URL when ``STORAGE_BACKEND=mock``.
 
     Args:
         job_id:     Export job UUID string (used in the object key).
-        fmt:        Export format (determines file extension and content-type).
+        fmt:        Export format (determines file extension and
+                    content-type).
         file_bytes: Raw file content.
 
     Returns:
@@ -297,10 +301,13 @@ def _update_job_sync(
 
     from app.core.config import settings
 
-    client = sync_redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    # Use the unparameterized client type for compatibility with installed stubs.
+    client: sync_redis.Redis = sync_redis.Redis.from_url(
+        settings.REDIS_URL, decode_responses=True
+    )
     try:
         key = _job_key(job_id)
-        raw = client.get(key)
+        raw: Optional[str] = cast(Optional[str], client.get(key))
         if raw is None:
             logger.warning("Export job %s not found in Redis during update", job_id)
             return
@@ -337,13 +344,15 @@ def run_export_job(
 ) -> Dict[str, Any]:
     """Process a large export job asynchronously.
 
-    Triggered by ``create_export_job`` when the estimated record count exceeds
-    ``ASYNC_THRESHOLD``.  Generates the export file, uploads it to object
-    storage, creates a 24-hour presigned URL, and updates the job record.
+    Triggered by ``create_export_job`` when the estimated record count
+    exceeds ``ASYNC_THRESHOLD``.  Generates the export file, uploads it
+    to object storage, creates a 24-hour presigned URL, and updates the
+    job record.
 
     Args:
         job_id:          UUID string of the export job.
-        fmt:             Export format (``"geojson"``, ``"csv"``, ``"shapefile"``).
+        fmt:             Export format (``"geojson"``, ``"csv"``,
+                         ``"shapefile"``).
         filter_params:   Serialisable dict of filter params.
         analyst_id_hash: For audit log.
 
@@ -363,8 +372,9 @@ def run_export_job(
             datetime.now(tz=timezone.utc) + timedelta(seconds=_JOB_TTL_SECONDS)
         ).isoformat()
 
-        # 3. Mark job as complete — pass status positionally so tests can assert
-        #    call_args[0][1] == JOB_STATUS_COMPLETE without keyword ambiguity.
+        # 3. Mark job as complete — pass status positionally so tests can
+        #    assert call_args[0][1] == JOB_STATUS_COMPLETE without keyword
+        #    ambiguity.
         _update_job_sync(
             job_id,
             JOB_STATUS_COMPLETE,

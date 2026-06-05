@@ -24,9 +24,9 @@ from fastapi.responses import JSONResponse
 
 from app.api.v1.routes.analyst import analyst_router, stats_router
 from app.api.v1.routes.auth import router as auth_router
+from app.api.v1.routes.export import router as export_router
 from app.api.v1.routes.gis import router as gis_router
 from app.api.v1.routes.reports import router as reports_router
-from app.api.v1.routes.export import router as export_router
 from app.core.config import settings
 from app.core.dependencies import _engine  # noqa: WPS436 — private import for shutdown
 from app.schemas.health import HealthResponse

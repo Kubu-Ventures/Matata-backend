@@ -22,6 +22,7 @@ If the number of records matching the active filters exceeds 10,000, the
 endpoint returns immediately with a job ID and processing status rather than
 blocking.  The ``ExportWorker`` Celery task handles the actual generation.
 """
+
 from __future__ import annotations
 
 import logging
@@ -123,7 +124,9 @@ _COMMON_PARAMS = dict(
     report_status=Query(
         default=None, alias="status", description="Comma-separated report statuses."
     ),
-    time_from=Query(default=None, description="ISO 8601 UTC lower bound for created_at."),
+    time_from=Query(
+        default=None, description="ISO 8601 UTC lower bound for created_at."
+    ),
     time_to=Query(default=None, description="ISO 8601 UTC upper bound for created_at."),
     min_ai_confidence=Query(
         default=None, ge=0.0, le=1.0, description="Minimum AI confidence threshold."

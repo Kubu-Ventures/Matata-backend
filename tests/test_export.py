@@ -16,23 +16,24 @@ Anonymisation acceptance criteria (spec §12.2 / issue #16)
 
 All tests use in-memory mocks; no real database, Redis, or S3 is required.
 """
+
 from __future__ import annotations
 
 import csv
 import io
 import json
-import uuid
-from dataclasses import fields as dc_fields
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 # ---------------------------------------------------------------------------
 # Minimal environment setup (mirrors conftest.py)
 # ---------------------------------------------------------------------------
 import os
+import uuid
+from dataclasses import fields as dc_fields
+from datetime import datetime, timezone
+from typing import List, Optional
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test_export.db")
@@ -81,7 +82,6 @@ from app.workers.export_tasks import (  # noqa: E402
     run_export_job,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -116,7 +116,9 @@ def _make_report(
     r.crisis_type = _enum_mock(crisis_type)
     r.infrastructure_type = _enum_mock(infrastructure_type)
     r.damage_severity = _enum_mock(damage_severity)
-    r.ai_severity_prediction = _enum_mock(ai_severity_prediction) if ai_severity_prediction else None
+    r.ai_severity_prediction = (
+        _enum_mock(ai_severity_prediction) if ai_severity_prediction else None
+    )
     r.ai_confidence = ai_confidence
     r.status = _enum_mock(status)
     r.reporter_trust_tier = reporter_trust_tier
@@ -124,8 +126,12 @@ def _make_report(
     r.lng = lng
     r.gps_accuracy_m = gps_accuracy_m
     r.landmark_description = landmark_description
-    r.electricity_status = _enum_mock(electricity_status) if electricity_status else None
-    r.health_services_status = _enum_mock(health_services_status) if health_services_status else None
+    r.electricity_status = (
+        _enum_mock(electricity_status) if electricity_status else None
+    )
+    r.health_services_status = (
+        _enum_mock(health_services_status) if health_services_status else None
+    )
     r.most_pressing_needs = most_pressing_needs
     r.debris_clearing_needed = debris_clearing_needed
     r.photo_url = photo_url
@@ -220,9 +226,9 @@ class TestAnonymiser:
         blocked = Anonymiser._BLOCKED_FIELDS
         export_field_names = {f.name for f in dc_fields(ExportRecord)}
         for blocked_field in blocked:
-            assert blocked_field not in export_field_names, (
-                f"Blocked field '{blocked_field}' found in ExportRecord"
-            )
+            assert (
+                blocked_field not in export_field_names
+            ), f"Blocked field '{blocked_field}' found in ExportRecord"
 
     def test_all_enum_values_are_strings(self):
         a = Anonymiser()
@@ -331,16 +337,16 @@ class TestExportRecord:
 class TestDBFFieldMap:
     def test_all_dbf_names_le_10_chars(self):
         for py_attr, dbf_name in DBF_FIELD_MAP.items():
-            assert len(dbf_name) <= 10, (
-                f"DBF field '{dbf_name}' (from '{py_attr}') exceeds 10 characters"
-            )
+            assert (
+                len(dbf_name) <= 10
+            ), f"DBF field '{dbf_name}' (from '{py_attr}') exceeds 10 characters"
 
     def test_all_export_record_fields_mapped(self):
         export_attrs = {f.name for f in dc_fields(ExportRecord)}
         for attr in DBF_FIELD_MAP:
-            assert attr in export_attrs, (
-                f"DBF_FIELD_MAP key '{attr}' not in ExportRecord"
-            )
+            assert (
+                attr in export_attrs
+            ), f"DBF_FIELD_MAP key '{attr}' not in ExportRecord"
 
 
 # ===========================================================================
@@ -421,7 +427,7 @@ class TestExportServiceGeoJSON:
 
     @pytest.mark.asyncio
     async def test_geojson_include_footprints_payload_shape(self):
-        """When include_footprints=True the response contains 'reports' and 'footprints'."""
+        """When include_footprints=True the response has 'reports'/'footprints'."""
         report = _make_report(building_id=str(uuid.uuid4()))
         db = _make_db_mock([report])
 
@@ -481,7 +487,7 @@ class TestExportServiceCSV:
         result = await svc.export_csv(ExportFilterParams())
         content = result.decode("utf-8-sig")
         reader = csv.DictReader(io.StringIO(content))
-        rows = list(reader)
+        list(reader)
         assert reader.fieldnames is not None
         assert len(reader.fieldnames) > 0
 
@@ -610,7 +616,15 @@ class TestExportServiceShapefile:
         db = _make_db_mock([_make_report()])
         svc = ExportService(db=db, analyst_id_hash="x")
 
-        with patch.dict("sys.modules", {"osgeo": None, "osgeo.gdal": None, "osgeo.ogr": None, "osgeo.osr": None}):
+        with patch.dict(
+            "sys.modules",
+            {
+                "osgeo": None,
+                "osgeo.gdal": None,
+                "osgeo.ogr": None,
+                "osgeo.osr": None,
+            },
+        ):
             with pytest.raises(ImportError):
                 await svc.export_shapefile(ExportFilterParams())
 
@@ -816,13 +830,16 @@ class TestUploadExportFile:
 
 class TestUpdateJobSync:
     def test_update_sets_status_complete(self):
-        raw_job = json.dumps({
-            "job_id": "j1",
-            "status": JOB_STATUS_PROCESSING,
-            "download_url": None,
-            "expires_at": None,
-        })
+        raw_job = json.dumps(
+            {
+                "job_id": "j1",
+                "status": JOB_STATUS_PROCESSING,
+                "download_url": None,
+                "expires_at": None,
+            }
+        )
         import redis as sync_redis_real
+
         with patch.object(sync_redis_real, "Redis") as mock_cls:
             instance = MagicMock()
             instance.get.return_value = raw_job
@@ -838,6 +855,7 @@ class TestUpdateJobSync:
 
     def test_update_handles_missing_job_gracefully(self):
         import redis as sync_redis_real
+
         with patch.object(sync_redis_real, "Redis") as mock_cls:
             instance = MagicMock()
             instance.get.return_value = None
@@ -859,17 +877,18 @@ class TestRunExportJobTask:
         self_mock.request.retries = 0
         self_mock.max_retries = max_retries
         from celery.exceptions import Retry
+
         self_mock.retry.side_effect = Retry()
         return self_mock
 
     def _call_task(self, self_mock, **kwargs):
-        """Call the underlying task function directly, bypassing Celery machinery.
+        """Call the underlying task function directly, bypassing Celery.
 
         In Celery 5, ``bind=True`` tasks expose the original function via
         ``task.__wrapped__``, which is a *bound method* on the task instance
-        (so ``self`` is already the task object).  Passing a mock ``self`` via
-        ``run()`` or ``__wrapped__()`` therefore raises "multiple values for
-        argument".
+        (so ``self`` is already the task object).  Passing a mock ``self``
+        via ``run()`` or ``__wrapped__()`` therefore raises "multiple values
+        for argument".
 
         ``task.__wrapped__.__func__`` is the true *unbound* Python function
         whose first parameter is ``self``, letting us inject a mock task
@@ -880,7 +899,10 @@ class TestRunExportJobTask:
     def test_task_success_path(self):
         """Happy path: generate → upload → mark complete."""
         with (
-            patch("app.workers.export_tasks._run_export_sync", return_value=b"data"),
+            patch(
+                "app.workers.export_tasks._run_export_sync",
+                return_value=b"data",
+            ),
             patch(
                 "app.workers.export_tasks._upload_export_file",
                 return_value=("exports/j1/f.csv", "http://dl"),
@@ -905,7 +927,10 @@ class TestRunExportJobTask:
         """Task should call self.retry on transient errors."""
         from celery.exceptions import Retry
 
-        with patch("app.workers.export_tasks._run_export_sync", side_effect=RuntimeError("oops")):
+        with patch(
+            "app.workers.export_tasks._run_export_sync",
+            side_effect=RuntimeError("oops"),
+        ):
             self_mock = self._make_task_self()
             self_mock.retry.side_effect = Retry()
             with pytest.raises(Retry):
@@ -923,7 +948,10 @@ class TestRunExportJobTask:
         from celery.exceptions import MaxRetriesExceededError
 
         with (
-            patch("app.workers.export_tasks._run_export_sync", side_effect=RuntimeError("perm")),
+            patch(
+                "app.workers.export_tasks._run_export_sync",
+                side_effect=RuntimeError("perm"),
+            ),
             patch("app.workers.export_tasks._update_job_sync") as mock_update,
         ):
             self_mock = self._make_task_self()
@@ -977,9 +1005,10 @@ class TestExportRoutes:
         mock_db.commit = AsyncMock()
         mock_redis = AsyncMock()
 
+        payload = b'{"type":"FeatureCollection","features":[]}'
         with patch(
             "app.api.v1.routes.export.ExportService",
-            return_value=_make_export_service_mock(record_count=2, payload=b'{"type":"FeatureCollection","features":[]}'),
+            return_value=_make_export_service_mock(record_count=2, payload=payload),
         ):
             response = await export_geojson(
                 crisis_type=None,
@@ -995,6 +1024,7 @@ class TestExportRoutes:
                 redis=mock_redis,
             )
         from fastapi.responses import Response
+
         assert isinstance(response, Response)
         assert response.media_type == "application/geo+json"
 
@@ -1031,6 +1061,7 @@ class TestExportRoutes:
                 redis=mock_redis,
             )
         from fastapi.responses import JSONResponse
+
         assert isinstance(response, JSONResponse)
         body = json.loads(response.body)
         assert body["job_id"] == "job-uuid-123"
@@ -1074,7 +1105,9 @@ class TestExportRoutes:
         with (
             patch(
                 "app.api.v1.routes.export.ExportService",
-                return_value=_make_export_service_mock(record_count=ASYNC_THRESHOLD + 1),
+                return_value=_make_export_service_mock(
+                    record_count=ASYNC_THRESHOLD + 1
+                ),
             ),
             patch(
                 "app.api.v1.routes.export.create_export_job",
@@ -1095,6 +1128,7 @@ class TestExportRoutes:
                 redis=mock_redis,
             )
         from fastapi.responses import JSONResponse
+
         assert isinstance(response, JSONResponse)
         body = json.loads(response.body)
         assert body["job_id"] == "job-csv-999"
@@ -1130,6 +1164,7 @@ class TestExportRoutes:
     @pytest.mark.asyncio
     async def test_shapefile_route_501_when_gdal_missing(self, mock_analyst_user):
         from fastapi import HTTPException
+
         from app.api.v1.routes.export import export_shapefile
 
         mock_db = AsyncMock()
@@ -1139,7 +1174,10 @@ class TestExportRoutes:
         svc_mock = _make_export_service_mock(record_count=2)
         svc_mock.export_shapefile = AsyncMock(side_effect=ImportError("no gdal"))
 
-        with patch("app.api.v1.routes.export.ExportService", return_value=svc_mock):
+        with patch(
+            "app.api.v1.routes.export.ExportService",
+            return_value=svc_mock,
+        ):
             with pytest.raises(HTTPException) as exc_info:
                 await export_shapefile(
                     crisis_type=None,
@@ -1165,7 +1203,9 @@ class TestExportRoutes:
         with (
             patch(
                 "app.api.v1.routes.export.ExportService",
-                return_value=_make_export_service_mock(record_count=ASYNC_THRESHOLD + 1),
+                return_value=_make_export_service_mock(
+                    record_count=ASYNC_THRESHOLD + 1
+                ),
             ),
             patch(
                 "app.api.v1.routes.export.create_export_job",
@@ -1186,6 +1226,7 @@ class TestExportRoutes:
                 redis=mock_redis,
             )
         from fastapi.responses import JSONResponse
+
         assert isinstance(response, JSONResponse)
         body = json.loads(response.body)
         assert body["job_id"] == "job-shp-777"
@@ -1218,6 +1259,7 @@ class TestExportRoutes:
     @pytest.mark.asyncio
     async def test_job_status_route_404_when_not_found(self, mock_analyst_user):
         from fastapi import HTTPException
+
         from app.api.v1.routes.export import get_export_job
 
         mock_redis = AsyncMock()
@@ -1363,10 +1405,11 @@ class TestAnonymisationAcceptanceCriteria:
         mock_db = AsyncMock()
         mock_redis = AsyncMock()
 
+        large_count = ASYNC_THRESHOLD + 100
         with (
             patch(
                 "app.api.v1.routes.export.ExportService",
-                return_value=_make_export_service_mock(record_count=ASYNC_THRESHOLD + 100),
+                return_value=_make_export_service_mock(record_count=large_count),
             ),
             patch(
                 "app.api.v1.routes.export.create_export_job",
@@ -1392,6 +1435,7 @@ class TestAnonymisationAcceptanceCriteria:
 
         assert elapsed < 0.5, f"Response took {elapsed:.3f}s — expected < 500ms"
         from fastapi.responses import JSONResponse
+
         assert isinstance(response, JSONResponse)
         body = json.loads(response.body)
         assert body["status"] == "processing"
