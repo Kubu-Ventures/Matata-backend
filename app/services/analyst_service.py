@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -51,6 +51,7 @@ from app.models.enums import (
 )
 from app.models.report import Report
 from app.schemas.analyst_schemas import (
+    _REJECTION_REASON_CODES,
     AnalystNoteOut,
     MergeResponse,
     PaginatedReports,
@@ -58,7 +59,6 @@ from app.schemas.analyst_schemas import (
     ReportSummarySchema,
     StatsSummaryResponse,
     TimelineReportItem,
-    _REJECTION_REASON_CODES,
 )
 
 logger = logging.getLogger(__name__)
@@ -256,7 +256,9 @@ async def list_reports(
             (Report.damage_severity == "minimal", 1),
             else_=0,
         )
-        base_query = base_query.order_by(severity_order.desc(), Report.created_at.desc())
+        base_query = base_query.order_by(
+            severity_order.desc(), Report.created_at.desc()
+        )
     else:
         base_query = base_query.order_by(Report.created_at.desc())
 
@@ -371,8 +373,8 @@ async def get_report_detail(
         reporter_trust_tier=report.reporter_trust_tier,
         analyst_notes=notes_out,
         building_timeline=building_timeline,
-        created_at=report.created_at,
-        updated_at=report.updated_at,
+        created_at=cast(datetime, report.created_at),
+        updated_at=cast(datetime, report.updated_at),
     )
     return schema
 
@@ -430,9 +432,7 @@ async def transition_report_status(
     # Validate reason_code requirement
     if new_status == ReportStatus.rejected:
         if not reason_code:
-            raise ValueError(
-                "reason_code is required when status == 'rejected'."
-            )
+            raise ValueError("reason_code is required when status == 'rejected'.")
         if reason_code not in _REJECTION_REASON_CODES:
             raise ValueError(
                 f"Invalid reason_code '{reason_code}'. "
@@ -445,7 +445,11 @@ async def transition_report_status(
         raise LookupError(f"Report {report_id} not found.")
 
     before_state = {
-        "status": report.status.value if hasattr(report.status, "value") else str(report.status),
+        "status": (
+            report.status.value
+            if hasattr(report.status, "value")
+            else str(report.status)
+        ),
         "reporter_trust_tier": report.reporter_trust_tier,
     }
 
@@ -458,7 +462,9 @@ async def transition_report_status(
 
         # Update building current_severity if this report's severity is higher
         if report.building_id is not None:
-            await _sync_building_severity(db, report.building_id, report.damage_severity)
+            await _sync_building_severity(
+                db, report.building_id, report.damage_severity
+            )
 
     elif new_status == ReportStatus.rejected:
         report.reporter_trust_tier = max(report.reporter_trust_tier - 1, 0)
@@ -474,7 +480,9 @@ async def transition_report_status(
 
     # Audit log
     after_state: Dict[str, Any] = {
-        "status": new_status.value if hasattr(new_status, "value") else str(new_status),
+        "status": (
+            new_status.value if hasattr(new_status, "value") else str(new_status)
+        ),
         "reporter_trust_tier": report.reporter_trust_tier,
     }
     if reason_code:
@@ -500,38 +508,44 @@ async def _sync_building_severity(
     building_id: UUID,
     new_report_severity: ReportDamageSeverity,
 ) -> None:
-    """Update ``buildings.current_severity`` if the new report's severity is higher."""
-    result = await db.execute(
-        sa.select(Building).where(Building.id == building_id)
-    )
+    """Update ``buildings.current_severity`` if new report severity is higher."""
+    result = await db.execute(sa.select(Building).where(Building.id == building_id))
     building = result.scalar_one_or_none()
     if building is None:
         return
 
     current_order = _SEVERITY_ORDER.get(
-        building.current_severity.value
-        if hasattr(building.current_severity, "value")
-        else str(building.current_severity),
+        (
+            building.current_severity.value
+            if hasattr(building.current_severity, "value")
+            else str(building.current_severity)
+        ),
         0,
     )
     new_order = _SEVERITY_ORDER.get(
-        new_report_severity.value
-        if hasattr(new_report_severity, "value")
-        else str(new_report_severity),
+        (
+            new_report_severity.value
+            if hasattr(new_report_severity, "value")
+            else str(new_report_severity)
+        ),
         0,
     )
 
     if new_order > current_order:
         new_building_severity = _DAMAGE_TO_BUILDING_SEVERITY.get(
-            new_report_severity.value
-            if hasattr(new_report_severity, "value")
-            else str(new_report_severity),
+            (
+                new_report_severity.value
+                if hasattr(new_report_severity, "value")
+                else str(new_report_severity)
+            ),
             "none",
         )
         building.current_severity = DamageSeverity(new_building_severity)
         building.last_report_at = datetime.now(tz=timezone.utc)
         logger.debug(
-            "Building %s severity updated to %s", building_id, new_building_severity
+            "Building %s severity updated to %s",
+            building_id,
+            new_building_severity,
         )
 
 
@@ -567,24 +581,22 @@ async def merge_reports(
         LookupError: If any ID is not found or out of scope.
     """
     # Validate primary exists
-    primary_result = await db.execute(
-        sa.select(Report).where(Report.id == primary_id)
-    )
+    primary_result = await db.execute(sa.select(Report).where(Report.id == primary_id))
     primary = primary_result.scalar_one_or_none()
     if primary is None:
         raise LookupError(f"Primary report {primary_id} not found.")
 
     merged_count = 0
     for dup_id in duplicate_ids:
-        dup_result = await db.execute(
-            sa.select(Report).where(Report.id == dup_id)
-        )
+        dup_result = await db.execute(sa.select(Report).where(Report.id == dup_id))
         dup = dup_result.scalar_one_or_none()
         if dup is None:
             raise LookupError(f"Duplicate report {dup_id} not found.")
 
         before_state = {
-            "status": dup.status.value if hasattr(dup.status, "value") else str(dup.status),
+            "status": (
+                dup.status.value if hasattr(dup.status, "value") else str(dup.status)
+            ),
         }
 
         dup.status = ReportStatus.duplicate
@@ -647,9 +659,7 @@ async def create_analyst_note(
         LookupError: If the report does not exist.
     """
     # Verify report exists
-    report_result = await db.execute(
-        sa.select(Report.id).where(Report.id == report_id)
-    )
+    report_result = await db.execute(sa.select(Report.id).where(Report.id == report_id))
     if report_result.scalar_one_or_none() is None:
         raise LookupError(f"Report {report_id} not found.")
 
@@ -692,9 +702,9 @@ async def get_stats_summary(
 
     # Total count
     total_result = await db.execute(
-        sa.select(sa.func.count()).select_from(Report).where(
-            Report.status != ReportStatus.rejected
-        )
+        sa.select(sa.func.count())
+        .select_from(Report)
+        .where(Report.status != ReportStatus.rejected)
     )
     total = total_result.scalar_one()
 
@@ -723,10 +733,14 @@ async def get_stats_summary(
         "wildfire": 0,
         "other": 0,
     }
-    for row in crisis_rows:
-        key = row[0].value if hasattr(row[0], "value") else str(row[0])
+    for crisis_row in crisis_rows:
+        key = (
+            crisis_row[0].value
+            if hasattr(crisis_row[0], "value")
+            else str(crisis_row[0])
+        )
         if key in by_crisis_type:
-            by_crisis_type[key] = row[1]
+            by_crisis_type[key] = crisis_row[1]
 
     now = datetime.now(tz=timezone.utc)
     response = StatsSummaryResponse(
@@ -773,8 +787,7 @@ async def get_heatmap(
             pass
 
     rows_result = await db.execute(
-        sa.select(Report.lat, Report.lng, Report.damage_severity)
-        .where(
+        sa.select(Report.lat, Report.lng, Report.damage_severity).where(
             Report.lat.isnot(None),
             Report.lng.isnot(None),
             Report.status != ReportStatus.rejected,

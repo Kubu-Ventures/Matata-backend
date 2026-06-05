@@ -50,7 +50,7 @@ from pydantic import BaseModel
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.routes.auth import get_current_user, require_role
+from app.api.v1.routes.auth import require_role
 from app.core.dependencies import get_db, get_redis
 from app.schemas.analyst_schemas import (
     AnalystNoteCreateRequest,
@@ -115,7 +115,9 @@ def _analyst_id_hash(current_user: dict) -> str:
 )
 async def list_reports(
     page: int = Query(default=1, ge=1, description="Page number (1-based)."),
-    limit: int = Query(default=50, ge=1, le=200, description="Items per page (max 200)."),
+    limit: int = Query(
+        default=50, ge=1, le=200, description="Items per page (max 200)."
+    ),
     crisis_type: Optional[str] = Query(
         default=None,
         description="Comma-separated crisis types to include.",
@@ -149,7 +151,9 @@ async def list_reports(
     ),
     sort_by: Optional[str] = Query(
         default=None,
-        description="Sort order: 'severity' (destroyed first) or default created_at DESC.",
+        description=(
+            "Sort order: 'severity' (destroyed first) or default created_at DESC."
+        ),
     ),
     current_user: dict = Depends(require_role(Role.analyst, Role.responder)),
     db: AsyncSession = Depends(get_db),
@@ -190,8 +194,8 @@ async def list_reports(
     description=(
         "Merges one or more duplicate reports into a primary record. "
         "Executes the same merge logic as the automatic duplicate detection "
-        "worker. All IDs must exist and be within the analyst's accessible scope. "
-        "Requires ``analyst`` role."
+        "worker. All IDs must exist and be within the analyst's accessible "
+        "scope. Requires ``analyst`` role."
     ),
 )
 async def merge_reports(
@@ -302,7 +306,11 @@ async def transition_status(
 
     return StatusTransitionResponse(
         id=report.id,
-        status=report.status.value if hasattr(report.status, "value") else str(report.status),
+        status=(
+            report.status.value
+            if hasattr(report.status, "value")
+            else str(report.status)
+        ),
         reporter_trust_tier=report.reporter_trust_tier,
     )
 
@@ -376,16 +384,16 @@ async def _sse_event_generator(
     pubsub = redis.pubsub()
     await pubsub.subscribe(analyst_service.ANALYST_EVENTS_CHANNEL)
 
-    logger.info(
-        "SSE client connected (sub: %s…)", current_user.get("sub", "")[:8]
-    )
+    logger.info("SSE client connected (sub: %s…)", current_user.get("sub", "")[:8])
 
     try:
         heartbeat_task = asyncio.create_task(_heartbeat_ticker())
 
         while True:
             # Race: next message vs next heartbeat tick
-            message_task = asyncio.create_task(pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0))
+            message_task = asyncio.create_task(
+                pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            )
             done, pending = await asyncio.wait(
                 {message_task, heartbeat_task},
                 return_when=asyncio.FIRST_COMPLETED,
@@ -429,19 +437,24 @@ async def _sse_event_generator(
                 # Responder geographic scope filter (best-effort in Python)
                 if region_geojson and "lat" in event_data and "lng" in event_data:
                     try:
-                        from shapely.geometry import Point, shape  # type: ignore[import]
+                        from shapely.geometry import (  # type: ignore[import]
+                            Point,
+                            shape,
+                        )
 
                         region = shape(json.loads(region_geojson))
-                        if not region.contains(Point(event_data["lng"], event_data["lat"])):
+                        point = Point(event_data["lng"], event_data["lat"])
+                        if not region.contains(point):
                             continue
                     except Exception:
                         pass  # If shapely unavailable, forward all events
 
-                yield f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
+                yield (f"event: {event_type}\n" f"data: {json.dumps(event_data)}\n\n")
 
     except asyncio.CancelledError:
         logger.info(
-            "SSE client disconnected (sub: %s…)", current_user.get("sub", "")[:8]
+            "SSE client disconnected (sub: %s…)",
+            current_user.get("sub", "")[:8],
         )
     finally:
         await pubsub.unsubscribe(analyst_service.ANALYST_EVENTS_CHANNEL)

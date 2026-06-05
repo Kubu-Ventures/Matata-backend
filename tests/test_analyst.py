@@ -15,8 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
-from typing import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -24,11 +23,10 @@ import pytest
 from app.models.enums import (
     CrisisType,
     InfrastructureType,
+    PhotoStatus,
     ReportDamageSeverity,
     ReportStatus,
-    PhotoStatus,
 )
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -114,9 +112,10 @@ class TestBuildReportFilters:
     """Unit tests for the _build_report_filters helper (lines 119-145)."""
 
     def test_no_filters_returns_unchanged_query(self):
-        from app.services.analyst_service import _build_report_filters
         import sqlalchemy as sa
+
         from app.models.report import Report
+        from app.services.analyst_service import _build_report_filters
 
         q = sa.select(Report)
         result = _build_report_filters(
@@ -133,9 +132,10 @@ class TestBuildReportFilters:
         assert result is not None
 
     def test_all_filters_applied(self):
-        from app.services.analyst_service import _build_report_filters
         import sqlalchemy as sa
+
         from app.models.report import Report
+        from app.services.analyst_service import _build_report_filters
 
         q = sa.select(Report)
         result = _build_report_filters(
@@ -153,12 +153,16 @@ class TestBuildReportFilters:
         assert "crisis_type" in compiled.lower()
 
     def test_region_geojson_adds_st_within(self):
-        from app.services.analyst_service import _build_report_filters
         import sqlalchemy as sa
+
         from app.models.report import Report
+        from app.services.analyst_service import _build_report_filters
 
         q = sa.select(Report)
-        region = '{"type":"Polygon","coordinates":[[[36,-2],[38,-2],[38,0],[36,0],[36,-2]]]}'
+        region = (
+            '{"type":"Polygon","coordinates":'
+            "[[[36,-2],[38,-2],[38,0],[36,0],[36,-2]]]}"
+        )
         result = _build_report_filters(
             q,
             crisis_type=None,
@@ -215,8 +219,6 @@ class TestListReports:
         from app.services.analyst_service import list_reports
 
         db = AsyncMock()
-        # _make_report() now uses real enum instances, so ReportSummarySchema
-        # and PaginatedReports can validate without patching.
         report = _make_report()
 
         count_mock = MagicMock()
@@ -312,8 +314,10 @@ class TestGetReportDetail:
         ]
         db.execute = AsyncMock(side_effect=execute_results)
 
-        with patch("app.services.analyst_service._get_building_footprint_geojson",
-                   new=AsyncMock(return_value=None)):
+        with patch(
+            "app.services.analyst_service._get_building_footprint_geojson",
+            new=AsyncMock(return_value=None),
+        ):
             result = await get_report_detail(db, report.id)
 
         assert result is not None
@@ -328,7 +332,6 @@ class TestGetReportDetail:
         report = _make_report(building_id=building_id)
         report.analyst_notes = []
 
-        # Use real enum values so TimelineReportItem.model_validate succeeds
         timeline_report = _make_report(
             building_id=building_id,
             status="verified",
@@ -336,13 +339,17 @@ class TestGetReportDetail:
         )
 
         db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[
-            _scalar_result(report),
-            _scalars_result([timeline_report]),
-        ])
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_result(report),
+                _scalars_result([timeline_report]),
+            ]
+        )
 
-        with patch("app.services.analyst_service._get_building_footprint_geojson",
-                   new=AsyncMock(return_value='{"type":"Polygon"}')):
+        with patch(
+            "app.services.analyst_service._get_building_footprint_geojson",
+            new=AsyncMock(return_value='{"type":"Polygon"}'),
+        ):
             result = await get_report_detail(db, report.id)
 
         assert result is not None
@@ -358,13 +365,18 @@ class TestGetReportDetail:
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_scalar_result(report))
 
-        region = json.dumps({
-            "type": "Polygon",
-            "coordinates": [[[36.0, -2.0], [38.0, -2.0], [38.0, 0.0], [36.0, 0.0], [36.0, -2.0]]]
-        })
+        region = json.dumps(
+            {
+                "type": "Polygon",
+                "coordinates": [
+                    [[36.0, -2.0], [38.0, -2.0], [38.0, 0.0], [36.0, 0.0], [36.0, -2.0]]
+                ],
+            }
+        )
 
         try:
             import shapely  # noqa
+
             result = await get_report_detail(db, report.id, region_geojson=region)
             assert result is None
         except ImportError:
@@ -380,13 +392,19 @@ class TestGetReportDetail:
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_scalar_result(report))
 
-        region = json.dumps({
-            "type": "Polygon",
-            "coordinates": [[[36.0, -2.0], [38.0, -2.0], [38.0, 0.0], [36.0, 0.0], [36.0, -2.0]]]
-        })
+        region = json.dumps(
+            {
+                "type": "Polygon",
+                "coordinates": [
+                    [[36.0, -2.0], [38.0, -2.0], [38.0, 0.0], [36.0, 0.0], [36.0, -2.0]]
+                ],
+            }
+        )
 
-        with patch("app.services.analyst_service._get_building_footprint_geojson",
-                   new=AsyncMock(return_value=None)):
+        with patch(
+            "app.services.analyst_service._get_building_footprint_geojson",
+            new=AsyncMock(return_value=None),
+        ):
             try:
                 result = await get_report_detail(db, report.id, region_geojson=region)
                 assert result is not None
@@ -395,8 +413,8 @@ class TestGetReportDetail:
 
     @pytest.mark.asyncio
     async def test_analyst_notes_attached(self):
-        from app.services.analyst_service import get_report_detail
         from app.schemas.analyst_schemas import AnalystNoteOut
+        from app.services.analyst_service import get_report_detail
 
         report = _make_report(building_id=None)
         note = MagicMock()
@@ -408,12 +426,19 @@ class TestGetReportDetail:
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_scalar_result(report))
 
-        with patch("app.services.analyst_service._get_building_footprint_geojson",
-                   new=AsyncMock(return_value=None)):
-            with patch.object(AnalystNoteOut, "model_validate",
-                              return_value=AnalystNoteOut(
-                                  id=note.id, body=note.body, created_at=note.created_at
-                              )):
+        with patch(
+            "app.services.analyst_service._get_building_footprint_geojson",
+            new=AsyncMock(return_value=None),
+        ):
+            with patch.object(
+                AnalystNoteOut,
+                "model_validate",
+                return_value=AnalystNoteOut(
+                    id=note.id,
+                    body=note.body,
+                    created_at=note.created_at,
+                ),
+            ):
                 result = await get_report_detail(db, report.id)
 
         assert result is not None
@@ -431,7 +456,8 @@ class TestTransitionReportStatus:
         db = AsyncMock()
         with pytest.raises(ValueError, match="Invalid target status"):
             await transition_report_status(
-                db, uuid4(),
+                db,
+                uuid4(),
                 new_status=ReportStatus.pending,
                 reason_code=None,
                 notes=None,
@@ -445,7 +471,8 @@ class TestTransitionReportStatus:
         db = AsyncMock()
         with pytest.raises(ValueError, match="Invalid reason_code"):
             await transition_report_status(
-                db, uuid4(),
+                db,
+                uuid4(),
                 new_status=ReportStatus.rejected,
                 reason_code="made_up_code",
                 notes=None,
@@ -461,7 +488,8 @@ class TestTransitionReportStatus:
 
         with pytest.raises(LookupError):
             await transition_report_status(
-                db, uuid4(),
+                db,
+                uuid4(),
                 new_status=ReportStatus.verified,
                 reason_code=None,
                 notes=None,
@@ -480,10 +508,13 @@ class TestTransitionReportStatus:
         db.flush = AsyncMock()
         db.add = MagicMock()
 
-        with patch("app.services.analyst_service._sync_building_severity",
-                   new=AsyncMock()) as mock_sync:
+        with patch(
+            "app.services.analyst_service._sync_building_severity",
+            new=AsyncMock(),
+        ) as mock_sync:
             await transition_report_status(
-                db, report.id,
+                db,
+                report.id,
                 new_status=ReportStatus.verified,
                 reason_code=None,
                 notes=None,
@@ -502,10 +533,13 @@ class TestTransitionReportStatus:
         db.flush = AsyncMock()
         db.add = MagicMock()
 
-        with patch("app.services.analyst_service._sync_building_severity",
-                   new=AsyncMock()) as mock_sync:
+        with patch(
+            "app.services.analyst_service._sync_building_severity",
+            new=AsyncMock(),
+        ) as mock_sync:
             await transition_report_status(
-                db, report.id,
+                db,
+                report.id,
                 new_status=ReportStatus.verified,
                 reason_code=None,
                 notes=None,
@@ -525,7 +559,8 @@ class TestTransitionReportStatus:
         db.add = MagicMock()
 
         await transition_report_status(
-            db, report.id,
+            db,
+            report.id,
             new_status=ReportStatus.duplicate,
             reason_code=None,
             notes="Field-confirmed duplicate.",
@@ -538,7 +573,13 @@ class TestTransitionReportStatus:
     async def test_rejected_with_all_reason_codes(self):
         from app.services.analyst_service import transition_report_status
 
-        for reason in ["inaccurate", "duplicate", "poor_quality", "out_of_scope", "other"]:
+        for reason in [
+            "inaccurate",
+            "duplicate",
+            "poor_quality",
+            "out_of_scope",
+            "other",
+        ]:
             report = _make_report()
 
             db = AsyncMock()
@@ -547,7 +588,8 @@ class TestTransitionReportStatus:
             db.add = MagicMock()
 
             result = await transition_report_status(
-                db, report.id,
+                db,
+                report.id,
                 new_status=ReportStatus.rejected,
                 reason_code=reason,
                 notes=None,
@@ -570,11 +612,10 @@ class TestSyncBuildingSeverity:
 
     @pytest.mark.asyncio
     async def test_upgrades_severity_when_higher(self):
-        from app.services.analyst_service import _sync_building_severity
         from app.models.enums import DamageSeverity
+        from app.services.analyst_service import _sync_building_severity
 
         building = MagicMock()
-        # Assign a real enum — do NOT attempt to set .value (it's read-only)
         building.current_severity = DamageSeverity.minimal
 
         db = AsyncMock()
@@ -586,11 +627,10 @@ class TestSyncBuildingSeverity:
 
     @pytest.mark.asyncio
     async def test_no_change_when_same_or_lower_severity(self):
-        from app.services.analyst_service import _sync_building_severity
         from app.models.enums import DamageSeverity
+        from app.services.analyst_service import _sync_building_severity
 
         building = MagicMock()
-        # Assign a real enum — do NOT attempt to set .value (it's read-only)
         building.current_severity = DamageSeverity.destroyed
         original_severity = building.current_severity
 
@@ -626,10 +666,12 @@ class TestMergeReports:
 
         primary = _make_report()
         db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[
-            _scalar_result(primary),
-            _scalar_result(None),
-        ])
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_result(primary),
+                _scalar_result(None),
+            ]
+        )
 
         with pytest.raises(LookupError, match="Duplicate report"):
             await merge_reports(
@@ -651,11 +693,13 @@ class TestMergeReports:
         dup2.photo_url = None
 
         db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[
-            _scalar_result(primary),
-            _scalar_result(dup1),
-            _scalar_result(dup2),
-        ])
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_result(primary),
+                _scalar_result(dup1),
+                _scalar_result(dup2),
+            ]
+        )
         db.flush = AsyncMock()
         db.add = MagicMock()
 
@@ -679,10 +723,12 @@ class TestMergeReports:
         dup.photo_url = "s3://bucket/photo.jpg"
 
         db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[
-            _scalar_result(primary),
-            _scalar_result(dup),
-        ])
+        db.execute = AsyncMock(
+            side_effect=[
+                _scalar_result(primary),
+                _scalar_result(dup),
+            ]
+        )
         db.flush = AsyncMock()
         db.add = MagicMock()
 
@@ -713,8 +759,8 @@ class TestCreateAnalystNote:
 
     @pytest.mark.asyncio
     async def test_creates_note_and_returns_schema(self):
-        from app.services.analyst_service import create_analyst_note
         from app.schemas.analyst_schemas import AnalystNoteOut
+        from app.services.analyst_service import create_analyst_note
 
         report_id = uuid4()
         note_id = uuid4()
@@ -731,14 +777,18 @@ class TestCreateAnalystNote:
 
         with patch("app.services.analyst_service.AnalystNote") as MockNote:
             MockNote.return_value = note_mock
-            with patch.object(AnalystNoteOut, "model_validate",
-                              return_value=AnalystNoteOut(
-                                  id=note_id,
-                                  body="Confirmed by field team.",
-                                  created_at=note_mock.created_at,
-                              )):
+            with patch.object(
+                AnalystNoteOut,
+                "model_validate",
+                return_value=AnalystNoteOut(
+                    id=note_id,
+                    body="Confirmed by field team.",
+                    created_at=note_mock.created_at,
+                ),
+            ):
                 result = await create_analyst_note(
-                    db, report_id,
+                    db,
+                    report_id,
                     body="Confirmed by field team.",
                     analyst_id_hash="a" * 64,
                 )
@@ -752,10 +802,12 @@ class TestGetStatsSummary:
 
     @pytest.mark.asyncio
     async def test_returns_cached_value_on_hit(self):
-        from app.services.analyst_service import get_stats_summary
         from app.schemas.analyst_schemas import (
-            StatsSummaryResponse, SeverityBreakdown, CrisisTypeBreakdown
+            CrisisTypeBreakdown,
+            SeverityBreakdown,
+            StatsSummaryResponse,
         )
+        from app.services.analyst_service import get_stats_summary
 
         cached = StatsSummaryResponse(
             total=99,
@@ -897,7 +949,7 @@ class TestGetHeatmap:
 
         result = await get_heatmap(db, redis)
         assert len(result["features"]) == 1
-        assert result["features"][0]["properties"]["weight"] == 3  # destroyed = 3
+        assert result["features"][0]["properties"]["weight"] == 3
 
     @pytest.mark.asyncio
     async def test_corrupt_cache_falls_through(self):
@@ -924,6 +976,7 @@ class TestGetHeatmap:
 def _make_app(current_user: dict, mock_redis):
     """Build a minimal test app with dependency overrides."""
     from fastapi import FastAPI
+
     from app.api.v1.routes.analyst import analyst_router, stats_router
     from app.core.dependencies import get_db, get_redis
 
@@ -944,6 +997,7 @@ def _make_app(current_user: dict, mock_redis):
     test_app.dependency_overrides[get_redis] = lambda: mock_redis
 
     from app.api.v1.routes.auth import get_current_user
+
     test_app.dependency_overrides[get_current_user] = lambda: current_user
 
     return test_app
@@ -953,23 +1007,33 @@ class TestGetReportDetailRoute:
     """Tests for GET /analyst/reports/{id} route (line 293 = 404 path)."""
 
     def test_returns_404_when_service_returns_none(self, mock_redis):
-        from app.services import analyst_service
         from fastapi.testclient import TestClient
+
+        from app.services import analyst_service
 
         analyst_user = {"sub": "a" * 64, "role": "analyst", "tier": 0}
         app = _make_app(analyst_user, mock_redis)
         client = TestClient(app, raise_server_exceptions=False)
 
-        with patch.object(analyst_service, "get_report_detail", new=AsyncMock(return_value=None)):
+        with patch.object(
+            analyst_service, "get_report_detail", new=AsyncMock(return_value=None)
+        ):
             resp = client.get(f"/api/v1/analyst/reports/{uuid4()}")
 
         assert resp.status_code == 404
 
     def test_returns_200_with_detail_schema(self, mock_redis):
-        from app.services import analyst_service
-        from app.schemas.analyst_schemas import ReportDetailSchema
-        from app.models.enums import CrisisType, InfrastructureType, ReportDamageSeverity, ReportStatus, PhotoStatus
         from fastapi.testclient import TestClient
+
+        from app.models.enums import (
+            CrisisType,
+            InfrastructureType,
+            PhotoStatus,
+            ReportDamageSeverity,
+            ReportStatus,
+        )
+        from app.schemas.analyst_schemas import ReportDetailSchema
+        from app.services import analyst_service
 
         analyst_user = {"sub": "a" * 64, "role": "analyst", "tier": 0}
         app = _make_app(analyst_user, mock_redis)
@@ -988,7 +1052,11 @@ class TestGetReportDetailRoute:
             updated_at=datetime.now(tz=timezone.utc),
         )
 
-        with patch.object(analyst_service, "get_report_detail", new=AsyncMock(return_value=detail)):
+        with patch.object(
+            analyst_service,
+            "get_report_detail",
+            new=AsyncMock(return_value=detail),
+        ):
             resp = client.get(f"/api/v1/analyst/reports/{report_id}")
 
         assert resp.status_code == 200
@@ -999,8 +1067,9 @@ class TestTransitionStatusRoute:
     """Tests for PATCH /analyst/reports/{id}/status (lines 375-448)."""
 
     def test_returns_404_when_report_not_found(self, mock_redis):
-        from app.services import analyst_service
         from fastapi.testclient import TestClient
+
+        from app.services import analyst_service
 
         analyst_user = {"sub": "a" * 64, "role": "analyst", "tier": 0}
         app = _make_app(analyst_user, mock_redis)
@@ -1018,8 +1087,9 @@ class TestTransitionStatusRoute:
         assert resp.status_code == 404
 
     def test_returns_422_on_business_rule_violation(self, mock_redis):
-        from app.services import analyst_service
         from fastapi.testclient import TestClient
+
+        from app.services import analyst_service
 
         analyst_user = {"sub": "a" * 64, "role": "analyst", "tier": 0}
         app = _make_app(analyst_user, mock_redis)
@@ -1037,8 +1107,9 @@ class TestTransitionStatusRoute:
         assert resp.status_code == 422
 
     def test_duplicate_status_allowed(self, mock_redis):
-        from app.services import analyst_service
         from fastapi.testclient import TestClient
+
+        from app.services import analyst_service
 
         analyst_user = {"sub": "a" * 64, "role": "analyst", "tier": 0}
         app = _make_app(analyst_user, mock_redis)
@@ -1046,8 +1117,11 @@ class TestTransitionStatusRoute:
 
         report = _make_report()
 
-        with patch.object(analyst_service, "transition_report_status",
-                          new=AsyncMock(return_value=report)):
+        with patch.object(
+            analyst_service,
+            "transition_report_status",
+            new=AsyncMock(return_value=report),
+        ):
             resp = client.patch(
                 f"/api/v1/analyst/reports/{report.id}/status",
                 json={"status": "duplicate"},
@@ -1060,8 +1134,9 @@ class TestHeatmapRoute:
     """Tests for GET /stats/heatmap (line 532)."""
 
     def test_returns_geojson_feature_collection(self, mock_redis):
-        from app.services import analyst_service
         from fastapi.testclient import TestClient
+
+        from app.services import analyst_service
 
         analyst_user = {"sub": "a" * 64, "role": "analyst", "tier": 0}
         app = _make_app(analyst_user, mock_redis)
@@ -1072,13 +1147,18 @@ class TestHeatmapRoute:
             "features": [
                 {
                     "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [36.82, -1.29]},
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [36.82, -1.29],
+                    },
                     "properties": {"weight": 2},
                 }
             ],
         }
 
-        with patch.object(analyst_service, "get_heatmap", new=AsyncMock(return_value=geojson)):
+        with patch.object(
+            analyst_service, "get_heatmap", new=AsyncMock(return_value=geojson)
+        ):
             resp = client.get("/api/v1/stats/heatmap")
 
         assert resp.status_code == 200
@@ -1109,7 +1189,10 @@ class TestSSERoute:
         async def _empty_gen(redis, user):
             yield ": heartbeat\n\n"
 
-        with patch("app.api.v1.routes.analyst._sse_event_generator", new=_empty_gen):
+        with patch(
+            "app.api.v1.routes.analyst._sse_event_generator",
+            new=_empty_gen,
+        ):
             client = TestClient(app)
             with client.stream("GET", "/api/v1/analyst/stream") as resp:
                 assert resp.status_code == 200
@@ -1189,7 +1272,11 @@ class TestSseEventGenerator:
             try:
                 event = await asyncio.wait_for(gen.__anext__(), timeout=3.0)
                 events.append(event)
-            except (StopAsyncIteration, asyncio.TimeoutError, asyncio.CancelledError):
+            except (
+                StopAsyncIteration,
+                asyncio.TimeoutError,
+                asyncio.CancelledError,
+            ):
                 pass
 
         if events:
