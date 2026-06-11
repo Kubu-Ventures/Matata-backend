@@ -36,6 +36,26 @@ class Settings(BaseSettings):
     AFRICASTALKING_API_KEY: str = ""
     AFRICASTALKING_USERNAME: str = ""
 
+    # ── Email delivery ────────────────────────────────────────────────────────
+    # EMAIL_PROVIDER=console  — prints to stdout; no network call (default, dev/CI).
+    # EMAIL_PROVIDER=smtp     — sends via any SMTP server (Mailpit locally,
+    #                           Postal / any MTA in production).
+    #
+    # Dev default points at the Mailpit container (docker-compose service
+    # "mailpit").  In production point at your self-hosted Postal instance.
+    EMAIL_PROVIDER: str = "console"  # console | smtp
+
+    # SMTP connection settings — only required when EMAIL_PROVIDER=smtp.
+    SMTP_HOST: str = "mailpit"  # docker-compose service name in dev
+    SMTP_PORT: int = 1025  # Mailpit SMTP port (dev); Postal default 25/587
+    SMTP_USERNAME: str = ""  # leave empty for Mailpit (no auth needed)
+    SMTP_PASSWORD: str = ""  # leave empty for Mailpit (no auth needed)
+    SMTP_USE_TLS: bool = False  # set True when using Postal with TLS (port 587)
+    SMTP_USE_STARTTLS: bool = False  # set True for STARTTLS (port 587 on many MTAs)
+
+    # The envelope / display From address for all outgoing mail.
+    NOTIFICATION_FROM_EMAIL: str = "noreply@crisismap.matata.org"
+
     # ── Content moderation ────────────────────────────────────────────────────
     # MODERATION_PROVIDER=mock        — no AWS required (default, dev/CI).
     # MODERATION_PROVIDER=rekognition — AWS Rekognition; Free Tier: 5k images/month.
@@ -86,6 +106,9 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     # Alert ops when the AI queue depth exceeds this value.
     AI_PROCESSING_QUEUE_ALERT_DEPTH: int = 500
+
+    # ── Dashboard ─────────────────────────────────────────────────────────────
+    DASHBOARD_BASE_URL: str = "https://crisismap.matata.org"
 
     model_config = SettingsConfigDict(
         env_file=".env",
