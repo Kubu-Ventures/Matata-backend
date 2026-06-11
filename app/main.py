@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api.v1.routes.analyst import analyst_router, stats_router
+from app.api.v1.routes.analyst_auth import router as analyst_auth_router
 from app.api.v1.routes.auth import router as auth_router
 from app.api.v1.routes.export import router as export_router
 from app.api.v1.routes.gis import router as gis_router
@@ -139,6 +140,7 @@ app.include_router(health_router)
 app.include_router(metrics_router)
 
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(analyst_auth_router, prefix="/api/v1")
 app.include_router(reports_router, prefix="/api/v1")
 app.include_router(gis_router, prefix="/api/v1")
 app.include_router(analyst_router, prefix="/api/v1")

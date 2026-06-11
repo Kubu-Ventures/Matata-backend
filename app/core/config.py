@@ -108,6 +108,43 @@ class Settings(BaseSettings):
     # Alert ops when the AI queue depth exceeds this value.
     AI_PROCESSING_QUEUE_ALERT_DEPTH: int = 500
 
+    # ── i18n / Translation ────────────────────────────────────────────────────
+    # TRANSLATION_PROVIDER=libretranslate  — calls a self-hosted LibreTranslate
+    #                                        container (default; no API key needed
+    #                                        for self-hosted).
+    # TRANSLATION_PROVIDER=argostranslate  — offline open-source fallback;
+    #                                        requires ``pip install argostranslate``
+    #                                        and pre-installed language packages.
+    # TRANSLATION_PROVIDER=mock            — deterministic stub (tests / CI only).
+    TRANSLATION_PROVIDER: str = "libretranslate"
+
+    # Base URL of the LibreTranslate service.  The Docker Compose service name
+    # ``libretranslate`` resolves within the compose network automatically.
+    # Override to ``https://libretranslate.com`` to use the public hosted API
+    # (requires LIBRETRANSLATE_API_KEY).
+    LIBRETRANSLATE_URL: str = "http://libretranslate:5000"
+
+    # API key for the LibreTranslate *public hosted* API at libretranslate.com.
+    # Leave empty (the default) for self-hosted instances — no key is required.
+    LIBRETRANSLATE_API_KEY: str = ""
+
+    # Default / fallback language code when Accept-Language negotiation yields
+    # no supported match.
+    DEFAULT_LANGUAGE: str = "en"
+
+    # ── Supabase Auth (analyst / responder / admin accounts) ──────────────────
+    # SUPABASE_URL           — e.g. https://<project-ref>.supabase.co
+    # SUPABASE_ANON_KEY      — public anon key from Supabase project settings
+    # SUPABASE_SERVICE_ROLE_KEY — secret service role key (never expose client-side)
+    # SUPABASE_JWT_SECRET    — JWT secret from Supabase project settings (used to
+    #                          verify analyst tokens server-side)
+    # Leave all four empty in development to disable analyst login (CLI provisioning
+    # remains available as a fallback).
+    SUPABASE_URL: str = ""
+    SUPABASE_ANON_KEY: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    SUPABASE_JWT_SECRET: str = ""
+
     # ── Dashboard ─────────────────────────────────────────────────────────────
     DASHBOARD_BASE_URL: str = "https://crisismap.matata.org"
 
