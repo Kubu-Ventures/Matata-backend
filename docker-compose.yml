@@ -14,6 +14,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      mailpit:
+        condition: service_started
     command: >
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
@@ -44,6 +46,22 @@ services:
       timeout: 5s
       retries: 10
       start_period: 60s
+
+  # ── Mailpit — open-source local SMTP + web UI (dev/CI) ──────────────────────
+  # Catches all outbound email without sending anything to real inboxes.
+  # Web UI: http://localhost:8025
+  # SMTP:   localhost:1025
+  # In production, replace with your self-hosted Postal instance by pointing
+  # SMTP_HOST / SMTP_PORT / SMTP_USERNAME / SMTP_PASSWORD at it.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
 
   celery-gis:
     build:
@@ -78,6 +96,25 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  celery-notifications:
+    build:
+      context: .
+      target: development
+    volumes:
+      - .:/app
+    command: >
+      celery -A app.workers.celery_app worker
+      -Q notifications --concurrency 2 --loglevel info
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
 
 volumes:
   postgres_data:
