@@ -331,7 +331,7 @@ async def verify_otp(
         )
 
     # ── Retrieve stored OTP ──────────────────────────────────────────────────
-    stored_otp: str | None = await redis.get(_otp_key(id_hash))
+    stored_otp: bytes | str | None = await redis.get(_otp_key(id_hash))
     if stored_otp is None:
         raise OTPNotFoundError("No pending OTP found. Please request a new code.")
 

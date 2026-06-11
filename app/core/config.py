@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     ALLOWED_ORIGINS: str = "http://localhost:3000"
     LOG_LEVEL: str = "info"
+    METRICS_TOKEN: str = ""  # static bearer token for /metrics scrape jobs
 
     # ── JWT ───────────────────────────────────────────────────────────────────
     JWT_SECRET_KEY: str = ""
