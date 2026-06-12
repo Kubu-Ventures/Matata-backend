@@ -97,7 +97,11 @@ services:
       start_period: 1800s         # First boot downloads ~2 GB of language packs; allow 30 min
 
   # ── Nginx Reverse Proxy ──────────────────────────────────────
+  # Requires a domain name and TLS certificates in ./infra/certs/.
+  # Not started by default — enable with: --profile proxy
+  # When working from a bare IP (no domain), access the app on port 8000 directly.
   nginx:
+    profiles: [proxy]
     image: nginx:1.27-alpine
     restart: unless-stopped
     ports:
