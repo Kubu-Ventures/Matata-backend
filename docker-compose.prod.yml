@@ -30,7 +30,7 @@ services:
       minio:
         condition: service_healthy
       libretranslate:
-        condition: service_healthy
+        condition: service_started  # healthy takes 10-30 min on first boot (language pack downloads)
 
   # ── PostgreSQL ───────────────────────────────────────────────
   postgres:
@@ -93,8 +93,8 @@ services:
       test: ["CMD-SHELL", "curl -sf http://localhost:5000/languages || exit 1"]
       interval: 60s
       timeout: 15s
-      retries: 5
-      start_period: 180s          # Language pack downloads take time on first boot
+      retries: 3
+      start_period: 1800s         # 26 language packs ~2 GB; allow 30 min on first boot
 
   # ── Nginx Reverse Proxy ──────────────────────────────────────
   nginx:
