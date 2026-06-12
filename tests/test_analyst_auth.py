@@ -47,7 +47,14 @@ _SUPABASE_PAYLOAD = {
 _SUPABASE_RESPONSE = {
     "access_token": jwt.encode(_SUPABASE_PAYLOAD, _TEST_JWT_SECRET, algorithm="HS256"),
     "refresh_token": "supabase-refresh-token",
-    "user": {"id": "uuid-1234", "email": _EMAIL},
+    "user": {
+        "id": "uuid-1234",
+        "email": _EMAIL,
+        "user_metadata": {
+            "crisismap_role": "analyst",
+            "region_geojson": None,
+        },
+    },
 }
 
 
@@ -233,16 +240,17 @@ class TestInviteAnalyst:
 
 
 class TestExtractCrisisMapClaims:
-    def _make_token(self, payload: dict, secret: str = _TEST_JWT_SECRET) -> str:
-        return jwt.encode(payload, secret, algorithm="HS256")
+    def _make_response(self, user_metadata: dict) -> dict:
+        """Build a minimal Supabase sign-in response dict."""
+        return {"user": {"id": "uuid-1234", "user_metadata": user_metadata}}
 
     def test_extracts_role_from_valid_token(self):
         from app.services.supabase_service import extract_crisismap_claims
 
-        token = self._make_token(_SUPABASE_PAYLOAD)
-        with patch("app.services.supabase_service.settings") as mock_settings:
-            mock_settings.SUPABASE_JWT_SECRET = _TEST_JWT_SECRET
-            role, region = extract_crisismap_claims(token)
+        response = self._make_response(
+            {"crisismap_role": "analyst", "region_geojson": None}
+        )
+        role, region = extract_crisismap_claims(response)
 
         assert role == "analyst"
         assert region is None
@@ -250,43 +258,34 @@ class TestExtractCrisisMapClaims:
     def test_extracts_region_geojson_when_present(self):
         from app.services.supabase_service import extract_crisismap_claims
 
-        payload = {
-            **_SUPABASE_PAYLOAD,
-            "user_metadata": {
+        response = self._make_response(
+            {
                 "crisismap_role": "responder",
                 "region_geojson": '{"type":"Polygon"}',
-            },
-        }
-        token = self._make_token(payload)
-
-        with patch("app.services.supabase_service.settings") as mock_settings:
-            mock_settings.SUPABASE_JWT_SECRET = _TEST_JWT_SECRET
-            role, region = extract_crisismap_claims(token)
+            }
+        )
+        role, region = extract_crisismap_claims(response)
 
         assert role == "responder"
         assert region == '{"type":"Polygon"}'
 
-    def test_raises_not_configured_when_jwt_secret_empty(self):
-        from app.services.supabase_service import (
-            SupabaseNotConfiguredError,
-            extract_crisismap_claims,
-        )
-
-        with patch("app.services.supabase_service.settings") as mock_settings:
-            mock_settings.SUPABASE_JWT_SECRET = ""
-            with pytest.raises(SupabaseNotConfiguredError):
-                extract_crisismap_claims("any.token.here")
-
-    def test_raises_on_invalid_token(self):
+    def test_raises_when_user_key_missing(self):
         from app.services.supabase_service import (
             SupabaseAuthError,
             extract_crisismap_claims,
         )
 
-        with patch("app.services.supabase_service.settings") as mock_settings:
-            mock_settings.SUPABASE_JWT_SECRET = _TEST_JWT_SECRET
-            with pytest.raises(SupabaseAuthError):
-                extract_crisismap_claims("not.a.valid.token")
+        with pytest.raises(SupabaseAuthError):
+            extract_crisismap_claims({})
+
+    def test_raises_when_user_metadata_is_none(self):
+        from app.services.supabase_service import (
+            SupabaseAuthError,
+            extract_crisismap_claims,
+        )
+
+        with pytest.raises(SupabaseAuthError):
+            extract_crisismap_claims({"user": {"user_metadata": None}})
 
     def test_raises_when_no_role_in_metadata(self):
         from app.services.supabase_service import (
@@ -294,30 +293,17 @@ class TestExtractCrisisMapClaims:
             extract_crisismap_claims,
         )
 
-        payload = {
-            "sub": "uuid-1234",
-            "role": "authenticated",
-            "user_metadata": {},
-        }
-        token = self._make_token(payload)
+        with pytest.raises(SupabaseAuthError, match="no CrisisMap role"):
+            extract_crisismap_claims(self._make_response({}))
 
-        with patch("app.services.supabase_service.settings") as mock_settings:
-            mock_settings.SUPABASE_JWT_SECRET = _TEST_JWT_SECRET
-            with pytest.raises(SupabaseAuthError, match="no CrisisMap role"):
-                extract_crisismap_claims(token)
-
-    def test_raises_on_wrong_secret(self):
+    def test_raises_when_role_is_none(self):
         from app.services.supabase_service import (
             SupabaseAuthError,
             extract_crisismap_claims,
         )
 
-        token = self._make_token(_SUPABASE_PAYLOAD, secret="correct-secret")
-
-        with patch("app.services.supabase_service.settings") as mock_settings:
-            mock_settings.SUPABASE_JWT_SECRET = "wrong-secret"
-            with pytest.raises(SupabaseAuthError):
-                extract_crisismap_claims(token)
+        with pytest.raises(SupabaseAuthError):
+            extract_crisismap_claims(self._make_response({"crisismap_role": None}))
 
 
 # ===========================================================================
