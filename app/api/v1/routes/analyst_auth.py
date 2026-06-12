@@ -163,10 +163,9 @@ async def analyst_login(
             detail="Authentication service is temporarily unavailable.",
         ) from exc
 
-    # ── Extract CrisisMap role from Supabase JWT ──────────────────────────────
-    supabase_token = supabase_response.get("access_token", "")
+    # ── Extract CrisisMap role from Supabase response body ───────────────────
     try:
-        crisismap_role_str, region_geojson = extract_crisismap_claims(supabase_token)
+        crisismap_role_str, region_geojson = extract_crisismap_claims(supabase_response)
     except SupabaseNotConfiguredError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

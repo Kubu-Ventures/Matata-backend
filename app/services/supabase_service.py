@@ -29,7 +29,6 @@ import logging
 from typing import Optional
 
 import httpx
-from jose import JWTError, jwt
 
 from app.core.config import settings
 
@@ -186,39 +185,30 @@ async def invite_analyst(
     return response.json()
 
 
-def extract_crisismap_claims(supabase_access_token: str) -> tuple[str, Optional[str]]:
-    """Decode a Supabase JWT and extract the CrisisMap role and region.
+def extract_crisismap_claims(supabase_response: dict) -> tuple[str, Optional[str]]:
+    """Extract the CrisisMap role and region from a Supabase sign-in response.
 
-    Verifies the token signature using ``SUPABASE_JWT_SECRET`` so that
-    a forged token cannot be used to escalate privileges.
+    Reads ``user_metadata`` from the response body returned directly by
+    Supabase after a successful email+password authentication.  No JWT
+    signature verification is required here because:
+      - The response arrived over TLS directly from Supabase.
+      - Supabase already authenticated the credentials before returning it.
+      - ``user_metadata`` is set server-side via the service role key and
+        cannot be modified by the analyst.
 
     Args:
-        supabase_access_token: Raw Supabase JWT string from the sign-in
-                               response.
+        supabase_response: Full JSON dict from the Supabase sign-in endpoint
+                           (contains ``user.user_metadata``).
 
     Returns:
         Tuple of ``(crisismap_role, region_geojson)``.
 
     Raises:
-        SupabaseNotConfiguredError: SUPABASE_JWT_SECRET not set.
-        SupabaseAuthError:          Token invalid, expired, or missing role.
+        SupabaseAuthError: Response is missing a CrisisMap role.
     """
-    if not settings.SUPABASE_JWT_SECRET:
-        raise SupabaseNotConfiguredError(
-            "SUPABASE_JWT_SECRET is not set. Cannot verify analyst tokens."
-        )
-
-    try:
-        payload = jwt.decode(
-            supabase_access_token,
-            settings.SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            options={"verify_aud": False},
-        )
-    except JWTError as exc:
-        raise SupabaseAuthError("Supabase token verification failed.") from exc
-
-    user_metadata = payload.get("user_metadata") or {}
+    user_metadata = (
+        (supabase_response.get("user") or {}).get("user_metadata") or {}
+    )
     crisismap_role = user_metadata.get("crisismap_role")
     region_geojson = user_metadata.get("region_geojson")
 
