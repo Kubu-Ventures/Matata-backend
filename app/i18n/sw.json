@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "Maombi mengi sana. Tafadhali jaribu tena baadaye.",
+  "errors.image_rejected": "Picha haikuweza kukubaliwa.",
+  "errors.otp_invalid": "Nambari ya OTP si sahihi.",
+  "errors.otp_locked_out": "Majaribio mengi yameshindwa. Jaribu tena baada ya dakika {minutes}.",
+  "errors.report_not_found": "Ripoti haikupatikana.",
+  "errors.auth_required": "Vitambulisho vya uthibitishaji havikutolewa.",
+  "errors.forbidden": "Huna ruhusa ya kufanya kitendo hiki.",
+  "errors.not_found": "Rasilimali iliyoombwa haikupatikana.",
+  "errors.internal": "Kosa la kutarajiwa lilitokea.",
+  "errors.sms_failed": "Imeshindwa kutuma OTP. Tafadhali jaribu tena baadaye.",
+  "errors.invalid_phone": "Nambari ya simu lazima iwe katika muundo wa E.164, mfano +254700123456.",
+  "errors.invalid_otp_format": "OTP lazima iwe nambari ya tarakimu 6.",
+  "errors.report_ownership": "Huna ruhusa ya kufikia ripoti hii.",
+  "errors.shapefile_unavailable": "Uhamishaji wa Shapefile unahitaji GDAL. Tafadhali wasiliana na msimamizi wa mfumo.",
+  "errors.export_job_not_found": "Kazi ya uhamishaji haikupatikana au imeisha muda wake.",
+  "errors.invalid_status_transition": "Mpito wa hali si sahihi.",
+  "errors.reason_code_required": "reason_code inahitajika wakati hali ni rejected.",
+  "info.otp_sent": "OTP imetumwa kwa mafanikio.",
+  "info.logged_out": "Umetoka kwa mafanikio."
+}

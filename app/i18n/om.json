@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "Gaaffiin baay'ee dhiyaate. Maaloo booda irra deebi'ii yaalii.",
+  "errors.image_rejected": "Suuraan fudhatamuuf hin dandeenye.",
+  "errors.otp_invalid": "Koodii OTP sirrii miti.",
+  "errors.otp_locked_out": "Yaaliin hin milkoofne baay'ee tahe. Daqiiqaa {minutes} booda irra deebi'ii yaalii.",
+  "errors.report_not_found": "Gabaasni hin argamne.",
+  "errors.auth_required": "Ragaan mirkaneessaa hin kennamne.",
+  "errors.forbidden": "Gochaa kana hojjechuuf hayyama hin qabdu.",
+  "errors.not_found": "Qabeenya gaafatame hin argamne.",
+  "errors.internal": "Dogoggora hin eeggamne mudatee.",
+  "errors.sms_failed": "OTP erguu hin dandeenye. Maaloo booda irra deebi'ii yaalii.",
+  "errors.invalid_phone": "Lakkoofsi bilbilaa E.164 akkaataa ta'uu qaba, fakkeenyaaf +254700123456.",
+  "errors.invalid_otp_format": "OTP lakkoofsa lakkoofsota 6 qabu ta'uu qaba.",
+  "errors.report_ownership": "Gabaasa kana argachuuf hayyama hin qabdu.",
+  "errors.shapefile_unavailable": "Erga Shapefile GDAL gaafata. Maaloo bulchaa sirnichaaf quunnamaa.",
+  "errors.export_job_not_found": "Hojiin ergaa hin argamne ykn yeroon isaa darbee.",
+  "errors.invalid_status_transition": "Jijjirama haala sirrii miti.",
+  "errors.reason_code_required": "Yeroo haalli rejected ta'u reason_code barbaachisaa dha.",
+  "info.otp_sent": "OTP milkaa'inaan ergame.",
+  "info.logged_out": "Milkaa'inaan ba'ame."
+}

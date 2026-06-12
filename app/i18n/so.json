@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "Codsiyo badan. Fadlan mar kale isku day kadib.",
+  "errors.image_rejected": "Sawirka lama heli karin.",
+  "errors.otp_invalid": "Lambarka OTP-ga saxal ma aha.",
+  "errors.otp_locked_out": "Isku dayasho badan oo fashilmay. Isku day {minutes} daqiiqo kadib.",
+  "errors.report_not_found": "Warbixinta lama helin.",
+  "errors.auth_required": "Xogta xaqiijinta lama bixin.",
+  "errors.forbidden": "Kuma haysid fasaxa aad u qabato ficilkan.",
+  "errors.not_found": "Kheyraadka la codsaday lama helin.",
+  "errors.internal": "Khalad la filayn ayaa dhacay.",
+  "errors.sms_failed": "Diridda OTP-ga waxay ku guuldareysatay. Fadlan mar kale isku day kadib.",
+  "errors.invalid_phone": "Lambarka telefoonka waa inuu noqdaa qaabka E.164, tusaale +254700123456.",
+  "errors.invalid_otp_format": "OTP-ga waa inuu noqdaa lamba 6-xaraf ah.",
+  "errors.report_ownership": "Kuma haysid fasaxa aad u gasho warbixintaan.",
+  "errors.shapefile_unavailable": "Dhoofinta Shapefile waxay u baahan tahay GDAL. Fadlan la xiriir maamulaha nidaamka.",
+  "errors.export_job_not_found": "Shaqada dhoofinta lama helin ama wakhtigeeda ayaa dhammaaday.",
+  "errors.invalid_status_transition": "Isbeddelka xaaladda waa mid aan saxnayn.",
+  "errors.reason_code_required": "reason_code ayaa loo baahan yahay marka xaaladdu tahay rejected.",
+  "info.otp_sent": "OTP-ga si guul leh ayaa loo diray.",
+  "info.logged_out": "Si guul leh ayaad ka baxday."
+}

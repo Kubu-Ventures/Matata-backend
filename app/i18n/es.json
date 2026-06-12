@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "Demasiadas solicitudes. Por favor, inténtelo de nuevo más tarde.",
+  "errors.image_rejected": "La imagen no pudo ser aceptada.",
+  "errors.otp_invalid": "Código OTP inválido.",
+  "errors.otp_locked_out": "Demasiados intentos fallidos. Inténtelo de nuevo en {minutes} minutos.",
+  "errors.report_not_found": "Informe no encontrado.",
+  "errors.auth_required": "No se proporcionaron credenciales de autenticación.",
+  "errors.forbidden": "No tiene permiso para realizar esta acción.",
+  "errors.not_found": "El recurso solicitado no fue encontrado.",
+  "errors.internal": "Ocurrió un error inesperado.",
+  "errors.sms_failed": "Error al enviar OTP. Por favor, inténtelo de nuevo más tarde.",
+  "errors.invalid_phone": "El número de teléfono debe estar en formato E.164, ej. +254700123456.",
+  "errors.invalid_otp_format": "El OTP debe ser un número de 6 dígitos.",
+  "errors.report_ownership": "No tiene permiso para acceder a este informe.",
+  "errors.shapefile_unavailable": "La exportación Shapefile requiere GDAL. Contacte al administrador del sistema.",
+  "errors.export_job_not_found": "Trabajo de exportación no encontrado o expirado.",
+  "errors.invalid_status_transition": "Transición de estado inválida.",
+  "errors.reason_code_required": "reason_code es requerido cuando el estado es rechazado.",
+  "info.otp_sent": "OTP enviado exitosamente.",
+  "info.logged_out": "Sesión cerrada exitosamente."
+}

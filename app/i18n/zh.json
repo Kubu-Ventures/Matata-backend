@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "请求过于频繁，请稍后重试。",
+  "errors.image_rejected": "图片无法被接受。",
+  "errors.otp_invalid": "OTP验证码无效。",
+  "errors.otp_locked_out": "失败次数过多，请在{minutes}分钟后重试。",
+  "errors.report_not_found": "未找到报告。",
+  "errors.auth_required": "未提供身份验证凭据。",
+  "errors.forbidden": "您没有执行此操作的权限。",
+  "errors.not_found": "未找到请求的资源。",
+  "errors.internal": "发生意外错误。",
+  "errors.sms_failed": "发送OTP失败，请稍后重试。",
+  "errors.invalid_phone": "电话号码必须为E.164格式，例如：+254700123456。",
+  "errors.invalid_otp_format": "OTP必须是6位数字。",
+  "errors.report_ownership": "您没有访问此报告的权限。",
+  "errors.shapefile_unavailable": "Shapefile导出需要GDAL，请联系系统管理员。",
+  "errors.export_job_not_found": "导出任务未找到或已过期。",
+  "errors.invalid_status_transition": "无效的状态转换。",
+  "errors.reason_code_required": "当状态为已拒绝时，reason_code为必填项。",
+  "info.otp_sent": "OTP发送成功。",
+  "info.logged_out": "已成功退出登录。"
+}

@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "Trop de requêtes. Veuillez réessayer plus tard.",
+  "errors.image_rejected": "L'image n'a pas pu être acceptée.",
+  "errors.otp_invalid": "Code OTP invalide.",
+  "errors.otp_locked_out": "Trop de tentatives échouées. Réessayez dans {minutes} minutes.",
+  "errors.report_not_found": "Rapport introuvable.",
+  "errors.auth_required": "Les informations d'identification n'ont pas été fournies.",
+  "errors.forbidden": "Vous n'avez pas la permission d'effectuer cette action.",
+  "errors.not_found": "La ressource demandée est introuvable.",
+  "errors.internal": "Une erreur inattendue s'est produite.",
+  "errors.sms_failed": "Échec de l'envoi de l'OTP. Veuillez réessayer plus tard.",
+  "errors.invalid_phone": "Le numéro de téléphone doit être au format E.164, ex. +254700123456.",
+  "errors.invalid_otp_format": "L'OTP doit être un nombre à 6 chiffres.",
+  "errors.report_ownership": "Vous n'avez pas la permission d'accéder à ce rapport.",
+  "errors.shapefile_unavailable": "L'export Shapefile nécessite GDAL. Veuillez contacter l'administrateur.",
+  "errors.export_job_not_found": "Tâche d'export introuvable ou expirée.",
+  "errors.invalid_status_transition": "Transition de statut invalide.",
+  "errors.reason_code_required": "reason_code est requis lorsque le statut est rejeté.",
+  "info.otp_sent": "OTP envoyé avec succès.",
+  "info.logged_out": "Déconnexion réussie."
+}
