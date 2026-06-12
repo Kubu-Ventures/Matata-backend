@@ -27,6 +27,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio:
+        condition: service_healthy
+      libretranslate:
+        condition: service_healthy
 
   # ── PostgreSQL ───────────────────────────────────────────────
   postgres:
@@ -40,6 +44,57 @@ services:
   redis:
     restart: unless-stopped
     ports: []                     # Not exposed externally in production
+
+  # ── MinIO — self-hosted S3-compatible object storage ─────────
+  # Stores reporter photo uploads. Fully compatible with the S3StorageService;
+  # no code changes needed to switch between MinIO and AWS S3.
+  #
+  # Admin console: http://<vps-ip>:9001  (protect with firewall in production)
+  # After first boot, create the bucket once:
+  #   docker exec -it <minio-container> mc alias set local http://localhost:9000 \
+  #       "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+  #   docker exec -it <minio-container> mc mb local/crisismap
+  minio:
+    image: quay.io/minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9001:9001"               # Admin console — block with ufw in production
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD}"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── LibreTranslate — self-hosted translation engine ──────────
+  # Powers multilingual error messages and UI strings for all 30+ supported
+  # languages. Runs entirely on-VPS; no text leaves the deployment boundary.
+  #
+  # First boot downloads language model packages (~2 GB). The service becomes
+  # healthy only after all packs are downloaded, so start_period is generous.
+  # LT_LOAD_ONLY limits RAM usage by pre-loading only the languages in use.
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    restart: unless-stopped
+    ports: []                     # Internal only; not exposed publicly
+    environment:
+      LT_DISABLE_WEB_UI: "true"
+      LT_SUGGESTIONS: "false"
+      LT_LOAD_ONLY: "en,ar,fr,sw,so,ha,yo,zu,xh,st,pt,es,de,hi,bn,id,ms,tr,vi,uk,pl,ln,rw,am,ti,om"
+    volumes:
+      - libretranslate_data:/home/libretranslate/.local/share/argos-translate
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5000/languages || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 5
+      start_period: 180s          # Language pack downloads take time on first boot
 
   # ── Nginx Reverse Proxy ──────────────────────────────────────
   nginx:
@@ -65,7 +120,7 @@ services:
       context: .
       target: production
     restart: unless-stopped
-    command: ["celery", "-A", "app.worker", "worker",
+    command: ["celery", "-A", "app.workers.celery_app", "worker",
               "--queues", "gis",
               "--concurrency", "2",
               "--loglevel", "info"]
@@ -77,7 +132,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.worker inspect ping -d celery@$$HOSTNAME || exit 1"]
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
       interval: 60s
       timeout: 15s
       retries: 3
@@ -87,7 +142,7 @@ services:
       context: .
       target: production
     restart: unless-stopped
-    command: ["celery", "-A", "app.worker", "worker",
+    command: ["celery", "-A", "app.workers.celery_app", "worker",
               "--queues", "ai",
               "--concurrency", "2",
               "--loglevel", "info"]
@@ -99,7 +154,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.worker inspect ping -d celery@$$HOSTNAME || exit 1"]
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
       interval: 60s
       timeout: 15s
       retries: 3
@@ -109,7 +164,7 @@ services:
       context: .
       target: production
     restart: unless-stopped
-    command: ["celery", "-A", "app.worker", "worker",
+    command: ["celery", "-A", "app.workers.celery_app", "worker",
               "--queues", "notifications",
               "--concurrency", "2",
               "--loglevel", "info"]
@@ -121,7 +176,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.worker inspect ping -d celery@$$HOSTNAME || exit 1"]
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
       interval: 60s
       timeout: 15s
       retries: 3
@@ -131,7 +186,7 @@ services:
       context: .
       target: production
     restart: unless-stopped
-    command: ["celery", "-A", "app.worker", "worker",
+    command: ["celery", "-A", "app.workers.celery_app", "worker",
               "--queues", "export",
               "--concurrency", "2",
               "--loglevel", "info"]
@@ -143,7 +198,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.worker inspect ping -d celery@$$HOSTNAME || exit 1"]
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
       interval: 60s
       timeout: 15s
       retries: 3
@@ -152,3 +207,7 @@ volumes:
   postgres_data:
     labels:
       backup: "true"              # Label used by backup tooling to identify this volume
+  minio_data:
+    labels:
+      backup: "true"
+  libretranslate_data:            # Persists downloaded language model packages

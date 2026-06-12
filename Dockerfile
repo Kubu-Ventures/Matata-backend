@@ -16,13 +16,15 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload
 # ── Production ────────────────────────────────────────────────
 FROM base AS production
 
-# Install GDAL and spatial dependencies for Shapefile export (spec §16)
+# Install GDAL/spatial deps for Shapefile export (spec §16) and
+# postgresql-client for pg_isready in entrypoint.sh
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgdal-dev \
         gdal-bin \
         python3-gdal \
         libgeos-dev \
         libproj-dev \
+        postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer-cache optimisation: install deps before copying application code
