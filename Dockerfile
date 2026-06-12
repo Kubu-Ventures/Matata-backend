@@ -25,7 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgeos-dev \
         libproj-dev \
         postgresql-client \
+        g++ \
     && pip install --no-cache-dir "GDAL==$(gdal-config --version)" \
+    && apt-get purge -y --auto-remove g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer-cache optimisation: install deps before copying application code
