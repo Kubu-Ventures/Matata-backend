@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.routes.auth import get_current_user
 from app.core.dependencies import get_db, get_redis
+from app.core.i18n import LocalisedHTTPException, get_locale
 from app.schemas.report_submission import (
     NearbyReportItem,
     ReportCreateResponse,
@@ -141,6 +142,7 @@ async def submit_report(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
+    lang: str = Depends(get_locale),
 ) -> ReportCreateResponse:
     """Create a damage report.
 
@@ -199,21 +201,24 @@ async def submit_report(
         )
         await db.commit()
     except RateLimitExceededError as exc:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=str(exc),
+            message_key="errors.rate_limit_exceeded",
+            lang=lang,
             headers={"Retry-After": "3600"},
         ) from exc
     except ModerationRejectionError:
         # Generic message — do not disclose rejection reason (spec §8.2.1).
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Image could not be accepted.",
+            message_key="errors.image_rejected",
+            lang=lang,
         )
     except SubmissionError as exc:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            message_key="errors.internal",
+            lang=lang,
         ) from exc
 
     return ReportCreateResponse(
@@ -249,6 +254,7 @@ async def upload_report_photo(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
+    lang: str = Depends(get_locale),
 ) -> ReportPhotoResponse:
     """Attach a photo to an existing report (offline sync path)."""
     image_bytes = await photo.read()
@@ -266,24 +272,28 @@ async def upload_report_photo(
         )
         await db.commit()
     except ReportNotFoundError as exc:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
+            message_key="errors.report_not_found",
+            lang=lang,
         ) from exc
     except ReportOwnershipError as exc:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(exc),
+            message_key="errors.report_ownership",
+            lang=lang,
         ) from exc
     except ModerationRejectionError:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Image could not be accepted.",
+            message_key="errors.image_rejected",
+            lang=lang,
         )
     except SubmissionError as exc:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            message_key="errors.internal",
+            lang=lang,
         ) from exc
 
     return ReportPhotoResponse(
@@ -358,6 +368,7 @@ async def get_report(
     report_id: UUID,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    lang: str = Depends(get_locale),
 ) -> ReportDetailResponse:
     """Return a reporter's own report."""
     reporter_token = current_user.get("sub", "")
@@ -368,14 +379,16 @@ async def get_report(
             db=db,
         )
     except ReportNotFoundError as exc:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
+            message_key="errors.report_not_found",
+            lang=lang,
         ) from exc
     except ReportOwnershipError as exc:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(exc),
+            message_key="errors.report_ownership",
+            lang=lang,
         ) from exc
 
     return ReportDetailResponse.model_validate(report)

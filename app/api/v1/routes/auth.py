@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, field_validator
 from redis.asyncio import Redis
 
 from app.core.dependencies import get_redis
+from app.core.i18n import LocalisedHTTPException, get_locale, get_message
 from app.services import auth_service
 from app.services.auth_service import (
     AuthError,
@@ -121,6 +122,7 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     x_session_token: str | None = Header(default=None, alias="X-Session-Token"),
     redis: Redis = Depends(get_redis),
+    lang: str = Depends(get_locale),
 ) -> dict:
     """FastAPI dependency that resolves and validates the caller's JWT.
 
@@ -142,18 +144,20 @@ async def get_current_user(
         raw_token = x_session_token
 
     if not raw_token:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication credentials were not provided.",
+            message_key="errors.auth_required",
+            lang=lang,
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     try:
         return await auth_service.verify_access_token(raw_token, redis)
     except InvalidTokenError as exc:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
+            message_key="errors.auth_required",
+            lang=lang,
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
@@ -205,29 +209,34 @@ def require_role(*roles: Role):
 # ---------------------------------------------------------------------------
 
 
-def _auth_error_to_http(exc: AuthError) -> HTTPException:
-    """Convert a service-layer ``AuthError`` to a FastAPI ``HTTPException``."""
+def _auth_error_to_http(exc: AuthError, lang: str = "en") -> HTTPException:
+    """Convert a service-layer ``AuthError`` to a localised ``HTTPException``."""
     if isinstance(exc, OTPLockedOutError):
-        return HTTPException(
+        return LocalisedHTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=str(exc),
+            message_key="errors.otp_locked_out",
+            lang=lang,
             headers={"Retry-After": "900"},
+            minutes=15,
         )
     if isinstance(exc, (OTPNotFoundError, InvalidOTPError)):
-        return HTTPException(
+        return LocalisedHTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            message_key="errors.otp_invalid",
+            lang=lang,
         )
     if isinstance(exc, InvalidTokenError):
-        return HTTPException(
+        return LocalisedHTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
+            message_key="errors.auth_required",
+            lang=lang,
             headers={"WWW-Authenticate": "Bearer"},
         )
     # Generic auth failure — do not leak internal detail.
-    return HTTPException(
+    return LocalisedHTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication failed.",
+        message_key="errors.auth_required",
+        lang=lang,
     )
 
 
@@ -267,18 +276,20 @@ async def issue_anonymous_token() -> AnonymousTokenResponse:
 async def send_otp(
     body: OTPSendRequest,
     redis: Redis = Depends(get_redis),
+    lang: str = Depends(get_locale),
 ) -> MessageResponse:
     """Dispatch a one-time password to the supplied phone number."""
     try:
         await auth_service.send_otp(phone_number=body.phone, redis=redis)
     except SMSDeliveryError as exc:
         logger.error("SMS delivery failure (phone suppressed): %s", type(exc).__name__)
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Failed to send OTP. Please try again later.",
+            message_key="errors.sms_failed",
+            lang=lang,
         ) from exc
 
-    return MessageResponse(message="OTP sent successfully.")
+    return MessageResponse(message=get_message("info.otp_sent", lang))
 
 
 @router.post(
@@ -295,6 +306,7 @@ async def send_otp(
 async def verify_otp(
     body: OTPVerifyRequest,
     redis: Redis = Depends(get_redis),
+    lang: str = Depends(get_locale),
 ) -> TokenResponse:
     """Verify an OTP and return an access + refresh token pair."""
     try:
@@ -304,7 +316,7 @@ async def verify_otp(
             redis=redis,
         )
     except AuthError as exc:
-        raise _auth_error_to_http(exc) from exc
+        raise _auth_error_to_http(exc, lang) from exc
 
     return TokenResponse(
         token=access_token,
@@ -357,24 +369,27 @@ async def logout(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     x_session_token: str | None = Header(default=None, alias="X-Session-Token"),
     redis: Redis = Depends(get_redis),
+    lang: str = Depends(get_locale),
 ) -> MessageResponse:
     """Revoke the current access token."""
     raw_token: str | None = credentials.credentials if credentials else x_session_token
 
     if not raw_token:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication credentials were not provided.",
+            message_key="errors.auth_required",
+            lang=lang,
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     try:
         await auth_service.logout(token=raw_token, redis=redis)
     except InvalidTokenError as exc:
-        raise HTTPException(
+        raise LocalisedHTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
+            message_key="errors.auth_required",
+            lang=lang,
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
-    return MessageResponse(message="Logged out successfully.")
+    return MessageResponse(message=get_message("info.logged_out", lang))
