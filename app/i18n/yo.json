@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "Awọn ibeere pupọ. Jọwọ gbiyanju lẹẹkansi nigbamii.",
+  "errors.image_rejected": "Aworan ko le gba.",
+  "errors.otp_invalid": "Koodu OTP ko tọ.",
+  "errors.otp_locked_out": "Ọpọlọpọ awọn igbiyanju ti o kuna. Gbiyanju lẹẹkansi lẹhin iṣẹju {minutes}.",
+  "errors.report_not_found": "Ijabọ ko ri.",
+  "errors.auth_required": "Awọn iwe-ẹri ijẹrisi ko pese.",
+  "errors.forbidden": "O ko ni igbanilaaye lati ṣe iṣe yii.",
+  "errors.not_found": "Ohun-ini ti o beere ko ri.",
+  "errors.internal": "Aṣiṣe airotẹlẹ waye.",
+  "errors.sms_failed": "Kuna lati firanṣẹ OTP. Jọwọ gbiyanju lẹẹkansi nigbamii.",
+  "errors.invalid_phone": "Nọmba foonu gbọdọ wa ni ọna E.164, fun apẹẹrẹ +254700123456.",
+  "errors.invalid_otp_format": "OTP gbọdọ jẹ nọmba oni-nọmba 6.",
+  "errors.report_ownership": "O ko ni igbanilaaye lati wọle si ijabọ yii.",
+  "errors.shapefile_unavailable": "Gbigbejade Shapefile nilo GDAL. Jọwọ kan si alakoso eto.",
+  "errors.export_job_not_found": "Iṣẹ gbigbejade ko ri tabi ti pari.",
+  "errors.invalid_status_transition": "Iyipada ipo ti ko wulo.",
+  "errors.reason_code_required": "reason_code nilo nigbati ipo jẹ rejected.",
+  "info.otp_sent": "OTP ti firanṣẹ ni aṣeyọri.",
+  "info.logged_out": "Ti jade ni aṣeyọri."
+}

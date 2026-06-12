@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "Izicelo eziningi kakhulu. Sicela uzame futhi ngemuva kwesikhathi.",
+  "errors.image_rejected": "Isithombe asikwazanga ukwamukelwa.",
+  "errors.otp_invalid": "Ikhodi ye-OTP ayilungile.",
+  "errors.otp_locked_out": "Imizamo eningi ehlulekile. Zama futhi emva kweminithi engu-{minutes}.",
+  "errors.report_not_found": "Umbiko awutholakali.",
+  "errors.auth_required": "Izincwadi zobunikazi zokufakazela azinikezwanga.",
+  "errors.forbidden": "Awunalo ilungelo lokwenza lo msebenzi.",
+  "errors.not_found": "Umthombo obucailwe awutholakali.",
+  "errors.internal": "Kwenzeke iphutha elingalindelekile.",
+  "errors.sms_failed": "Ukuthumela i-OTP kuhlulekile. Sicela uzame futhi ngemuva kwesikhathi.",
+  "errors.invalid_phone": "Inombolo yocingo kufanele ibe ngohlobo lwe-E.164, isib. +254700123456.",
+  "errors.invalid_otp_format": "I-OTP kufanele ibe inombolo enezinhlamvu eziyi-6.",
+  "errors.report_ownership": "Awunalo ilungelo lokufinyelela lo mbiko.",
+  "errors.shapefile_unavailable": "Ukuthekelisa i-Shapefile kudinga i-GDAL. Sicela uxhumane nomphathi wenhlelo.",
+  "errors.export_job_not_found": "Umsebenzi wokuthekelisa awutholakali noma usuphelelwe isikhathi.",
+  "errors.invalid_status_transition": "Ukushintsha kokuguquka kwesimo akukwazi.",
+  "errors.reason_code_required": "reason_code iyadingeka lapho isimo singejected.",
+  "info.otp_sent": "I-OTP ithunyelwe ngempumelelo.",
+  "info.logged_out": "Uphume ngempumelelo."
+}

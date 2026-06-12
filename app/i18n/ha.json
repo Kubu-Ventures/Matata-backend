@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "Buƙatu da yawa. Da fatan za a sake gwadawa daga baya.",
+  "errors.image_rejected": "Ba a iya karɓar hoton ba.",
+  "errors.otp_invalid": "Lambar OTP ba ta daidai ba.",
+  "errors.otp_locked_out": "Yawan yunƙurin gazawa. Sake gwadawa bayan minti {minutes}.",
+  "errors.report_not_found": "Ba a sami rahoto ba.",
+  "errors.auth_required": "Ba a ba da tabbataccen takaddun shaida ba.",
+  "errors.forbidden": "Ba ku da izinin yin wannan aiki.",
+  "errors.not_found": "Ba a sami albarkatu da ake nema ba.",
+  "errors.internal": "An sami kuskure da ba a zata ba.",
+  "errors.sms_failed": "Aika OTP ya kasa. Da fatan za a sake gwadawa daga baya.",
+  "errors.invalid_phone": "Lambar waya dole ta kasance cikin tsarin E.164, misali +254700123456.",
+  "errors.invalid_otp_format": "OTP dole ya kasance lamba mai lamba 6.",
+  "errors.report_ownership": "Ba ku da izinin shiga wannan rahoto.",
+  "errors.shapefile_unavailable": "Fitar Shapefile yana buƙatar GDAL. Da fatan za a tuntubi mai gudanar da tsarin.",
+  "errors.export_job_not_found": "Ba a sami aikin fitar ba ko lokacin ya ƙare.",
+  "errors.invalid_status_transition": "Canjin yanayi mara inganci.",
+  "errors.reason_code_required": "reason_code yana da mahimmanci lokacin da matsayin ya kasance rejected.",
+  "info.otp_sent": "An aika OTP cikin nasara.",
+  "info.logged_out": "An fita cikin nasara."
+}

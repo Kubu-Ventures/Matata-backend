@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "ብዙ ጥያቄዎች። እባኮትን ቆይተው ይሞክሩ።",
+  "errors.image_rejected": "ምስሉ ሊቀበል አልቻለም።",
+  "errors.otp_invalid": "ልክ ያልሆነ የ OTP ኮድ።",
+  "errors.otp_locked_out": "ብዙ ያልተሳካ ሙከራዎች። ከ{minutes} ደቂቃ በኋላ ይሞክሩ።",
+  "errors.report_not_found": "ሪፖርቱ አልተገኘም።",
+  "errors.auth_required": "የማረጋገጫ ሰነዶች አልቀረቡም።",
+  "errors.forbidden": "ይህን ድርጊት ለማከናወን ፍቃድ የለዎትም።",
+  "errors.not_found": "የተጠየቀው ምንጭ አልተገኘም።",
+  "errors.internal": "ያልተጠበቀ ስህተት ተከስቷል።",
+  "errors.sms_failed": "OTP መላክ አልተሳካም። ቆይተው እንደገና ይሞክሩ።",
+  "errors.invalid_phone": "የስልክ ቁጥሩ በ E.164 ቅርጸት መሆን አለበት፣ ለምሳሌ +254700123456።",
+  "errors.invalid_otp_format": "OTP 6 አሃዝ ቁጥር መሆን አለበት።",
+  "errors.report_ownership": "ይህን ሪፖርት ለማግኘት ፍቃድ የለዎትም።",
+  "errors.shapefile_unavailable": "Shapefile ወደ ውጭ መላክ GDAL ያስፈልጋል። እባኮት ከሥርዓቱ አስተዳዳሪ ጋር ያነጋግሩ።",
+  "errors.export_job_not_found": "የወደፊቱ ሥራ አልተገኘም ወይም ጊዜው አልፏል።",
+  "errors.invalid_status_transition": "ልክ ያልሆነ የሁኔታ ሽግግር።",
+  "errors.reason_code_required": "ሁኔታ rejected ሲሆን reason_code ያስፈልጋል።",
+  "info.otp_sent": "OTP በተሳካ ሁኔታ ተልኳል።",
+  "info.logged_out": "በተሳካ ሁኔታ ወጥተዋል።"
+}

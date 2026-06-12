@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "Ọtụtụ arịọ. Biko nwaa ọzọ na-adịghị anya.",
+  "errors.image_rejected": "Enweghị ike ịnabata onyonyo ahụ.",
+  "errors.otp_invalid": "Koodu OTP adịghị mma.",
+  "errors.otp_locked_out": "Ọtụtụ mgbalị ndị agaghị ire. Nwaa ọzọ mgbe nkeji {minutes} gachara.",
+  "errors.report_not_found": "Achọtabeghị akụkọ.",
+  "errors.auth_required": "Enweghị nyere akwụkwọ ikike nyocha.",
+  "errors.forbidden": "Enweghị ikike ịrụ ọrụ a.",
+  "errors.not_found": "Achọtabeghị ihe a chọrọ.",
+  "errors.internal": "Ihe omume na-atọ ụjọ mere.",
+  "errors.sms_failed": "Enweghị ike izipu OTP. Biko nwaa ọzọ na-adịghị anya.",
+  "errors.invalid_phone": "Nọmba ekwentị ga-abụrịrị n'ụdị E.164, dịka +254700123456.",
+  "errors.invalid_otp_format": "OTP ga-abụrịrị nọmba nwere ọnụọgụ 6.",
+  "errors.report_ownership": "Enweghị ikike ịbanye na akụkọ a.",
+  "errors.shapefile_unavailable": "Mbupụ Shapefile chọrọ GDAL. Biko kpọtụrụ onye njikwa sistemu.",
+  "errors.export_job_not_found": "Achọtabeghị ọrụ mbupụ ma ọ bụ oge ya agwụla.",
+  "errors.invalid_status_transition": "Mgbanwe ọnọdụ na-adịghị mma.",
+  "errors.reason_code_required": "reason_code dị mkpa mgbe ọnọdụ bụ rejected.",
+  "info.otp_sent": "Ezipụrụ OTP nke ọma.",
+  "info.logged_out": "Pụọ nke ọma."
+}

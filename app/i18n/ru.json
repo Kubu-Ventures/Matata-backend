@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "Слишком много запросов. Пожалуйста, повторите попытку позже.",
+  "errors.image_rejected": "Изображение не может быть принято.",
+  "errors.otp_invalid": "Неверный код OTP.",
+  "errors.otp_locked_out": "Слишком много неудачных попыток. Повторите через {minutes} минут.",
+  "errors.report_not_found": "Отчёт не найден.",
+  "errors.auth_required": "Учётные данные для аутентификации не предоставлены.",
+  "errors.forbidden": "У вас нет прав для выполнения этого действия.",
+  "errors.not_found": "Запрошенный ресурс не найден.",
+  "errors.internal": "Произошла непредвиденная ошибка.",
+  "errors.sms_failed": "Не удалось отправить OTP. Повторите попытку позже.",
+  "errors.invalid_phone": "Номер телефона должен быть в формате E.164, например +254700123456.",
+  "errors.invalid_otp_format": "OTP должен быть 6-значным числом.",
+  "errors.report_ownership": "У вас нет прав для доступа к этому отчёту.",
+  "errors.shapefile_unavailable": "Экспорт Shapefile требует GDAL. Обратитесь к системному администратору.",
+  "errors.export_job_not_found": "Задание экспорта не найдено или истекло.",
+  "errors.invalid_status_transition": "Недопустимый переход статуса.",
+  "errors.reason_code_required": "reason_code обязателен, когда статус — rejected.",
+  "info.otp_sent": "OTP успешно отправлен.",
+  "info.logged_out": "Выход выполнен успешно."
+}

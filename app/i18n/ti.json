@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "ብዙሕ ሕቶታት። በጃኻ ደሓር ሃሰስ።",
+  "errors.image_rejected": "ስእሊ ክቕበል ኣይካኣለን።",
+  "errors.otp_invalid": "ኮድ OTP ቅኑዕ ኣይኮነን።",
+  "errors.otp_locked_out": "ብዙሕ ፈሸሉ ፈተነታት። ድሕሪ {minutes} ደቓይቕ ሃሰስ።",
+  "errors.report_not_found": "ጸብጻብ ኣይተረኽበን።",
+  "errors.auth_required": "ናይ ምርግጋጽ ሰነዳት ኣይቀረቡን።",
+  "errors.forbidden": "ነዚ ተግባር ክትፍጽም ፍቓድ የብልካን።",
+  "errors.not_found": "እቲ ዝተሓተተ ምንጪ ኣይተረኽበን።",
+  "errors.internal": "ዘይተጸበናዮ ጌጋ ተኸሲቱ።",
+  "errors.sms_failed": "OTP ምልኣኽ ኣይሰለጠን። በጃኻ ደሓር ሃሰስ።",
+  "errors.invalid_phone": "ቁጽሪ ስልኪ ኣብ ቅርጺ E.164 ክኸውን ኣለዎ፣ ንምሳሌ +254700123456።",
+  "errors.invalid_otp_format": "OTP ናይ 6 ቁጽሪ ክኸውን ኣለዎ።",
+  "errors.report_ownership": "ናዚ ጸብጻብ ክትኣቱ ፍቓድ የብልካን።",
+  "errors.shapefile_unavailable": "ናይ Shapefile ምውጻእ GDAL ይደልይ። በጃኻ ምስ ኣካላዊ መምሪ ርኸብ።",
+  "errors.export_job_not_found": "ናይ ምውጻእ ስራሕ ኣይተረኽበን ወይ ግዚኡ ወዲቑ።",
+  "errors.invalid_status_transition": "ዘይቅኑዕ ሸጋር ናይ ኩነታት።",
+  "errors.reason_code_required": "ኩነታት rejected ምስ ዝኸውን reason_code የድሊ።",
+  "info.otp_sent": "OTP ብዓወት ተለኣኺቱ።",
+  "info.logged_out": "ብዓወት ወጺኻ።"
+}

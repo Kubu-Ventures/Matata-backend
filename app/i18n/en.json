@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "Too many requests. Please try again later.",
+  "errors.image_rejected": "Image could not be accepted.",
+  "errors.otp_invalid": "Invalid OTP code.",
+  "errors.otp_locked_out": "Too many failed attempts. Try again in {minutes} minutes.",
+  "errors.report_not_found": "Report not found.",
+  "errors.auth_required": "Authentication credentials were not provided.",
+  "errors.forbidden": "You do not have permission to perform this action.",
+  "errors.not_found": "The requested resource was not found.",
+  "errors.internal": "An unexpected error occurred.",
+  "errors.sms_failed": "Failed to send OTP. Please try again later.",
+  "errors.invalid_phone": "Phone number must be in E.164 format, e.g. +254700123456.",
+  "errors.invalid_otp_format": "OTP must be a 6-digit number.",
+  "errors.report_ownership": "You do not have permission to access this report.",
+  "errors.shapefile_unavailable": "Shapefile export requires GDAL. Please contact the system administrator.",
+  "errors.export_job_not_found": "Export job not found or has expired.",
+  "errors.invalid_status_transition": "Invalid status transition.",
+  "errors.reason_code_required": "reason_code is required when status is rejected.",
+  "info.otp_sent": "OTP sent successfully.",
+  "info.logged_out": "Logged out successfully."
+}

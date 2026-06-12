@@ -1,0 +1,21 @@
+{
+  "errors.rate_limit_exceeded": "طلبات كثيرة جداً. يرجى المحاولة مرة أخرى لاحقاً.",
+  "errors.image_rejected": "تعذّر قبول الصورة.",
+  "errors.otp_invalid": "رمز OTP غير صالح.",
+  "errors.otp_locked_out": "محاولات فاشلة كثيرة جداً. أعد المحاولة بعد {minutes} دقيقة.",
+  "errors.report_not_found": "التقرير غير موجود.",
+  "errors.auth_required": "لم يتم تقديم بيانات اعتماد المصادقة.",
+  "errors.forbidden": "ليس لديك إذن لتنفيذ هذا الإجراء.",
+  "errors.not_found": "المورد المطلوب غير موجود.",
+  "errors.internal": "حدث خطأ غير متوقع.",
+  "errors.sms_failed": "فشل إرسال OTP. يرجى المحاولة مرة أخرى لاحقاً.",
+  "errors.invalid_phone": "يجب أن يكون رقم الهاتف بتنسيق E.164، مثال: +254700123456.",
+  "errors.invalid_otp_format": "يجب أن يكون OTP رقماً مكوناً من 6 أرقام.",
+  "errors.report_ownership": "ليس لديك إذن للوصول إلى هذا التقرير.",
+  "errors.shapefile_unavailable": "يتطلب تصدير Shapefile GDAL. يرجى الاتصال بمسؤول النظام.",
+  "errors.export_job_not_found": "مهمة التصدير غير موجودة أو انتهت صلاحيتها.",
+  "errors.invalid_status_transition": "انتقال حالة غير صالح.",
+  "errors.reason_code_required": "reason_code مطلوب عندما تكون الحالة مرفوضة.",
+  "info.otp_sent": "تم إرسال OTP بنجاح.",
+  "info.logged_out": "تم تسجيل الخروج بنجاح."
+}
