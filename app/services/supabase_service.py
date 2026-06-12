@@ -206,9 +206,7 @@ def extract_crisismap_claims(supabase_response: dict) -> tuple[str, Optional[str
     Raises:
         SupabaseAuthError: Response is missing a CrisisMap role.
     """
-    user_metadata = (
-        (supabase_response.get("user") or {}).get("user_metadata") or {}
-    )
+    user_metadata = (supabase_response.get("user") or {}).get("user_metadata") or {}
     crisismap_role = user_metadata.get("crisismap_role")
     region_geojson = user_metadata.get("region_geojson")
 
