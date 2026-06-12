@@ -30,7 +30,7 @@ services:
       minio:
         condition: service_healthy
       libretranslate:
-        condition: service_healthy
+        condition: service_started   # Don't block startup; app degrades gracefully if LT is still downloading packs
 
   # ── PostgreSQL ───────────────────────────────────────────────
   postgres:
@@ -94,7 +94,7 @@ services:
       interval: 60s
       timeout: 15s
       retries: 5
-      start_period: 180s          # Language pack downloads take time on first boot
+      start_period: 1800s         # First boot downloads ~2 GB of language packs; allow 30 min
 
   # ── Nginx Reverse Proxy ──────────────────────────────────────
   nginx:
