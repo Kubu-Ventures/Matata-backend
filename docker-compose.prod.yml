@@ -118,6 +118,42 @@ services:
       timeout: 10s
       retries: 3
 
+  # ── Ollama — local open-source vision model (free AI fallback) ──────────────
+  # Runs the LLaVA vision model on-VPS so the AI pipeline always has a real
+  # model available even without a paid OpenAI / Anthropic API key.
+  # CPU-only mode works fine for occasional damage-image analysis.
+  #
+  # IMPORTANT — first-boot model download:
+  #   The ollama-model-init container pulls LLaVA (~4.7 GB) on first start.
+  #   This only happens once; the weights are cached in the ollama_data volume.
+  #   Allow 5–15 minutes on first boot before submitting test images.
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports: []                         # Internal only — not exposed to the internet
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
+
+  # Pulls the vision model into the shared volume on first boot, then exits.
+  # On subsequent restarts the model is already cached — exits in seconds.
+  ollama-model-init:
+    image: ollama/ollama:latest
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "llava"]
+
   # ── Celery Workers ───────────────────────────────────────────
   celery-gis:
     build:
@@ -152,10 +188,21 @@ services:
               "--loglevel", "info"]
     env_file:
       - .env
+    environment:
+      # In production, default to the local Ollama service so real AI analysis
+      # always works without a paid API key. Override in .env to "openai" or
+      # "anthropic" to use a paid provider (Ollama remains the automatic fallback).
+      VISION_PROVIDER: "${VISION_PROVIDER:-ollama}"
+      # Always point at the Ollama Docker service — overrides any localhost URL
+      # that may be set in .env (which would not resolve inside the container).
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      OLLAMA_VISION_MODEL: "${OLLAMA_VISION_MODEL:-llava}"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
@@ -215,3 +262,6 @@ volumes:
     labels:
       backup: "true"
   libretranslate_data:            # Persists downloaded language model packages
+  ollama_data:                    # Persists pulled model weights (~4.7 GB for llava)
+    labels:
+      backup: "false"             # Model weights are re-downloadable; skip backup

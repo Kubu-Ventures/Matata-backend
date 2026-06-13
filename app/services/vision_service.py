@@ -1,10 +1,11 @@
 """Vision analysis service — Stage 3 AI image quality and damage classification.
 
-Defines the ``VisionProvider`` Protocol and three concrete implementations:
+Defines the ``VisionProvider`` Protocol and four concrete implementations:
 
 * ``MockVisionProvider``      — deterministic, configurable via fixtures; no API calls.
 * ``OpenAIVisionProvider``    — GPT-4o with ``response_format={"type": "json_object"}``.
 * ``AnthropicVisionProvider`` — Claude claude-opus-4-6 vision (optional alternative).
+* ``OllamaVisionProvider``    — local open-source vision model via Ollama (no API key).
 
 A factory ``get_vision_provider()`` selects the implementation from the
 ``VISION_PROVIDER`` environment variable.
@@ -27,6 +28,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, field_validator
@@ -459,6 +461,205 @@ class AnthropicVisionProvider:
 
 
 # ---------------------------------------------------------------------------
+# Shared JSON extraction helper
+# ---------------------------------------------------------------------------
+
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+
+
+def _extract_json(text: str) -> dict:
+    """Return the first JSON object found in *text*.
+
+    Handles three common model output styles:
+    1. Raw JSON (ideal — what the system prompt requests).
+    2. JSON wrapped in a ```json … ``` code fence.
+    3. JSON buried after prose — extracts the first ``{…}`` block.
+
+    Raises:
+        VisionAPIError: If no valid JSON object can be extracted.
+    """
+    # Strip markdown fences if present.
+    fence_match = _JSON_FENCE_RE.search(text)
+    candidate = fence_match.group(1).strip() if fence_match else text.strip()
+
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+
+    # Last resort: find the outermost {...} substring.
+    start = candidate.find("{")
+    end = candidate.rfind("}") + 1
+    if start != -1 and end > start:
+        try:
+            return json.loads(candidate[start:end])
+        except json.JSONDecodeError:
+            pass
+
+    raise VisionAPIError(f"Could not extract JSON from model response: {text[:300]}")
+
+
+# ---------------------------------------------------------------------------
+# OllamaVisionProvider — local open-source vision model (free, no API key)
+# ---------------------------------------------------------------------------
+
+
+class OllamaVisionProvider:
+    """Vision provider backed by a local Ollama model (e.g. llava, llama3.2-vision).
+
+    Uses Ollama's OpenAI-compatible ``/v1`` endpoint so no additional SDK is
+    required beyond the ``openai`` package that is already the optional dep for
+    ``OpenAIVisionProvider``.
+
+    Recommended models (pull before use):
+        ollama pull llava               # 7 B, fast
+        ollama pull llava:13b           # 13 B, more accurate
+        ollama pull llama3.2-vision     # Meta multimodal, strong instruction-following
+
+    Requires:
+        ``pip install openai``
+        Ollama running locally — https://ollama.com
+        ``OLLAMA_BASE_URL`` env var (default ``http://localhost:11434``).
+        ``OLLAMA_VISION_MODEL`` env var (default ``llava``).
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        model: str = "llava",
+        max_tokens: int = 512,
+        timeout: float = 60.0,
+    ) -> None:
+        # Normalise: Ollama's OpenAI-compat endpoint lives at /v1.
+        self._base_url = base_url.rstrip("/") + "/v1"
+        self._model = model
+        self._max_tokens = max_tokens
+        self._timeout = timeout
+
+    async def analyse_damage_image(
+        self,
+        image_bytes: bytes,
+        reporter_severity: str,
+    ) -> ImageAnalysisResult:
+        """Call a local Ollama vision model and parse the structured JSON response.
+
+        Args:
+            image_bytes:       Raw image binary (JPEG recommended).
+            reporter_severity: Reporter's damage classification.
+
+        Returns:
+            Validated ``ImageAnalysisResult``.
+
+        Raises:
+            VisionAPIError: On any connection or parsing error.
+        """
+        try:
+            from openai import AsyncOpenAI  # type: ignore[import]
+        except ImportError as exc:
+            raise VisionAPIError(
+                "openai package is required for VISION_PROVIDER=ollama. "
+                "Install it with: pip install openai"
+            ) from exc
+
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        data_uri = f"data:image/jpeg;base64,{b64}"
+
+        # Ollama does not enforce an API key; the openai client requires a
+        # non-empty string, so we pass the conventional placeholder.
+        client = AsyncOpenAI(
+            base_url=self._base_url,
+            api_key="ollama",
+            timeout=self._timeout,
+        )
+
+        try:
+            response = await client.chat.completions.create(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": data_uri},
+                            },
+                            {"type": "text", "text": _user_prompt(reporter_severity)},
+                        ],
+                    },
+                ],
+            )
+        except Exception as exc:
+            raise VisionAPIError(
+                f"Ollama vision error ({self._base_url}, model={self._model}): "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        raw_text = response.choices[0].message.content or "{}"
+        logger.debug("Ollama raw response: %s", raw_text[:500])
+
+        try:
+            raw_dict = _extract_json(raw_text)
+        except VisionAPIError:
+            raise VisionAPIError(
+                f"Ollama ({self._model}) returned non-JSON response: {raw_text[:200]}"
+            )
+
+        try:
+            return ImageAnalysisResult(raw_response=raw_dict, **raw_dict)
+        except Exception as exc:
+            raise VisionAPIError(
+                f"Ollama response failed schema validation: {exc}"
+            ) from exc
+
+
+# ---------------------------------------------------------------------------
+# FallbackVisionProvider — automatic provider chain
+# ---------------------------------------------------------------------------
+
+
+class FallbackVisionProvider:
+    """Tries a list of providers in sequence, moving to the next on failure.
+
+    If a provider raises ``VisionAPIError`` (network issue, missing API key,
+    unavailable model, etc.) the next provider in the chain is tried.
+    If ALL providers fail the last ``VisionAPIError`` is re-raised.
+
+    Used by the factory to give real providers an automatic Ollama backup
+    so that image analysis never silently falls back to deterministic mock data.
+    """
+
+    def __init__(self, providers: list) -> None:
+        if not providers:
+            raise ValueError("FallbackVisionProvider requires at least one provider.")
+        self._providers = providers
+
+    async def analyse_damage_image(
+        self,
+        image_bytes: bytes,
+        reporter_severity: str,
+    ) -> ImageAnalysisResult:
+        last_exc: VisionAPIError | None = None
+        for provider in self._providers:
+            try:
+                return await provider.analyse_damage_image(
+                    image_bytes, reporter_severity
+                )
+            except VisionAPIError as exc:
+                logger.warning(
+                    "Vision provider %s failed, trying next in chain: %s",
+                    type(provider).__name__,
+                    exc,
+                )
+                last_exc = exc
+        raise VisionAPIError(
+            f"All {len(self._providers)} vision providers failed. "
+            f"Last error: {last_exc}"
+        ) from last_exc
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -467,9 +668,15 @@ def get_vision_provider() -> VisionProvider:
     """Return the vision provider selected by ``VISION_PROVIDER``.
 
     Supported values:
-    * ``mock``      — ``MockVisionProvider`` (default, development/CI)
-    * ``openai``    — ``OpenAIVisionProvider`` (GPT-4o, production)
-    * ``anthropic`` — ``AnthropicVisionProvider`` (Claude claude-opus-4-6, optional)
+    * ``mock``      — ``MockVisionProvider`` (dev/CI only — returns deterministic
+                      fake data; NEVER use in production).
+    * ``openai``    — GPT-4o with automatic Ollama fallback.
+    * ``anthropic`` — Claude claude-opus-4-6 with automatic Ollama fallback.
+    * ``ollama``    — Local open-source model only (free, no API key required).
+
+    For ``openai`` and ``anthropic``, if the primary call fails (rate limit,
+    missing key, network error) the request is retried transparently against
+    the local Ollama instance before propagating any error.
 
     Returns:
         An object satisfying the ``VisionProvider`` Protocol.
@@ -481,14 +688,22 @@ def get_vision_provider() -> VisionProvider:
 
     provider_name = getattr(settings, "VISION_PROVIDER", "mock").lower()
 
+    def _ollama() -> OllamaVisionProvider:
+        return OllamaVisionProvider(
+            base_url=getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434"),
+            model=getattr(settings, "OLLAMA_VISION_MODEL", "llava"),
+        )
+
     if provider_name == "mock":
         return MockVisionProvider()
+    if provider_name == "ollama":
+        return _ollama()
     if provider_name == "openai":
-        return OpenAIVisionProvider()
+        return FallbackVisionProvider([OpenAIVisionProvider(), _ollama()])
     if provider_name == "anthropic":
-        return AnthropicVisionProvider()
+        return FallbackVisionProvider([AnthropicVisionProvider(), _ollama()])
 
     raise ValueError(
         f"Unknown VISION_PROVIDER value: '{provider_name}'. "
-        "Supported options: 'mock', 'openai', 'anthropic'."
+        "Supported options: 'mock', 'openai', 'anthropic', 'ollama'."
     )
