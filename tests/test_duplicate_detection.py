@@ -652,7 +652,7 @@ class TestScoreReportImpl:
     # ── test: atomicity — audit log failure rolls back ────────────────────
 
     def test_pending_merge_review_rollback_on_audit_log_failure(self) -> None:
-        """If audit log INSERT raises in _apply_pending_merge_review, transaction rolls back.
+        """If audit log INSERT raises in _apply_pending_merge_review, transaction rolls back.  # noqa: E501
 
         With HITL, AUTO_MERGE no longer directly merges — it calls
         _apply_pending_merge_review which makes exactly 2 execute calls:

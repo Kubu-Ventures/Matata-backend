@@ -1490,9 +1490,7 @@ class TestConfirmPendingMerge:
         db.flush = AsyncMock()
         db.add = MagicMock()
 
-        result = await confirm_pending_merge(
-            db, report.id, analyst_id_hash="a" * 64
-        )
+        result = await confirm_pending_merge(db, report.id, analyst_id_hash="a" * 64)
 
         assert isinstance(result, ConfirmMergeResponse)
         assert result.merged_into == primary_id
@@ -1618,8 +1616,7 @@ class TestGetAiAccuracy:
 
         # 10 high-confidence agreeing feedback entries — below MIN_SAMPLE (30).
         feedback = [
-            self._make_feedback(ai_confidence=0.9, is_agreement=True)
-            for _ in range(10)
+            self._make_feedback(ai_confidence=0.9, is_agreement=True) for _ in range(10)
         ]
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_scalars_result(feedback))
@@ -1640,8 +1637,7 @@ class TestGetAiAccuracy:
         from app.services.analyst_service import get_ai_accuracy
 
         feedback = [
-            self._make_feedback(ai_confidence=0.9, is_agreement=True)
-            for _ in range(30)
+            self._make_feedback(ai_confidence=0.9, is_agreement=True) for _ in range(30)
         ]
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_scalars_result(feedback))
@@ -1705,7 +1701,7 @@ class TestGetAiAccuracy:
 
     @pytest.mark.asyncio
     async def test_staleness_flag_set_when_threshold_is_old(self):
-        """threshold_is_stale=True when updated_at > AI_DIVERGENCE_STALENESS_DAYS ago."""
+        """threshold_is_stale=True when updated_at > AI_DIVERGENCE_STALENESS_DAYS ago."""  # noqa: E501
         from app.services.analyst_service import get_ai_accuracy
 
         # Return a timestamp 10 days in the past.
@@ -1743,8 +1739,7 @@ class TestGetAiAccuracy:
         from app.services.analyst_service import get_ai_accuracy
 
         feedback = [
-            self._make_feedback(ai_confidence=0.9, is_agreement=True)
-            for _ in range(30)
+            self._make_feedback(ai_confidence=0.9, is_agreement=True) for _ in range(30)
         ]
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_scalars_result(feedback))
