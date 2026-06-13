@@ -127,6 +127,17 @@ class Settings(BaseSettings):
     AI_CONFIDENCE_HIGH_PRIORITY_THRESHOLD: float = 0.80
     AI_QUALITY_CRITICAL_THRESHOLD: float = 0.30
 
+    # ── Duplicate detection ────────────────────────────────────────────────────
+    # Candidate reports must fall within ±DUPLICATE_TIME_WINDOW_HOURS of the
+    # incoming report's created_at to be considered potential duplicates.
+    # Rationale: two reports of the same building separated by more than this
+    # window represent distinct damage events (e.g. flood then earthquake),
+    # not the same event reported twice.
+    #
+    # 72 h accommodates delayed offline submissions and slow cellular sync in
+    # field conditions while preventing cross-event false positives.
+    DUPLICATE_TIME_WINDOW_HOURS: int = 72
+
     # ── i18n / Translation ────────────────────────────────────────────────────
     # TRANSLATION_PROVIDER=libretranslate  — calls a self-hosted LibreTranslate
     #                                        container (default; no API key needed
