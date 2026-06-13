@@ -43,12 +43,12 @@ os.environ.setdefault("OPENAI_API_KEY", "")
 os.environ.setdefault("ANTHROPIC_API_KEY", "")
 os.environ.setdefault("AI_PROCESSING_QUEUE_ALERT_DEPTH", "500")
 
+from app.core.config import settings  # noqa: E402
 from app.services.vision_service import (  # noqa: E402
     ImageAnalysisResult,
     MockVisionProvider,
     VisionAPIError,
 )
-from app.core.config import settings  # noqa: E402
 from app.workers.ai_tasks import (  # noqa: E402
     _compute_phash,
     _compute_review_priority,
