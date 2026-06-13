@@ -23,8 +23,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_redis
+from app.core.dependencies import get_db, get_redis
 from app.core.i18n import LocalisedHTTPException, get_locale, get_message
 from app.services import auth_service
 from app.services.auth_service import (
@@ -306,14 +307,21 @@ async def send_otp(
 async def verify_otp(
     body: OTPVerifyRequest,
     redis: Redis = Depends(get_redis),
+    db: AsyncSession = Depends(get_db),
     lang: str = Depends(get_locale),
 ) -> TokenResponse:
-    """Verify an OTP and return an access + refresh token pair."""
+    """Verify an OTP and return an access + refresh token pair.
+
+    For provisioned analysts, responders, and admins the returned JWT carries
+    the elevated role stored in analyst_accounts.  All other callers receive
+    role=reporter.
+    """
     try:
-        access_token, refresh_token = await auth_service.verify_otp(
+        access_token, refresh_token, role = await auth_service.verify_otp(
             phone_number=body.phone,
             otp_code=body.otp,
             redis=redis,
+            db=db,
         )
     except AuthError as exc:
         raise _auth_error_to_http(exc, lang) from exc
@@ -321,7 +329,7 @@ async def verify_otp(
     return TokenResponse(
         token=access_token,
         refresh_token=refresh_token,
-        role=Role.reporter.value,
+        role=role.value if hasattr(role, "value") else str(role),
     )
 
 

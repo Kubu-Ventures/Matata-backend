@@ -1,322 +1,76 @@
-"""Tests for Supabase analyst authentication — service and routes.
+"""Tests for OTP-based analyst account provisioning.
 
 Coverage
 --------
-supabase_service:
-  sign_in              — success, not configured, invalid credentials, server error
-  invite_analyst       — success, not configured, supabase error
-  extract_crisismap_claims — success, not configured, invalid token, missing role,
-                             region_geojson propagated
+auth_service:
+  lookup_analyst_account  — found, not found, inactive ignored
+  register_analyst_account — success, invalid role, duplicate phone
+  deactivate_analyst_account — success, not found
 
 analyst_auth routes:
-  POST /auth/analyst/login  — success, invalid creds, not configured, no role,
-                               unknown role, supabase unavailable
-  POST /auth/analyst/invite — admin success, non-admin 403, invalid role 422,
-                               not configured 503, supabase error 503
+  POST   /auth/analyst/register  — admin success, non-admin 403, bad role 422,
+                                   bad phone 422, duplicate 400
+  DELETE /auth/analyst/accounts/{id} — admin success, not found 404, non-admin 403
+  GET    /auth/analyst/accounts  — admin lists accounts
 
-All tests are pure unit tests — no real HTTP, Redis, or Supabase connection.
+auth_service.verify_otp (analyst elevation):
+  — reporter phone returns reporter role
+  — analyst phone returns analyst role
+
+All tests are pure unit tests — no real database, Redis, or network.
 """
 
 from __future__ import annotations
 
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from jose import jwt
+
+_PHONE = "+254700000001"
+_OTP = "123456"
+_ACCOUNT_ID = uuid.uuid4()
+
 
 # ---------------------------------------------------------------------------
-# Shared test constants
+# Helpers
 # ---------------------------------------------------------------------------
 
-_EMAIL = "analyst.c@matata.org"
-_PASSWORD = "securepassword123"
-_TEST_JWT_SECRET = "test-supabase-jwt-secret-for-testing-only"
 
-# A minimal Supabase-like JWT payload with crisismap_role set
-_SUPABASE_PAYLOAD = {
-    "sub": "uuid-1234",
-    "email": _EMAIL,
-    "role": "authenticated",
-    "user_metadata": {
-        "crisismap_role": "analyst",
-        "region_geojson": None,
-    },
-}
+def _admin_token() -> str:
+    from app.services.auth_service import Role, _build_access_token
 
-_SUPABASE_RESPONSE = {
-    "access_token": jwt.encode(_SUPABASE_PAYLOAD, _TEST_JWT_SECRET, algorithm="HS256"),
-    "refresh_token": "supabase-refresh-token",
-    "user": {
-        "id": "uuid-1234",
-        "email": _EMAIL,
-        "user_metadata": {
-            "crisismap_role": "analyst",
-            "region_geojson": None,
-        },
-    },
-}
+    return _build_access_token(sub="admin-sub-hash", role=Role.admin)
 
 
-# ===========================================================================
-# supabase_service tests
-# ===========================================================================
+def _analyst_token() -> str:
+    from app.services.auth_service import Role, _build_access_token
+
+    return _build_access_token(sub="analyst-sub-hash", role=Role.analyst)
 
 
-class TestSignIn:
-    @pytest.mark.asyncio
-    async def test_returns_response_on_success(self):
-        from app.services.supabase_service import sign_in
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.is_success = True
-        mock_response.json.return_value = _SUPABASE_RESPONSE
-
-        with (
-            patch("app.services.supabase_service.settings") as mock_settings,
-            patch("httpx.AsyncClient") as mock_client,
-        ):
-            mock_settings.SUPABASE_URL = "https://test.supabase.co"
-            mock_settings.SUPABASE_ANON_KEY = "anon-key"
-            mock_client.return_value.__aenter__ = AsyncMock(
-                return_value=MagicMock(post=AsyncMock(return_value=mock_response))
-            )
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await sign_in(_EMAIL, _PASSWORD)
-
-        assert result["access_token"] == _SUPABASE_RESPONSE["access_token"]
-
-    @pytest.mark.asyncio
-    async def test_raises_not_configured_when_url_empty(self):
-        from app.services.supabase_service import (
-            SupabaseNotConfiguredError,
-            sign_in,
-        )
-
-        with patch("app.services.supabase_service.settings") as mock_settings:
-            mock_settings.SUPABASE_URL = ""
-            mock_settings.SUPABASE_ANON_KEY = ""
-            with pytest.raises(SupabaseNotConfiguredError):
-                await sign_in(_EMAIL, _PASSWORD)
-
-    @pytest.mark.asyncio
-    async def test_raises_invalid_credentials_on_400(self):
-        from app.services.supabase_service import (
-            SupabaseInvalidCredentialsError,
-            sign_in,
-        )
-
-        mock_response = MagicMock()
-        mock_response.status_code = 400
-        mock_response.is_success = False
-
-        with (
-            patch("app.services.supabase_service.settings") as mock_settings,
-            patch("httpx.AsyncClient") as mock_client,
-        ):
-            mock_settings.SUPABASE_URL = "https://test.supabase.co"
-            mock_settings.SUPABASE_ANON_KEY = "anon-key"
-            mock_client.return_value.__aenter__ = AsyncMock(
-                return_value=MagicMock(post=AsyncMock(return_value=mock_response))
-            )
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            with pytest.raises(SupabaseInvalidCredentialsError):
-                await sign_in(_EMAIL, "wrongpassword")
-
-    @pytest.mark.asyncio
-    async def test_raises_supabase_error_on_server_error(self):
-        from app.services.supabase_service import SupabaseAuthError, sign_in
-
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-        mock_response.is_success = False
-
-        with (
-            patch("app.services.supabase_service.settings") as mock_settings,
-            patch("httpx.AsyncClient") as mock_client,
-        ):
-            mock_settings.SUPABASE_URL = "https://test.supabase.co"
-            mock_settings.SUPABASE_ANON_KEY = "anon-key"
-            mock_client.return_value.__aenter__ = AsyncMock(
-                return_value=MagicMock(post=AsyncMock(return_value=mock_response))
-            )
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            with pytest.raises(SupabaseAuthError):
-                await sign_in(_EMAIL, _PASSWORD)
+def _make_account(
+    role: str = "analyst",
+    is_active: bool = True,
+    region_geojson: str | None = None,
+) -> MagicMock:
+    acc = MagicMock()
+    acc.id = _ACCOUNT_ID
+    acc.phone_hash = "aabbcc"
+    acc.role = role
+    acc.region_geojson = region_geojson
+    acc.is_active = is_active
+    acc.created_by_sub = "admin-sub-hash"
+    return acc
 
 
-class TestInviteAnalyst:
-    @pytest.mark.asyncio
-    async def test_sends_invite_successfully(self):
-        from app.services.supabase_service import invite_analyst
-
-        mock_response = MagicMock()
-        mock_response.is_success = True
-        mock_response.json.return_value = {"id": "uuid-1234", "email": _EMAIL}
-
-        with (
-            patch("app.services.supabase_service.settings") as mock_settings,
-            patch("httpx.AsyncClient") as mock_client,
-        ):
-            mock_settings.SUPABASE_URL = "https://test.supabase.co"
-            mock_settings.SUPABASE_SERVICE_ROLE_KEY = "service-key"
-            mock_client.return_value.__aenter__ = AsyncMock(
-                return_value=MagicMock(post=AsyncMock(return_value=mock_response))
-            )
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            result = await invite_analyst(_EMAIL, "analyst")
-
-        assert result["email"] == _EMAIL
-
-    @pytest.mark.asyncio
-    async def test_raises_not_configured_when_service_key_empty(self):
-        from app.services.supabase_service import (
-            SupabaseNotConfiguredError,
-            invite_analyst,
-        )
-
-        with patch("app.services.supabase_service.settings") as mock_settings:
-            mock_settings.SUPABASE_URL = ""
-            mock_settings.SUPABASE_SERVICE_ROLE_KEY = ""
-            with pytest.raises(SupabaseNotConfiguredError):
-                await invite_analyst(_EMAIL, "analyst")
-
-    @pytest.mark.asyncio
-    async def test_raises_supabase_error_on_failure(self):
-        from app.services.supabase_service import SupabaseAuthError, invite_analyst
-
-        mock_response = MagicMock()
-        mock_response.is_success = False
-        mock_response.json.return_value = {"msg": "Email already registered"}
-
-        with (
-            patch("app.services.supabase_service.settings") as mock_settings,
-            patch("httpx.AsyncClient") as mock_client,
-        ):
-            mock_settings.SUPABASE_URL = "https://test.supabase.co"
-            mock_settings.SUPABASE_SERVICE_ROLE_KEY = "service-key"
-            mock_client.return_value.__aenter__ = AsyncMock(
-                return_value=MagicMock(post=AsyncMock(return_value=mock_response))
-            )
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            with pytest.raises(SupabaseAuthError):
-                await invite_analyst(_EMAIL, "analyst")
-
-    @pytest.mark.asyncio
-    async def test_region_geojson_included_in_payload(self):
-        from app.services.supabase_service import invite_analyst
-
-        region = '{"type":"Polygon","coordinates":[]}'
-        mock_response = MagicMock()
-        mock_response.is_success = True
-        mock_response.json.return_value = {"id": "uuid-1234"}
-
-        captured = {}
-
-        async def fake_post(url, json=None, headers=None):
-            captured["payload"] = json
-            return mock_response
-
-        with (
-            patch("app.services.supabase_service.settings") as mock_settings,
-            patch("httpx.AsyncClient") as mock_client,
-        ):
-            mock_settings.SUPABASE_URL = "https://test.supabase.co"
-            mock_settings.SUPABASE_SERVICE_ROLE_KEY = "service-key"
-            mock_client.return_value.__aenter__ = AsyncMock(
-                return_value=MagicMock(post=AsyncMock(side_effect=fake_post))
-            )
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            await invite_analyst(_EMAIL, "responder", region_geojson=region)
-
-        assert captured["payload"]["data"]["region_geojson"] == region
-
-
-class TestExtractCrisisMapClaims:
-    def _make_response(self, user_metadata: dict) -> dict:
-        """Build a minimal Supabase sign-in response dict."""
-        return {"user": {"id": "uuid-1234", "user_metadata": user_metadata}}
-
-    def test_extracts_role_from_valid_token(self):
-        from app.services.supabase_service import extract_crisismap_claims
-
-        response = self._make_response(
-            {"crisismap_role": "analyst", "region_geojson": None}
-        )
-        role, region = extract_crisismap_claims(response)
-
-        assert role == "analyst"
-        assert region is None
-
-    def test_extracts_region_geojson_when_present(self):
-        from app.services.supabase_service import extract_crisismap_claims
-
-        response = self._make_response(
-            {
-                "crisismap_role": "responder",
-                "region_geojson": '{"type":"Polygon"}',
-            }
-        )
-        role, region = extract_crisismap_claims(response)
-
-        assert role == "responder"
-        assert region == '{"type":"Polygon"}'
-
-    def test_raises_when_user_key_missing(self):
-        from app.services.supabase_service import (
-            SupabaseAuthError,
-            extract_crisismap_claims,
-        )
-
-        with pytest.raises(SupabaseAuthError):
-            extract_crisismap_claims({})
-
-    def test_raises_when_user_metadata_is_none(self):
-        from app.services.supabase_service import (
-            SupabaseAuthError,
-            extract_crisismap_claims,
-        )
-
-        with pytest.raises(SupabaseAuthError):
-            extract_crisismap_claims({"user": {"user_metadata": None}})
-
-    def test_raises_when_no_role_in_metadata(self):
-        from app.services.supabase_service import (
-            SupabaseAuthError,
-            extract_crisismap_claims,
-        )
-
-        with pytest.raises(SupabaseAuthError, match="no CrisisMap role"):
-            extract_crisismap_claims(self._make_response({}))
-
-    def test_raises_when_role_is_none(self):
-        from app.services.supabase_service import (
-            SupabaseAuthError,
-            extract_crisismap_claims,
-        )
-
-        with pytest.raises(SupabaseAuthError):
-            extract_crisismap_claims(self._make_response({"crisismap_role": None}))
-
-
-# ===========================================================================
-# Analyst auth route tests
-# ===========================================================================
-
-
-def _make_analyst_auth_app():
-    """Build a minimal FastAPI app with the analyst_auth router mounted."""
+def _make_app():
     from fastapi import FastAPI
 
     from app.api.v1.routes.analyst_auth import router
-    from app.core.dependencies import get_redis
+    from app.api.v1.routes.auth import router as auth_router
+    from app.core.dependencies import get_db, get_redis
 
     app = FastAPI()
 
@@ -328,320 +82,418 @@ def _make_analyst_auth_app():
         redis.exists = AsyncMock(return_value=0)
         return redis
 
+    async def override_db():
+        yield AsyncMock()
+
     app.dependency_overrides[get_redis] = override_redis
+    app.dependency_overrides[get_db] = override_db
+    app.include_router(auth_router, prefix="/api/v1")
     app.include_router(router, prefix="/api/v1")
     return app
 
 
-def _admin_bearer() -> str:
-    """Return a valid CrisisMap JWT with admin role for protected endpoints."""
-    from app.services.auth_service import Role, _build_access_token
-
-    return _build_access_token(sub="admin-hash", role=Role.admin)
+# ===========================================================================
+# auth_service — lookup_analyst_account
+# ===========================================================================
 
 
-def _analyst_bearer() -> str:
-    """Return a valid CrisisMap JWT with analyst role."""
-    from app.services.auth_service import Role, _build_access_token
+class TestLookupAnalystAccount:
+    @pytest.mark.asyncio
+    async def test_returns_account_when_found(self):
+        from app.services.auth_service import lookup_analyst_account
 
-    return _build_access_token(sub="analyst-hash", role=Role.analyst)
-
-
-class TestAnalystLoginRoute:
-    def test_successful_login_returns_crisismap_tokens(self):
-        # Mount the auth router too so require_role dependency resolves
-        from fastapi import FastAPI
-
-        from app.api.v1.routes.analyst_auth import router
-        from app.api.v1.routes.auth import router as auth_router
-        from app.core.dependencies import get_redis
-        from app.services.auth_service import Role, _build_access_token
-
-        app = FastAPI()
-
-        async def override_redis():
-            redis = AsyncMock()
-            redis.set = AsyncMock(return_value=True)
-            redis.exists = AsyncMock(return_value=0)
-            return redis
-
-        app.dependency_overrides[get_redis] = override_redis
-        app.include_router(auth_router, prefix="/api/v1")
-        app.include_router(router, prefix="/api/v1")
-        client = TestClient(app)
-
-        fake_supabase_token = jwt.encode(
-            _SUPABASE_PAYLOAD, _TEST_JWT_SECRET, algorithm="HS256"
-        )
-        fake_crisismap_token = _build_access_token(sub="hash", role=Role.analyst)
-
-        with (
-            patch(
-                "app.api.v1.routes.analyst_auth.sign_in",
-                new=AsyncMock(return_value={"access_token": fake_supabase_token}),
-            ),
-            patch(
-                "app.api.v1.routes.analyst_auth.extract_crisismap_claims",
-                return_value=("analyst", None),
-            ),
-            patch(
-                "app.api.v1.routes.analyst_auth.auth_service.issue_analyst_token",
-                new=AsyncMock(return_value=(fake_crisismap_token, "refresh-tok")),
-            ),
-        ):
-            resp = client.post(
-                "/api/v1/auth/analyst/login",
-                json={"email": _EMAIL, "password": _PASSWORD},
-            )
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "token" in data
-        assert "refresh_token" in data
-        assert data["role"] == "analyst"
-
-    def test_invalid_credentials_returns_401(self):
-        from app.services.supabase_service import SupabaseInvalidCredentialsError
-
-        app = _make_analyst_auth_app()
-        client = TestClient(app)
-
-        with patch(
-            "app.api.v1.routes.analyst_auth.sign_in",
-            new=AsyncMock(side_effect=SupabaseInvalidCredentialsError("bad creds")),
-        ):
-            resp = client.post(
-                "/api/v1/auth/analyst/login",
-                json={"email": _EMAIL, "password": "wrongpass"},
-            )
-
-        assert resp.status_code == 401
-
-    def test_supabase_not_configured_returns_503(self):
-        from app.services.supabase_service import SupabaseNotConfiguredError
-
-        app = _make_analyst_auth_app()
-        client = TestClient(app)
-
-        with patch(
-            "app.api.v1.routes.analyst_auth.sign_in",
-            new=AsyncMock(side_effect=SupabaseNotConfiguredError("not configured")),
-        ):
-            resp = client.post(
-                "/api/v1/auth/analyst/login",
-                json={"email": _EMAIL, "password": _PASSWORD},
-            )
-
-        assert resp.status_code == 503
-
-    def test_no_role_in_metadata_returns_403(self):
-        from app.services.supabase_service import SupabaseAuthError
-
-        app = _make_analyst_auth_app()
-        client = TestClient(app)
-
-        with (
-            patch(
-                "app.api.v1.routes.analyst_auth.sign_in",
-                new=AsyncMock(return_value={"access_token": "tok"}),
-            ),
-            patch(
-                "app.api.v1.routes.analyst_auth.extract_crisismap_claims",
-                side_effect=SupabaseAuthError("no CrisisMap role"),
-            ),
-        ):
-            resp = client.post(
-                "/api/v1/auth/analyst/login",
-                json={"email": _EMAIL, "password": _PASSWORD},
-            )
-
-        assert resp.status_code == 403
-
-    def test_unknown_role_string_returns_403(self):
-        app = _make_analyst_auth_app()
-        client = TestClient(app)
-
-        with (
-            patch(
-                "app.api.v1.routes.analyst_auth.sign_in",
-                new=AsyncMock(return_value={"access_token": "tok"}),
-            ),
-            patch(
-                "app.api.v1.routes.analyst_auth.extract_crisismap_claims",
-                return_value=("superuser", None),
-            ),
-        ):
-            resp = client.post(
-                "/api/v1/auth/analyst/login",
-                json={"email": _EMAIL, "password": _PASSWORD},
-            )
-
-        assert resp.status_code == 403
-
-    def test_supabase_service_unavailable_returns_503(self):
-        from app.services.supabase_service import SupabaseAuthError
-
-        app = _make_analyst_auth_app()
-        client = TestClient(app)
-
-        with patch(
-            "app.api.v1.routes.analyst_auth.sign_in",
-            new=AsyncMock(side_effect=SupabaseAuthError("timeout")),
-        ):
-            resp = client.post(
-                "/api/v1/auth/analyst/login",
-                json={"email": _EMAIL, "password": _PASSWORD},
-            )
-
-        assert resp.status_code == 503
-
-    def test_short_password_returns_422(self):
-        app = _make_analyst_auth_app()
-        client = TestClient(app)
-
-        resp = client.post(
-            "/api/v1/auth/analyst/login",
-            json={"email": _EMAIL, "password": "short"},
+        account = _make_account()
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=account))
         )
 
-        assert resp.status_code == 422
+        result = await lookup_analyst_account("aabbcc", db)
+        assert result is account
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_not_found(self):
+        from app.services.auth_service import lookup_analyst_account
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
+
+        result = await lookup_analyst_account("not-a-hash", db)
+        assert result is None
 
 
-class TestAnalystInviteRoute:
-    def _make_app_with_auth(self):
-        """App with both auth and analyst_auth routers for role enforcement."""
-        from fastapi import FastAPI
+# ===========================================================================
+# auth_service — register_analyst_account
+# ===========================================================================
 
-        from app.api.v1.routes.analyst_auth import router
-        from app.api.v1.routes.auth import router as auth_router
-        from app.core.dependencies import get_redis
 
-        app = FastAPI()
+class TestRegisterAnalystAccount:
+    @pytest.mark.asyncio
+    async def test_registers_analyst_successfully(self):
+        from app.services.auth_service import Role, register_analyst_account
 
-        async def override_redis():
-            redis = AsyncMock()
-            redis.exists = AsyncMock(return_value=0)
-            redis.set = AsyncMock(return_value=True)
-            return redis
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
+        db.add = MagicMock()
+        db.flush = AsyncMock()
+        db.commit = AsyncMock()
 
-        app.dependency_overrides[get_redis] = override_redis
-        app.include_router(auth_router, prefix="/api/v1")
-        app.include_router(router, prefix="/api/v1")
-        return app
+        account = await register_analyst_account(
+            phone_number=_PHONE,
+            role=Role.analyst,
+            created_by_sub="admin-hash",
+            db=db,
+        )
 
-    def test_admin_can_invite_analyst(self):
-        app = self._make_app_with_auth()
+        db.add.assert_called_once()
+        db.commit.assert_awaited_once()
+        assert account.role == "analyst"
+
+    @pytest.mark.asyncio
+    async def test_raises_for_reporter_role(self):
+        from app.services.auth_service import Role, register_analyst_account
+
+        db = AsyncMock()
+        with pytest.raises(ValueError, match="elevated role"):
+            await register_analyst_account(
+                phone_number=_PHONE,
+                role=Role.reporter,
+                created_by_sub="admin-hash",
+                db=db,
+            )
+
+    @pytest.mark.asyncio
+    async def test_raises_for_duplicate_phone(self):
+        from app.services.auth_service import Role, register_analyst_account
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(
+                scalar_one_or_none=MagicMock(return_value=_make_account())
+            )
+        )
+
+        with pytest.raises(ValueError, match="already registered"):
+            await register_analyst_account(
+                phone_number=_PHONE,
+                role=Role.analyst,
+                created_by_sub="admin-hash",
+                db=db,
+            )
+
+
+# ===========================================================================
+# auth_service — deactivate_analyst_account
+# ===========================================================================
+
+
+class TestDeactivateAnalystAccount:
+    @pytest.mark.asyncio
+    async def test_deactivates_existing_account(self):
+        from app.services.auth_service import deactivate_analyst_account
+
+        account = _make_account()
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=account))
+        )
+        db.flush = AsyncMock()
+        db.commit = AsyncMock()
+
+        result = await deactivate_analyst_account(str(_ACCOUNT_ID), db)
+
+        assert result is True
+        assert account.is_active is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_not_found(self):
+        from app.services.auth_service import deactivate_analyst_account
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
+
+        result = await deactivate_analyst_account(str(_ACCOUNT_ID), db)
+        assert result is False
+
+
+# ===========================================================================
+# auth_service — verify_otp role elevation
+# ===========================================================================
+
+
+class TestVerifyOtpRoleElevation:
+    def _make_redis(self, otp: str = _OTP) -> AsyncMock:
+        redis = AsyncMock()
+        redis.get = AsyncMock(
+            side_effect=lambda key: (b"0" if "attempts" in key else otp.encode())
+        )
+        redis.delete = AsyncMock()
+        redis.set = AsyncMock()
+        return redis
+
+    @pytest.mark.asyncio
+    async def test_reporter_phone_gets_reporter_role(self):
+        from app.services.auth_service import Role, verify_otp
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
+
+        _, _, role = await verify_otp(_PHONE, _OTP, self._make_redis(), db=db)
+        assert role == Role.reporter
+
+    @pytest.mark.asyncio
+    async def test_analyst_phone_gets_analyst_role(self):
+        from app.services.auth_service import Role, verify_otp
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(
+                scalar_one_or_none=MagicMock(return_value=_make_account(role="analyst"))
+            )
+        )
+
+        _, _, role = await verify_otp(_PHONE, _OTP, self._make_redis(), db=db)
+        assert role == Role.analyst
+
+    @pytest.mark.asyncio
+    async def test_responder_phone_gets_responder_role(self):
+        from app.services.auth_service import Role, verify_otp
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(
+                scalar_one_or_none=MagicMock(
+                    return_value=_make_account(role="responder")
+                )
+            )
+        )
+
+        _, _, role = await verify_otp(_PHONE, _OTP, self._make_redis(), db=db)
+        assert role == Role.responder
+
+    @pytest.mark.asyncio
+    async def test_no_db_always_returns_reporter_role(self):
+        from app.services.auth_service import Role, verify_otp
+
+        _, _, role = await verify_otp(_PHONE, _OTP, self._make_redis(), db=None)
+        assert role == Role.reporter
+
+
+# ===========================================================================
+# Analyst register route
+# ===========================================================================
+
+
+class TestRegisterRoute:
+    def test_admin_can_register_analyst(self):
+        app = _make_app()
         client = TestClient(app)
 
         with patch(
-            "app.api.v1.routes.analyst_auth.invite_analyst",
-            new=AsyncMock(return_value={"id": "uuid-1234"}),
+            "app.api.v1.routes.analyst_auth.auth_service.register_analyst_account",
+            new=AsyncMock(return_value=_make_account()),
         ):
             resp = client.post(
-                "/api/v1/auth/analyst/invite",
-                json={"email": _EMAIL, "role": "analyst"},
-                headers={"Authorization": f"Bearer {_admin_bearer()}"},
+                "/api/v1/auth/analyst/register",
+                json={"phone": _PHONE, "role": "analyst"},
+                headers={"Authorization": f"Bearer {_admin_token()}"},
             )
 
         assert resp.status_code == 201
         data = resp.json()
-        assert data["email"] == _EMAIL
-        assert data["role"] == "analyst"
-        assert "Invite email sent" in data["message"]
+        assert "provisioned" in data["message"].lower() or "Account" in data["message"]
+        assert data["account"]["role"] == "analyst"
 
     def test_non_admin_returns_403(self):
-        app = self._make_app_with_auth()
+        app = _make_app()
         client = TestClient(app)
 
         resp = client.post(
-            "/api/v1/auth/analyst/invite",
-            json={"email": _EMAIL, "role": "analyst"},
-            headers={"Authorization": f"Bearer {_analyst_bearer()}"},
+            "/api/v1/auth/analyst/register",
+            json={"phone": _PHONE, "role": "analyst"},
+            headers={"Authorization": f"Bearer {_analyst_token()}"},
         )
 
         assert resp.status_code == 403
 
     def test_no_token_returns_401(self):
-        app = self._make_app_with_auth()
+        app = _make_app()
         client = TestClient(app)
 
         resp = client.post(
-            "/api/v1/auth/analyst/invite",
-            json={"email": _EMAIL, "role": "analyst"},
+            "/api/v1/auth/analyst/register",
+            json={"phone": _PHONE, "role": "analyst"},
         )
 
         assert resp.status_code == 401
 
     def test_invalid_role_returns_422(self):
-        app = self._make_app_with_auth()
+        app = _make_app()
         client = TestClient(app)
 
         resp = client.post(
-            "/api/v1/auth/analyst/invite",
-            json={"email": _EMAIL, "role": "superuser"},
-            headers={"Authorization": f"Bearer {_admin_bearer()}"},
+            "/api/v1/auth/analyst/register",
+            json={"phone": _PHONE, "role": "superuser"},
+            headers={"Authorization": f"Bearer {_admin_token()}"},
         )
 
         assert resp.status_code == 422
 
-    def test_supabase_not_configured_returns_503(self):
-        from app.services.supabase_service import SupabaseNotConfiguredError
+    def test_invalid_phone_returns_422(self):
+        app = _make_app()
+        client = TestClient(app)
 
-        app = self._make_app_with_auth()
+        resp = client.post(
+            "/api/v1/auth/analyst/register",
+            json={"phone": "not-a-phone", "role": "analyst"},
+            headers={"Authorization": f"Bearer {_admin_token()}"},
+        )
+
+        assert resp.status_code == 422
+
+    def test_duplicate_phone_returns_400(self):
+        app = _make_app()
         client = TestClient(app)
 
         with patch(
-            "app.api.v1.routes.analyst_auth.invite_analyst",
-            new=AsyncMock(side_effect=SupabaseNotConfiguredError("not configured")),
+            "app.api.v1.routes.analyst_auth.auth_service.register_analyst_account",
+            new=AsyncMock(side_effect=ValueError("already registered")),
         ):
             resp = client.post(
-                "/api/v1/auth/analyst/invite",
-                json={"email": _EMAIL, "role": "analyst"},
-                headers={"Authorization": f"Bearer {_admin_bearer()}"},
+                "/api/v1/auth/analyst/register",
+                json={"phone": _PHONE, "role": "analyst"},
+                headers={"Authorization": f"Bearer {_admin_token()}"},
             )
 
-        assert resp.status_code == 503
+        assert resp.status_code == 400
 
-    def test_supabase_error_returns_503(self):
-        from app.services.supabase_service import SupabaseAuthError
-
-        app = self._make_app_with_auth()
-        client = TestClient(app)
-
-        with patch(
-            "app.api.v1.routes.analyst_auth.invite_analyst",
-            new=AsyncMock(side_effect=SupabaseAuthError("email already registered")),
-        ):
-            resp = client.post(
-                "/api/v1/auth/analyst/invite",
-                json={"email": _EMAIL, "role": "analyst"},
-                headers={"Authorization": f"Bearer {_admin_bearer()}"},
-            )
-
-        assert resp.status_code == 503
-
-    def test_responder_invite_includes_region(self):
-        app = self._make_app_with_auth()
+    def test_responder_with_region_geojson(self):
+        app = _make_app()
         client = TestClient(app)
         region = '{"type":"Polygon","coordinates":[]}'
 
         with patch(
-            "app.api.v1.routes.analyst_auth.invite_analyst",
-            new=AsyncMock(return_value={"id": "uuid-5678"}),
-        ) as mock_invite:
+            "app.api.v1.routes.analyst_auth.auth_service.register_analyst_account",
+            new=AsyncMock(
+                return_value=_make_account(role="responder", region_geojson=region)
+            ),
+        ) as mock_reg:
             resp = client.post(
-                "/api/v1/auth/analyst/invite",
-                json={
-                    "email": _EMAIL,
-                    "role": "responder",
-                    "region_geojson": region,
-                },
-                headers={"Authorization": f"Bearer {_admin_bearer()}"},
+                "/api/v1/auth/analyst/register",
+                json={"phone": _PHONE, "role": "responder", "region_geojson": region},
+                headers={"Authorization": f"Bearer {_admin_token()}"},
             )
 
         assert resp.status_code == 201
-        mock_invite.assert_awaited_once_with(
-            email=_EMAIL,
-            crisismap_role="responder",
-            region_geojson=region,
+        mock_reg.assert_awaited_once()
+        _, kwargs = mock_reg.call_args
+        assert kwargs["region_geojson"] == region
+
+
+# ===========================================================================
+# Deactivate route
+# ===========================================================================
+
+
+class TestDeactivateRoute:
+    def test_admin_can_deactivate(self):
+        app = _make_app()
+        client = TestClient(app)
+
+        with patch(
+            "app.api.v1.routes.analyst_auth.auth_service.deactivate_analyst_account",
+            new=AsyncMock(return_value=True),
+        ):
+            resp = client.delete(
+                f"/api/v1/auth/analyst/accounts/{_ACCOUNT_ID}",
+                headers={"Authorization": f"Bearer {_admin_token()}"},
+            )
+
+        assert resp.status_code == 200
+
+    def test_not_found_returns_404(self):
+        app = _make_app()
+        client = TestClient(app)
+
+        with patch(
+            "app.api.v1.routes.analyst_auth.auth_service.deactivate_analyst_account",
+            new=AsyncMock(return_value=False),
+        ):
+            resp = client.delete(
+                f"/api/v1/auth/analyst/accounts/{_ACCOUNT_ID}",
+                headers={"Authorization": f"Bearer {_admin_token()}"},
+            )
+
+        assert resp.status_code == 404
+
+    def test_non_admin_returns_403(self):
+        app = _make_app()
+        client = TestClient(app)
+
+        resp = client.delete(
+            f"/api/v1/auth/analyst/accounts/{_ACCOUNT_ID}",
+            headers={"Authorization": f"Bearer {_analyst_token()}"},
         )
+
+        assert resp.status_code == 403
+
+
+# ===========================================================================
+# List route
+# ===========================================================================
+
+
+class TestListAccountsRoute:
+    def test_admin_can_list(self):
+        app = _make_app()
+        client = TestClient(app)
+
+        accounts = [_make_account("analyst"), _make_account("responder")]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = accounts
+
+        with patch(
+            "app.api.v1.routes.analyst_auth.AsyncSession",
+            new_callable=MagicMock,
+        ):
+            with patch(
+                "app.api.v1.routes.analyst_auth.auth_service",
+            ):
+                # Directly override the DB to return our mock accounts
+                from app.core.dependencies import get_db
+
+                async def override_db_with_accounts():
+                    db = AsyncMock()
+                    db.execute = AsyncMock(return_value=mock_result)
+                    yield db
+
+                app.dependency_overrides[get_db] = override_db_with_accounts
+
+                resp = client.get(
+                    "/api/v1/auth/analyst/accounts",
+                    headers={"Authorization": f"Bearer {_admin_token()}"},
+                )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) == 2
+
+    def test_non_admin_returns_403(self):
+        app = _make_app()
+        client = TestClient(app)
+
+        resp = client.get(
+            "/api/v1/auth/analyst/accounts",
+            headers={"Authorization": f"Bearer {_analyst_token()}"},
+        )
+
+        assert resp.status_code == 403

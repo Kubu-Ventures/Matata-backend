@@ -132,19 +132,6 @@ class Settings(BaseSettings):
     # no supported match.
     DEFAULT_LANGUAGE: str = "en"
 
-    # ── Supabase Auth (analyst / responder / admin accounts) ──────────────────
-    # SUPABASE_URL           — e.g. https://<project-ref>.supabase.co
-    # SUPABASE_ANON_KEY      — public anon key from Supabase project settings
-    # SUPABASE_SERVICE_ROLE_KEY — secret service role key (never expose client-side)
-    # SUPABASE_JWT_SECRET    — JWT secret from Supabase project settings (used to
-    #                          verify analyst tokens server-side)
-    # Leave all four empty in development to disable analyst login (CLI provisioning
-    # remains available as a fallback).
-    SUPABASE_URL: str = ""
-    SUPABASE_ANON_KEY: str = ""
-    SUPABASE_SERVICE_ROLE_KEY: str = ""
-    SUPABASE_JWT_SECRET: str = ""
-
     # ── Dashboard ─────────────────────────────────────────────────────────────
     DASHBOARD_BASE_URL: str = "https://crisismap.matata.org"
 

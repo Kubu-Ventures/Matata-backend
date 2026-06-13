@@ -40,12 +40,18 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+from typing import TYPE_CHECKING, Optional
 
 from jose import JWTError, jwt
 from redis.asyncio import Redis
 
 from app.core.config import settings
 from app.services.sms import SMSDeliveryError, get_sms_gateway
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models.analyst_account import AnalystAccount
 
 logger = logging.getLogger(__name__)
 
@@ -292,21 +298,25 @@ async def verify_otp(
     phone_number: str,
     otp_code: str,
     redis: Redis,
+    db: Optional["AsyncSession"] = None,
     tier: int = 1,
-) -> tuple[str, str]:
+) -> tuple[str, str, Role]:
     """Verify an OTP and issue access + refresh tokens on success.
 
-    Enforces a 5-consecutive-failure lockout within 15 minutes.
+    If *db* is provided the phone hash is looked up in ``analyst_accounts``.
+    Provisioned analysts, responders, and admins receive a JWT with their
+    stored elevated role; all other callers receive ``role=reporter``.
 
     Args:
         phone_number: Plaintext E.164 number (used only to derive the hash).
         otp_code:     Six-digit string provided by the reporter.
         redis:        Async Redis client.
+        db:           Optional async DB session for analyst account lookup.
         tier:         Trust tier to embed in the JWT (default 1 for phone-
-                      verified reporters).
+                      verified reporters; ignored for elevated roles).
 
     Returns:
-        Tuple of (access_token, refresh_token) strings.
+        Tuple of (access_token, refresh_token, role).
 
     Raises:
         OTPLockedOutError:  If the identifier is currently locked out.
@@ -355,17 +365,158 @@ async def verify_otp(
         )
         raise InvalidOTPError("Invalid OTP code.")
 
-    # ── Success — clean up and issue tokens ──────────────────────────────────
+    # ── Success — resolve role, clean up, issue tokens ───────────────────────
     await redis.delete(_otp_key(id_hash))
     await redis.delete(_otp_attempts_key(id_hash))
 
-    access_token = _build_access_token(sub=id_hash, role=Role.reporter, tier=tier)
+    role = Role.reporter
+    resolved_tier = tier
+    if db is not None:
+        account = await lookup_analyst_account(id_hash, db)
+        if account is not None:
+            role = Role(account.role)
+            resolved_tier = 0  # tier is a reporter concept; not used for analysts
+
+    access_token = _build_access_token(sub=id_hash, role=role, tier=resolved_tier)
     refresh_token = await _issue_refresh_token(
-        sub=id_hash, role=Role.reporter, tier=tier, redis=redis
+        sub=id_hash, role=role, tier=resolved_tier, redis=redis
     )
 
-    logger.info("OTP verified; tokens issued (identifier: %s…)", id_hash[:8])
-    return access_token, refresh_token
+    logger.info(
+        "OTP verified; tokens issued role=%s (identifier: %s…)",
+        role.value,
+        id_hash[:8],
+    )
+    return access_token, refresh_token, role
+
+
+# ---------------------------------------------------------------------------
+# Analyst account provisioning
+# ---------------------------------------------------------------------------
+
+
+async def lookup_analyst_account(
+    phone_hash: str,
+    db: "AsyncSession",
+) -> Optional["AnalystAccount"]:
+    """Return the active AnalystAccount for *phone_hash*, or None.
+
+    Args:
+        phone_hash: SHA-256 hex digest of the salted phone number.
+        db:         Async SQLAlchemy session.
+
+    Returns:
+        ``AnalystAccount`` instance, or ``None`` if no active account exists.
+    """
+    import sqlalchemy as sa
+
+    from app.models.analyst_account import AnalystAccount
+
+    result = await db.execute(
+        sa.select(AnalystAccount).where(
+            AnalystAccount.phone_hash == phone_hash,
+            AnalystAccount.is_active.is_(True),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def register_analyst_account(
+    phone_number: str,
+    role: Role,
+    created_by_sub: str,
+    db: "AsyncSession",
+    region_geojson: Optional[str] = None,
+) -> "AnalystAccount":
+    """Provision an analyst/responder/admin account by phone number.
+
+    The plaintext phone number is hashed immediately and never stored.
+    Raises ``ValueError`` if *role* is not an elevated role, or if the phone
+    number is already registered and active.
+
+    Args:
+        phone_number:   E.164-formatted phone number.
+        role:           Must be analyst, responder, or admin.
+        created_by_sub: JWT ``sub`` claim of the provisioning admin.
+        db:             Async SQLAlchemy session.
+        region_geojson: GeoJSON string for responder geographic scope.
+
+    Returns:
+        The created ``AnalystAccount`` instance.
+
+    Raises:
+        ValueError: If role is not elevated, or phone is already registered.
+    """
+    import sqlalchemy as sa
+
+    from app.models.analyst_account import AnalystAccount
+
+    if role not in (Role.analyst, Role.responder, Role.admin):
+        raise ValueError(
+            f"register_analyst_account requires an elevated role, got: {role}"
+        )
+
+    phone_hash = hash_phone(phone_number)
+
+    existing = await db.execute(
+        sa.select(AnalystAccount).where(
+            AnalystAccount.phone_hash == phone_hash,
+            AnalystAccount.is_active.is_(True),
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise ValueError(
+            "This phone number is already registered as an analyst account."
+        )
+
+    account = AnalystAccount(
+        id=uuid.uuid4(),
+        phone_hash=phone_hash,
+        role=role.value,
+        region_geojson=region_geojson,
+        created_by_sub=created_by_sub,
+        is_active=True,
+    )
+    db.add(account)
+    await db.flush()
+    await db.commit()
+
+    logger.info(
+        "Analyst account registered role=%s (identifier: %s…)",
+        role.value,
+        phone_hash[:8],
+    )
+    return account
+
+
+async def deactivate_analyst_account(
+    account_id: str,
+    db: "AsyncSession",
+) -> bool:
+    """Deactivate an analyst account by its UUID.
+
+    Returns ``True`` if the account was found and deactivated, ``False`` if
+    no active account with that ID exists.
+    """
+    import sqlalchemy as sa
+
+    from app.models.analyst_account import AnalystAccount
+
+    result = await db.execute(
+        sa.select(AnalystAccount).where(
+            AnalystAccount.id == account_id,
+            AnalystAccount.is_active.is_(True),
+        )
+    )
+    account = result.scalar_one_or_none()
+    if account is None:
+        return False
+
+    account.is_active = False
+    await db.flush()
+    await db.commit()
+    logger.info("Analyst account deactivated (id: %s…)", str(account_id)[:8])
+    return True
 
 
 # ---------------------------------------------------------------------------
