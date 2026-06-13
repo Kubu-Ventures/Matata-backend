@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgeos-dev \
         libproj-dev \
         postgresql-client \
+        curl \
         g++ \
     && pip install --no-cache-dir "GDAL==$(gdal-config --version)" \
     && apt-get purge -y --auto-remove g++ \
