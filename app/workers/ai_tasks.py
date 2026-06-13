@@ -49,7 +49,7 @@ from io import BytesIO
 from typing import Optional
 from uuid import UUID
 
-import requests
+import httpx
 from celery import Task
 from celery.exceptions import MaxRetriesExceededError
 from sqlalchemy import create_engine, text
@@ -312,7 +312,7 @@ def _download_image(photo_url: str) -> bytes:
         VisionAPIError: If the download fails.
     """
     try:
-        resp = requests.get(photo_url, timeout=30)
+        resp = httpx.get(photo_url, timeout=30)
         resp.raise_for_status()
         return resp.content
     except Exception as exc:
