@@ -343,10 +343,14 @@ class AIAccuracyResponse(BaseModel):
     divergence threshold over time.
     """
 
-    total_feedback: int = Field(..., description="Total analyst feedback entries recorded.")
+    total_feedback: int = Field(
+        ..., description="Total analyst feedback entries recorded."
+    )
     agreement_rate: Optional[float] = Field(
         None,
-        description="Fraction of cases where AI prediction matched analyst decision (0.0–1.0).",
+        description=(
+            "Fraction of cases where AI prediction matched analyst decision (0.0–1.0)."
+        ),
     )
     high_confidence_agreement_rate: Optional[float] = Field(
         None,
@@ -358,7 +362,10 @@ class AIAccuracyResponse(BaseModel):
     )
     by_feedback_type: dict = Field(
         default_factory=dict,
-        description="Per-type breakdown: {'verify': {...}, 'reject': {...}, 'severity_override': {...}}.",
+        description=(
+            "Per-type breakdown: "
+            "{'verify': {...}, 'reject': {...}, 'severity_override': {...}}."
+        ),
     )
     recommended_divergence_threshold: Optional[float] = Field(
         None,

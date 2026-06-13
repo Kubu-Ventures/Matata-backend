@@ -37,7 +37,9 @@ class AIFeedback(Base):
     # 'verify' | 'reject' | 'severity_override'
     feedback_type: Mapped[str] = mapped_column(sa.String(50), nullable=False)
     ai_prediction: Mapped[Optional[str]] = mapped_column(sa.String(50), nullable=True)
-    analyst_decision: Mapped[Optional[str]] = mapped_column(sa.String(50), nullable=True)
+    analyst_decision: Mapped[Optional[str]] = mapped_column(
+        sa.String(50), nullable=True
+    )
     is_agreement: Mapped[Optional[bool]] = mapped_column(sa.Boolean, nullable=True)
     ai_confidence: Mapped[Optional[float]] = mapped_column(sa.Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -47,6 +49,4 @@ class AIFeedback(Base):
         index=True,
     )
 
-    __table_args__ = (
-        sa.Index("ix_ai_feedback_type", "feedback_type"),
-    )
+    __table_args__ = (sa.Index("ix_ai_feedback_type", "feedback_type"),)

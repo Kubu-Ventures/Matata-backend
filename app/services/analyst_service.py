@@ -850,9 +850,7 @@ async def confirm_pending_merge(
             f"(current status: {report.status})."
         )
     if report.possible_duplicate_of_id is None:
-        raise ValueError(
-            f"Report {report_id} has no possible_duplicate_of_id set."
-        )
+        raise ValueError(f"Report {report_id} has no possible_duplicate_of_id set.")
 
     primary_id = report.possible_duplicate_of_id
 
@@ -997,9 +995,7 @@ async def get_ai_accuracy(db: AsyncSession) -> AIAccuracyResponse:
         subset_agreements = [f for f in subset if f.is_agreement]
         by_type[ft] = FeedbackTypeBreakdown(
             count=len(subset),
-            agreement_rate=(
-                len(subset_agreements) / len(subset) if subset else None
-            ),
+            agreement_rate=(len(subset_agreements) / len(subset) if subset else None),
         ).model_dump()
 
     # Recommend lowering the divergence threshold when high-confidence
@@ -1007,16 +1003,18 @@ async def get_ai_accuracy(db: AsyncSession) -> AIAccuracyResponse:
     recommended_threshold: Optional[float] = None
     if hc_rate is not None:
         if hc_rate >= 0.85:
-            recommended_threshold = 0.7   # current default — no change needed
+            recommended_threshold = 0.7  # current default — no change needed
         elif hc_rate >= 0.70:
-            recommended_threshold = 0.6   # flag more reports for review
+            recommended_threshold = 0.6  # flag more reports for review
         else:
-            recommended_threshold = 0.5   # AI is poorly calibrated; flag broadly
+            recommended_threshold = 0.5  # AI is poorly calibrated; flag broadly
 
     return AIAccuracyResponse(
         total_feedback=total,
         agreement_rate=round(overall_rate, 4),
-        high_confidence_agreement_rate=round(hc_rate, 4) if hc_rate is not None else None,
+        high_confidence_agreement_rate=(
+            round(hc_rate, 4) if hc_rate is not None else None
+        ),
         avg_ai_confidence=round(avg_conf, 4) if avg_conf is not None else None,
         by_feedback_type=by_type,
         recommended_divergence_threshold=recommended_threshold,
