@@ -50,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.audit_log import AuditLog
 from app.models.enums import PhotoStatus, ReportStatus
 from app.models.report import Report
+from app.services.image_service import compress_image
 from app.services.moderation_service import ModerationProvider, get_moderation_provider
 from app.services.queue_service import QueueService, RedisQueueService
 from app.services.storage_service import StorageService, get_storage_service
@@ -413,7 +414,10 @@ async def create_report(
             # Generic message — do NOT disclose which category triggered rejection.
             raise ModerationRejectionError("Image could not be accepted")
 
-        # Moderation passed — safe to write to storage.
+        # Moderation passed — compress before writing to storage.
+        # pHash and moderation ran on the original bytes for maximum fidelity.
+        image_bytes, image_content_type = compress_image(image_bytes)
+
         # We need a report ID for the object key, so generate one now.
         import uuid as _uuid
 
@@ -585,7 +589,10 @@ async def add_photo_to_report(
         await db.flush()
         raise ModerationRejectionError("Image could not be accepted")
 
-    # ── 3. Upload ─────────────────────────────────────────────────────────────
+    # ── 3. Compress then upload ───────────────────────────────────────────────
+    # pHash and moderation ran on the original bytes for maximum fidelity.
+    image_bytes, image_content_type = compress_image(image_bytes)
+
     try:
         photo_url = await _storage.upload_image(
             report_id=str(report_id),
