@@ -126,6 +126,10 @@ class Settings(BaseSettings):
     AI_CONFIDENCE_CRITICAL_THRESHOLD: float = 0.60
     AI_CONFIDENCE_HIGH_PRIORITY_THRESHOLD: float = 0.80
     AI_QUALITY_CRITICAL_THRESHOLD: float = 0.30
+    # Baseline divergence threshold used before any analyst feedback has
+    # accumulated.  Once get_ai_accuracy() has enough data it writes a
+    # calibrated value to Redis and the AI worker reads it from there instead.
+    AI_DIVERGENCE_THRESHOLD_DEFAULT: float = 0.70
 
     # ── Duplicate detection ────────────────────────────────────────────────────
     # Candidate reports must fall within ±DUPLICATE_TIME_WINDOW_HOURS of the

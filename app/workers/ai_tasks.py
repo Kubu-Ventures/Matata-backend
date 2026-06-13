@@ -67,14 +67,48 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Divergence threshold (spec §8.3)
+# Divergence threshold — Redis-backed, calibrated by active learning
 # ---------------------------------------------------------------------------
 
-_DIVERGENCE_CONFIDENCE_THRESHOLD = 0.7
+# Redis key written by analyst_service.get_ai_accuracy().
+# Must match analyst_service.AI_DIVERGENCE_THRESHOLD_KEY.
+_AI_DIVERGENCE_THRESHOLD_KEY = "crisismap:ai:divergence_threshold"
 
 # Redis Pub/Sub channel consumed by the analyst SSE stream.
 # Must match analyst_service.ANALYST_EVENTS_CHANNEL.
 _ANALYST_EVENTS_CHANNEL = "crisismap:analyst_events"
+
+
+def _get_divergence_threshold() -> float:
+    """Return the active divergence confidence threshold.
+
+    Reads the calibrated value written by ``get_ai_accuracy()`` from Redis.
+    Falls back to ``settings.AI_DIVERGENCE_THRESHOLD_DEFAULT`` (0.70) when:
+    - No analyst feedback has been collected yet (key absent).
+    - Redis is temporarily unavailable.
+
+    A fresh synchronous connection is opened and closed per call so this
+    function is safe under both forked and threaded Celery worker models.
+    The read is cheap (single GET) and performed once per task invocation.
+    """
+    try:
+        import redis as _redis_sync
+
+        r = _redis_sync.from_url(settings.REDIS_URL, decode_responses=True)
+        try:
+            value = r.get(_AI_DIVERGENCE_THRESHOLD_KEY)
+        finally:
+            r.close()
+        if value is not None:
+            threshold = float(value)
+            logger.debug("Divergence threshold from Redis: %.2f", threshold)
+            return threshold
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "Could not read divergence threshold from Redis (%s) — using default",
+            type(exc).__name__,
+        )
+    return settings.AI_DIVERGENCE_THRESHOLD_DEFAULT
 
 
 # ---------------------------------------------------------------------------
@@ -467,9 +501,12 @@ def _process_report_image_impl(
         photo_phash = _compute_phash(image_bytes)
 
         # ── 6. Evaluate divergence flag ────────────────────────────────────────
+        # Threshold is read from Redis each task run so the active learning
+        # loop can adjust sensitivity without a worker restart.
+        divergence_threshold = _get_divergence_threshold()
         divergence = (
             result.ai_severity_prediction != reporter_severity
-            and result.ai_confidence > _DIVERGENCE_CONFIDENCE_THRESHOLD
+            and result.ai_confidence > divergence_threshold
         )
 
         # ── 7. Compute analyst queue priority ─────────────────────────────────

@@ -80,6 +80,11 @@ _STATS_CACHE_TTL = 60  # seconds
 # Redis Pub/Sub channel for SSE streaming (spec §13.4 / issue #15)
 ANALYST_EVENTS_CHANNEL = "crisismap:analyst_events"
 
+# Redis key holding the live divergence threshold written by get_ai_accuracy().
+# The AI Celery worker reads this key before each divergence evaluation so the
+# threshold auto-adjusts as analyst feedback accumulates.
+AI_DIVERGENCE_THRESHOLD_KEY = "crisismap:ai:divergence_threshold"
+
 # ---------------------------------------------------------------------------
 # Severity ordering helper (for trust-tier-aware building severity update)
 # ---------------------------------------------------------------------------
@@ -984,19 +989,30 @@ async def reject_pending_merge(
 # ---------------------------------------------------------------------------
 
 
-async def get_ai_accuracy(db: AsyncSession) -> AIAccuracyResponse:
-    """Return accuracy metrics derived from analyst feedback records.
+async def get_ai_accuracy(db: AsyncSession, redis: Redis) -> AIAccuracyResponse:
+    """Return accuracy metrics and auto-apply the recommended divergence threshold.
 
     Queries the ``ai_feedback`` table to compute how often the AI's severity
-    prediction has agreed with analyst decisions.  Provides a recommended
-    divergence threshold adjustment when agreement on high-confidence
-    predictions drops below an actionable level.
+    prediction has agreed with analyst decisions.  When enough feedback exists
+    to make a calibrated recommendation, the recommended divergence threshold
+    is written to Redis so the AI Celery worker picks it up automatically on
+    the next task run — closing the active learning loop without a restart.
+
+    Threshold logic (based on high-confidence prediction agreement rate):
+        ≥ 0.85 → 0.70  (model is reliable; keep current sensitivity)
+        ≥ 0.70 → 0.60  (model drifting; flag more reports for review)
+        < 0.70 → 0.50  (model poorly calibrated; flag broadly)
+
+    Nothing is written to Redis when total_feedback == 0 (no data yet) or
+    when high-confidence agreement rate cannot be computed.
 
     Args:
-        db: Async database session.
+        db:    Async database session.
+        redis: Async Redis client — used to persist the threshold.
 
     Returns:
-        ``AIAccuracyResponse`` with overall and per-type accuracy metrics.
+        ``AIAccuracyResponse`` with overall and per-type accuracy metrics
+        and the threshold that was applied (or None if insufficient data).
     """
     rows_result = await db.execute(sa.select(AIFeedback))
     all_feedback = list(rows_result.scalars().all())
@@ -1034,16 +1050,34 @@ async def get_ai_accuracy(db: AsyncSession) -> AIAccuracyResponse:
             agreement_rate=(len(subset_agreements) / len(subset) if subset else None),
         ).model_dump()
 
-    # Recommend lowering the divergence threshold when high-confidence
-    # predictions are only right ~60 % of the time or less.
+    # Compute recommended threshold and persist it to Redis so the AI worker
+    # picks it up automatically — no restart or manual config change required.
     recommended_threshold: Optional[float] = None
     if hc_rate is not None:
         if hc_rate >= 0.85:
-            recommended_threshold = 0.7  # current default — no change needed
+            recommended_threshold = 0.7  # model reliable — keep current sensitivity
         elif hc_rate >= 0.70:
-            recommended_threshold = 0.6  # flag more reports for review
+            recommended_threshold = 0.6  # model drifting — flag more for review
         else:
-            recommended_threshold = 0.5  # AI is poorly calibrated; flag broadly
+            recommended_threshold = 0.5  # poorly calibrated — flag broadly
+
+        # Write to Redis. The AI Celery worker reads this key before each
+        # divergence evaluation; no TTL is set so the value persists until
+        # the next accuracy check overwrites it.
+        try:
+            await redis.set(AI_DIVERGENCE_THRESHOLD_KEY, str(recommended_threshold))
+            logger.info(
+                "Divergence threshold updated to %.2f "
+                "(hc_agreement_rate=%.4f, feedback_n=%d)",
+                recommended_threshold,
+                hc_rate,
+                total,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not persist divergence threshold to Redis: %s",
+                type(exc).__name__,
+            )
 
     return AIAccuracyResponse(
         total_feedback=total,

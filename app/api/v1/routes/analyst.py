@@ -523,9 +523,10 @@ async def reject_merge(
 async def ai_accuracy(
     current_user: dict = Depends(require_role(Role.analyst)),
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ) -> AIAccuracyResponse:
-    """Return AI accuracy metrics from the analyst feedback log."""
-    return await analyst_service.get_ai_accuracy(db)
+    """Return AI accuracy metrics and apply the recommended divergence threshold."""
+    return await analyst_service.get_ai_accuracy(db, redis)
 
 
 # ---------------------------------------------------------------------------
