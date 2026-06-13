@@ -43,6 +43,7 @@ All database access is synchronous (Celery runs in threads, not an async loop).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from io import BytesIO
 from typing import Optional
@@ -66,10 +67,202 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Divergence threshold (spec §8.3)
+# Divergence threshold — Redis-backed, calibrated by active learning
 # ---------------------------------------------------------------------------
 
-_DIVERGENCE_CONFIDENCE_THRESHOLD = 0.7
+# Redis key written by analyst_service.get_ai_accuracy().
+# Must match analyst_service.AI_DIVERGENCE_THRESHOLD_KEY.
+_AI_DIVERGENCE_THRESHOLD_KEY = "crisismap:ai:divergence_threshold"
+
+# ISO-8601 UTC timestamp written alongside the threshold by get_ai_accuracy().
+# Must match analyst_service._AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY.
+_AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY = "crisismap:ai:divergence_threshold:updated_at"
+
+# Redis Pub/Sub channel consumed by the analyst SSE stream.
+# Must match analyst_service.ANALYST_EVENTS_CHANNEL.
+_ANALYST_EVENTS_CHANNEL = "crisismap:analyst_events"
+
+
+def _get_divergence_threshold() -> float:
+    """Return the active divergence confidence threshold.
+
+    Reads the calibrated value written by ``get_ai_accuracy()`` from Redis.
+    Falls back to ``settings.AI_DIVERGENCE_THRESHOLD_DEFAULT`` (0.70) when:
+    - No analyst feedback has been collected yet (key absent).
+    - Redis is temporarily unavailable.
+
+    Also reads the companion timestamp key and logs a WARNING if the stored
+    threshold has not been refreshed within
+    ``settings.AI_DIVERGENCE_STALENESS_DAYS`` days, so ops teams can detect
+    stalled analyst throughput before it silently degrades calibration quality.
+
+    A fresh synchronous connection is opened and closed per call so this
+    function is safe under both forked and threaded Celery worker models.
+    The read is cheap (two GETs) and performed once per task invocation.
+    """
+    from datetime import datetime, timezone  # local import — avoid module-level
+
+    try:
+        import redis as _redis_sync
+
+        r = _redis_sync.from_url(settings.REDIS_URL, decode_responses=True)
+        try:
+            value = r.get(_AI_DIVERGENCE_THRESHOLD_KEY)
+            updated_at_raw = r.get(_AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY)
+        finally:
+            r.close()
+
+        if value is not None:
+            threshold = float(value)
+
+            # Staleness check — warn ops if calibration is overdue.
+            if updated_at_raw:
+                try:
+                    ts_str = (
+                        updated_at_raw
+                        if isinstance(updated_at_raw, str)
+                        else updated_at_raw.decode()
+                    )
+                    updated_at = datetime.fromisoformat(ts_str)
+                    age_days = (datetime.now(tz=timezone.utc) - updated_at).days
+                    if age_days > settings.AI_DIVERGENCE_STALENESS_DAYS:
+                        logger.warning(
+                            "Divergence threshold %.2f is %d days old "
+                            "(staleness limit: %d days). "
+                            "Call GET /analyst/ai-accuracy to recalibrate.",
+                            threshold,
+                            age_days,
+                            settings.AI_DIVERGENCE_STALENESS_DAYS,
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
+            logger.debug("Divergence threshold from Redis: %.2f", threshold)
+            return threshold
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "Could not read divergence threshold from Redis (%s) — using default",
+            type(exc).__name__,
+        )
+    return settings.AI_DIVERGENCE_THRESHOLD_DEFAULT
+
+
+# ---------------------------------------------------------------------------
+# Analyst SSE event publisher
+# ---------------------------------------------------------------------------
+
+
+def _publish_analyst_event(payload: dict) -> None:
+    """Publish *payload* to the analyst SSE Redis channel.
+
+    Creates a fresh synchronous Redis connection per call so this function is
+    safe under both forked and threaded Celery worker models.  Failures are
+    logged as warnings and never propagate — the DB write has already committed
+    so the report is consistent even if the SSE push is dropped.
+
+    Args:
+        payload: Dict that will be JSON-serialised and published.  Must include
+                 an ``"event"`` key so the SSE handler emits the correct event
+                 type to connected dashboard clients.
+    """
+    try:
+        import redis as _redis_sync  # local import keeps startup lightweight
+
+        r = _redis_sync.from_url(settings.REDIS_URL, decode_responses=True)
+        try:
+            r.publish(_ANALYST_EVENTS_CHANNEL, json.dumps(payload))
+        finally:
+            r.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not publish analyst event %r for report %s: %s",
+            payload.get("event"),
+            payload.get("report_id"),
+            type(exc).__name__,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Confidence-based analyst routing
+# ---------------------------------------------------------------------------
+
+
+def _compute_review_priority(
+    *,
+    ai_confidence: Optional[float],
+    ai_quality_score: Optional[float],
+    ai_divergence: bool,
+) -> str:
+    """Map AI output metrics to an analyst queue priority string.
+
+    Priority rules (evaluated top-to-bottom; first match wins):
+
+    ``critical``
+        - Image quality below the unusable threshold (score < 0.30): any
+          severity prediction derived from this image is unreliable noise.
+        - AI confidence below 0.60: the model is insufficiently certain to
+          support an operational decision without a human second opinion.
+          Threshold follows responsible-AI guidance for humanitarian
+          decision-support systems.
+
+    ``high``
+        - AI disagrees with the reporter's own classification (divergence).
+          One party is wrong; an analyst must adjudicate.
+        - AI confidence in the 0.60–0.79 band: model is uncertain enough that
+          divergence or image issues could tip the prediction either way.
+
+    ``low``
+        - AI confidence ≥ 0.80, no divergence, quality above the unusable
+          threshold.  The model is confident and agrees with the reporter; this
+          report can be safely deprioritised in the analyst queue.
+
+    ``normal``
+        - Fallback for any case not matched above (e.g. confidence is None
+          because the report is still being processed).
+
+    Args:
+        ai_confidence:   Scalar 0.0–1.0 from the vision provider, or None.
+        ai_quality_score: Scalar 0.0–1.0 image quality score, or None.
+        ai_divergence:   True when AI prediction ≠ reporter severity AND
+                         ai_confidence > _DIVERGENCE_CONFIDENCE_THRESHOLD.
+
+    Returns:
+        One of ``"critical"``, ``"high"``, ``"normal"``, ``"low"``.
+    """
+    # Unusable image — severity prediction is noise regardless of confidence.
+    if (
+        ai_quality_score is not None
+        and ai_quality_score < settings.AI_QUALITY_CRITICAL_THRESHOLD
+    ):
+        return "critical"
+
+    # Confidence too low for autonomous action.
+    if (
+        ai_confidence is not None
+        and ai_confidence < settings.AI_CONFIDENCE_CRITICAL_THRESHOLD
+    ):
+        return "critical"
+
+    # AI and reporter disagree — one of them is wrong; analyst must decide.
+    if ai_divergence:
+        return "high"
+
+    # Medium confidence band — uncertain enough to warrant a second look.
+    if (
+        ai_confidence is not None
+        and ai_confidence < settings.AI_CONFIDENCE_HIGH_PRIORITY_THRESHOLD
+    ):
+        return "high"
+
+    # High confidence, no divergence, acceptable image quality → safe to defer.
+    if (
+        ai_confidence is not None
+        and ai_confidence >= settings.AI_CONFIDENCE_HIGH_PRIORITY_THRESHOLD
+    ):
+        return "low"
+
+    return "normal"
+
 
 # ---------------------------------------------------------------------------
 # Synchronous SQLAlchemy engine (Celery context — no async)
@@ -239,7 +432,7 @@ def _process_report_image_impl(
         # ── 1. Load report ────────────────────────────────────────────────────
         row = db.execute(
             text("""
-                SELECT id, photo_url, damage_severity
+                SELECT id, photo_url, damage_severity, lat, lng
                 FROM report
                 WHERE id = :report_id
             """),
@@ -298,18 +491,26 @@ def _process_report_image_impl(
 
         # ── 4. Handle unusable image (Stage 3.1) ──────────────────────────────
         if result.quality_flag == "unusable":
+            # Unusable image → critical priority: no reliable AI data at all.
+            priority = _compute_review_priority(
+                ai_confidence=None,
+                ai_quality_score=result.quality_score,
+                ai_divergence=False,
+            )
             db.execute(
                 text("""
                     UPDATE report
                     SET
                         ai_quality_score = :score,
                         photo_status     = :photo_status,
+                        review_priority  = :priority,
                         updated_at       = CURRENT_TIMESTAMP
                     WHERE id = :report_id
                 """),
                 {
                     "score": result.quality_score,
                     "photo_status": "insufficient_quality",
+                    "priority": priority,
                     "report_id": str(_report_id),
                 },
             )
@@ -317,7 +518,10 @@ def _process_report_image_impl(
             db.commit()
 
             logger.info(
-                "AI task: report %s photo marked insufficient_quality", _report_id
+                "AI task: report %s photo marked insufficient_quality "
+                "(review_priority=%s)",
+                _report_id,
+                priority,
             )
             return {
                 "photo_status": "insufficient_quality",
@@ -326,18 +530,29 @@ def _process_report_image_impl(
                 "ai_confidence": None,
                 "ai_divergence": None,
                 "photo_phash": None,
+                "review_priority": priority,
             }
 
         # ── 5. Compute perceptual hash (usable / borderline only) ─────────────
         photo_phash = _compute_phash(image_bytes)
 
         # ── 6. Evaluate divergence flag ────────────────────────────────────────
+        # Threshold is read from Redis each task run so the active learning
+        # loop can adjust sensitivity without a worker restart.
+        divergence_threshold = _get_divergence_threshold()
         divergence = (
             result.ai_severity_prediction != reporter_severity
-            and result.ai_confidence > _DIVERGENCE_CONFIDENCE_THRESHOLD
+            and result.ai_confidence > divergence_threshold
         )
 
-        # ── 7. Write AI results back to report (Stage 3.2) ────────────────────
+        # ── 7. Compute analyst queue priority ─────────────────────────────────
+        priority = _compute_review_priority(
+            ai_confidence=result.ai_confidence,
+            ai_quality_score=result.quality_score,
+            ai_divergence=divergence,
+        )
+
+        # ── 8. Write AI results back to report (Stage 3.2) ────────────────────
         # CRITICAL: ai_severity_prediction NEVER overwrites damage_severity.
         db.execute(
             text("""
@@ -349,6 +564,7 @@ def _process_report_image_impl(
                     ai_divergence           = :divergence,
                     photo_phash             = :phash,
                     photo_status            = :photo_status,
+                    review_priority         = :priority,
                     updated_at              = CURRENT_TIMESTAMP
                 WHERE id = :report_id
             """),
@@ -359,17 +575,37 @@ def _process_report_image_impl(
                 "divergence": divergence,
                 "phash": photo_phash,
                 "photo_status": "accepted",
+                "priority": priority,
                 "report_id": str(_report_id),
             },
         )
         db.commit()
 
         logger.info(
-            "AI task complete for report %s — divergence=%s phash=%s",
+            "AI task complete for report %s — divergence=%s phash=%s "
+            "review_priority=%s",
             _report_id,
             divergence,
             photo_phash is not None,
+            priority,
         )
+
+        # ── 9. Real-time SSE alert for divergent predictions ──────────────────
+        # Published AFTER commit so the report is readable when an analyst
+        # clicks through.  Fire-and-forget: Redis failure never fails the task.
+        if divergence:
+            _publish_analyst_event(
+                {
+                    "event": "report.ai_divergence",
+                    "report_id": str(_report_id),
+                    "ai_severity_prediction": result.ai_severity_prediction,
+                    "reporter_severity": reporter_severity,
+                    "ai_confidence": result.ai_confidence,
+                    "review_priority": priority,
+                    "lat": float(row.lat) if row.lat is not None else None,
+                    "lng": float(row.lng) if row.lng is not None else None,
+                }
+            )
 
         return {
             "photo_status": "accepted",
@@ -378,6 +614,7 @@ def _process_report_image_impl(
             "ai_confidence": result.ai_confidence,
             "ai_divergence": divergence,
             "photo_phash": photo_phash,
+            "review_priority": priority,
         }
 
     except VisionAPIError:
@@ -461,12 +698,15 @@ def process_report_image(
             try:
                 db: Session = _SyncSessionLocal()
                 try:
+                    # No AI data at all → critical: analyst must review before
+                    # any action is taken on this report.
                     db.execute(
                         text("""
                             UPDATE report
                             SET
-                                photo_status = :photo_status,
-                                updated_at   = CURRENT_TIMESTAMP
+                                photo_status    = :photo_status,
+                                review_priority = 'critical',
+                                updated_at      = CURRENT_TIMESTAMP
                             WHERE id = :report_id
                         """),
                         {
@@ -479,7 +719,8 @@ def process_report_image(
                     db.close()
             except Exception as db_exc:  # noqa: BLE001
                 logger.error(
-                    "AI task: could not write ai_processing_failed for report %s: %s",
+                    "AI task: could not write ai_processing_failed for "
+                    "report %s: %s",
                     report_id,
                     type(db_exc).__name__,
                 )
@@ -491,4 +732,5 @@ def process_report_image(
                 "ai_confidence": None,
                 "ai_divergence": None,
                 "photo_phash": None,
+                "review_priority": "critical",
             }

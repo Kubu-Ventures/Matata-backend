@@ -43,16 +43,21 @@ os.environ.setdefault("OPENAI_API_KEY", "")
 os.environ.setdefault("ANTHROPIC_API_KEY", "")
 os.environ.setdefault("AI_PROCESSING_QUEUE_ALERT_DEPTH", "500")
 
+from app.core.config import settings  # noqa: E402
 from app.services.vision_service import (  # noqa: E402
     ImageAnalysisResult,
     MockVisionProvider,
     VisionAPIError,
 )
 from app.workers.ai_tasks import (  # noqa: E402
-    _DIVERGENCE_CONFIDENCE_THRESHOLD,
     _compute_phash,
+    _compute_review_priority,
     _process_report_image_impl,
 )
+
+# Default divergence confidence threshold (read from Redis in prod; falls
+# back to this constant when Redis is unavailable in tests).
+_DIVERGENCE_CONFIDENCE_THRESHOLD = settings.AI_DIVERGENCE_THRESHOLD_DEFAULT
 
 # ---------------------------------------------------------------------------
 # Shared in-memory SQLite fixture
@@ -71,12 +76,15 @@ def _make_session_factory():
                 photo_url               TEXT,
                 damage_severity         TEXT NOT NULL DEFAULT 'partial',
                 reporter_token_hash     TEXT NOT NULL DEFAULT 'hash',
+                lat                     REAL,
+                lng                     REAL,
                 ai_quality_score        REAL,
                 ai_severity_prediction  TEXT,
                 ai_confidence           REAL,
                 ai_divergence           INTEGER,
                 photo_phash             TEXT,
                 photo_status            TEXT NOT NULL DEFAULT 'processing',
+                review_priority         TEXT NOT NULL DEFAULT 'normal',
                 updated_at              TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """))
@@ -581,3 +589,161 @@ class TestComputePhash:
     def test_returns_none_for_garbage_bytes(self):
         result = _compute_phash(b"this is not an image")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Tests — _compute_review_priority
+# ---------------------------------------------------------------------------
+
+
+class TestComputeReviewPriority:
+    """Unit tests for the pure priority-routing function."""
+
+    def test_unusable_image_is_critical(self):
+        result = _compute_review_priority(
+            ai_confidence=0.95,
+            ai_quality_score=0.1,  # below AI_QUALITY_CRITICAL_THRESHOLD (0.30)
+            ai_divergence=False,
+        )
+        assert result == "critical"
+
+    def test_low_confidence_is_critical(self):
+        result = _compute_review_priority(
+            ai_confidence=0.55,  # below AI_CONFIDENCE_CRITICAL_THRESHOLD (0.60)
+            ai_quality_score=0.9,
+            ai_divergence=False,
+        )
+        assert result == "critical"
+
+    def test_confidence_at_critical_boundary_is_critical(self):
+        # Exactly at 0.60 — boundary; must NOT be critical (< 0.60 is critical).
+        result = _compute_review_priority(
+            ai_confidence=0.60,
+            ai_quality_score=0.9,
+            ai_divergence=False,
+        )
+        # 0.60 is NOT < 0.60, so not critical. Not divergence, in high band.
+        assert result == "high"
+
+    def test_divergence_is_high(self):
+        result = _compute_review_priority(
+            ai_confidence=0.85,
+            ai_quality_score=0.9,
+            ai_divergence=True,
+        )
+        assert result == "high"
+
+    def test_medium_confidence_band_is_high(self):
+        # 0.60 <= confidence < 0.80, no divergence
+        result = _compute_review_priority(
+            ai_confidence=0.72,
+            ai_quality_score=0.9,
+            ai_divergence=False,
+        )
+        assert result == "high"
+
+    def test_high_confidence_no_divergence_is_low(self):
+        result = _compute_review_priority(
+            ai_confidence=0.90,
+            ai_quality_score=0.9,
+            ai_divergence=False,
+        )
+        assert result == "low"
+
+    def test_none_confidence_before_processing_is_normal(self):
+        # Report still queued; no AI output yet.
+        result = _compute_review_priority(
+            ai_confidence=None,
+            ai_quality_score=None,
+            ai_divergence=False,
+        )
+        assert result == "normal"
+
+    def test_quality_below_threshold_overrides_high_confidence(self):
+        # Even with high confidence, bad image quality → critical.
+        result = _compute_review_priority(
+            ai_confidence=0.95,
+            ai_quality_score=0.25,  # below 0.30 threshold
+            ai_divergence=False,
+        )
+        assert result == "critical"
+
+    def test_review_priority_written_to_db_for_accepted_image(self):
+        """Happy path: DB row has review_priority set after processing."""
+        import uuid
+
+        factory, _ = _make_session_factory()
+        rid = str(uuid.uuid4())
+
+        db = factory()
+        try:
+            db.execute(
+                text("""
+                    INSERT INTO report
+                        (id, photo_url, damage_severity, reporter_token_hash,
+                         lat, lng, photo_status)
+                    VALUES
+                        (:id, :url, 'partial', 'hash', -1.29, 36.82, 'processing')
+                """),
+                {"id": rid, "url": "https://example.com/photo.jpg"},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        provider = MockVisionProvider(severity="partial", confidence=0.95)
+
+        with (
+            patch("app.workers.ai_tasks._SyncSessionLocal", factory),
+            patch("app.workers.ai_tasks._download_image", return_value=b"img"),
+            patch("app.workers.ai_tasks._get_divergence_threshold", return_value=0.70),
+            patch("app.workers.ai_tasks._publish_analyst_event"),
+        ):
+            result = _process_report_image_impl(rid, vision_provider=provider)
+
+        assert result["review_priority"] == "low"  # high conf, no divergence
+        row = _fetch_report(factory, rid)
+        assert row["review_priority"] == "low"
+
+    def test_review_priority_critical_for_unusable_image(self):
+        """Unusable image path sets review_priority=critical."""
+        import uuid
+
+        factory, _ = _make_session_factory()
+        rid = str(uuid.uuid4())
+
+        db = factory()
+        try:
+            db.execute(
+                text("""
+                    INSERT INTO report
+                        (id, photo_url, damage_severity, reporter_token_hash,
+                         lat, lng, photo_status)
+                    VALUES
+                        (:id, :url, 'partial', 'hash', -1.29, 36.82, 'processing')
+                """),
+                {"id": rid, "url": "https://example.com/photo.jpg"},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        provider = MockVisionProvider(
+            fixed_result=ImageAnalysisResult(
+                quality_score=0.1,
+                quality_flag="unusable",
+                ai_severity_prediction="partial",
+                ai_confidence=0.3,
+            )
+        )
+
+        with (
+            patch("app.workers.ai_tasks._SyncSessionLocal", factory),
+            patch("app.workers.ai_tasks._download_image", return_value=b"blurry"),
+            patch("app.workers.ai_tasks._publish_analyst_event"),
+        ):
+            result = _process_report_image_impl(rid, vision_provider=provider)
+
+        assert result["review_priority"] == "critical"
+        row = _fetch_report(factory, rid)
+        assert row["review_priority"] == "critical"

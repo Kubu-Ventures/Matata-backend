@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 from uuid import UUID
 
@@ -124,6 +125,7 @@ def _load_candidates(
     building_id: Optional[str],
     lat: Optional[float],
     lng: Optional[float],
+    report_created_at: datetime,
 ) -> list[CandidateReport]:
     """Fetch up to ``_MAX_CANDIDATES`` candidate reports to score against.
 
@@ -131,24 +133,45 @@ def _load_candidates(
     OR that fall within ``_CANDIDATE_SEARCH_RADIUS_M`` metres of the incoming
     report's coordinates — whichever set is broader.
 
+    **Time-window filter:** only reports whose ``created_at`` falls within
+    ±``DUPLICATE_TIME_WINDOW_HOURS`` of the incoming report are considered.
+    This prevents cross-event false positives where the same building is
+    damaged in two separate disaster events (e.g. a flood report from three
+    months ago matching today's earthquake report). A "duplicate" by definition
+    means the same damage event was reported more than once; two reports
+    separated by more than the window represent distinct events.
+
+    The 72-hour default accommodates delayed offline submissions and slow
+    cellular sync common in the field regions this system targets.
+
     The incoming report itself is always excluded.
 
     Args:
-        db:          Active synchronous session.
-        report_id:   UUID of the report being scored (excluded from results).
-        building_id: Matched building UUID string, or ``None``.
-        lat:         WGS84 latitude, or ``None``.
-        lng:         WGS84 longitude, or ``None``.
+        db:                Active synchronous session.
+        report_id:         UUID of the report being scored (excluded).
+        building_id:       Matched building UUID string, or ``None``.
+        lat:               WGS84 latitude, or ``None``.
+        lng:               WGS84 longitude, or ``None``.
+        report_created_at: ``created_at`` timestamp of the report being scored.
+                           Candidates outside ±DUPLICATE_TIME_WINDOW_HOURS are
+                           excluded.
 
     Returns:
         List of ``CandidateReport`` dataclass instances.
     """
+    window_hours = settings.DUPLICATE_TIME_WINDOW_HOURS
+    # Ensure the reference timestamp is timezone-aware for consistent
+    # comparison against the timezone-aware `created_at` column.
+    if report_created_at.tzinfo is None:
+        report_created_at = report_created_at.replace(tzinfo=timezone.utc)
+    time_lower = report_created_at - timedelta(hours=window_hours)
+    time_upper = report_created_at + timedelta(hours=window_hours)
+
     # Use an explicit list[Row[Any]] so mypy is satisfied when we call
     # list() on fetchall() (which returns Sequence[Row[Any]]).
     rows: List[Row[Any]] = []
 
     if building_id is not None:
-        # Fetch reports sharing the same building (no PostGIS required)
         rows = list(
             db.execute(
                 text("""
@@ -162,14 +185,18 @@ def _load_candidates(
                         infrastructure_type
                     FROM report
                     WHERE building_id = :building_id
-                      AND id != :report_id
-                      AND status NOT IN ('duplicate')
+                      AND id          != :report_id
+                      AND status      NOT IN ('duplicate')
+                      AND created_at  >= :time_lower
+                      AND created_at  <= :time_upper
                     ORDER BY created_at DESC
                     LIMIT :limit
                 """),
                 {
                     "building_id": building_id,
                     "report_id": str(report_id),
+                    "time_lower": time_lower,
+                    "time_upper": time_upper,
                     "limit": _MAX_CANDIDATES,
                 },
             ).fetchall()
@@ -200,9 +227,11 @@ def _load_candidates(
                             ST_SetSRID(ST_Point(:lng, :lat), 4326)::geography,
                             :radius_m
                         )
-                          AND id != :report_id
-                          AND id != ALL(:existing_ids)
-                          AND status NOT IN ('duplicate')
+                          AND id         != :report_id
+                          AND id         != ALL(:existing_ids)
+                          AND status     NOT IN ('duplicate')
+                          AND created_at >= :time_lower
+                          AND created_at <= :time_upper
                         ORDER BY created_at DESC
                         LIMIT :limit
                     """),
@@ -212,6 +241,8 @@ def _load_candidates(
                         "radius_m": _CANDIDATE_SEARCH_RADIUS_M,
                         "report_id": str(report_id),
                         "existing_ids": list(existing_ids),
+                        "time_lower": time_lower,
+                        "time_upper": time_upper,
                         "limit": remaining,
                     },
                 ).fetchall()
@@ -221,7 +252,7 @@ def _load_candidates(
             # PostGIS may not be available in the test SQLite environment.
             # Fall back to a bounding-box approximation (1° ≈ 111 320 m).
             logger.warning(
-                "PostGIS ST_DWithin unavailable (%s) — using bounding-box fallback",
+                "PostGIS ST_DWithin unavailable (%s) — using bounding-box " "fallback",
                 type(exc).__name__,
             )
             import math
@@ -242,10 +273,12 @@ def _load_candidates(
                             crisis_type,
                             infrastructure_type
                         FROM report
-                        WHERE lat  BETWEEN :min_lat  AND :max_lat
-                          AND lng  BETWEEN :min_lng  AND :max_lng
-                          AND id  != :report_id
-                          AND status NOT IN ('duplicate')
+                        WHERE lat        BETWEEN :min_lat AND :max_lat
+                          AND lng        BETWEEN :min_lng AND :max_lng
+                          AND id         != :report_id
+                          AND status     NOT IN ('duplicate')
+                          AND created_at >= :time_lower
+                          AND created_at <= :time_upper
                         ORDER BY created_at DESC
                         LIMIT :limit
                     """),
@@ -255,6 +288,8 @@ def _load_candidates(
                         "min_lng": lng - lng_delta,
                         "max_lng": lng + lng_delta,
                         "report_id": str(report_id),
+                        "time_lower": time_lower,
+                        "time_upper": time_upper,
                         "limit": remaining,
                     },
                 ).fetchall()
@@ -284,35 +319,35 @@ def _load_candidates(
 # ---------------------------------------------------------------------------
 
 
-def _apply_auto_merge(
+def _apply_pending_merge_review(
     db: Session,
     report_id: UUID,
     primary_id: UUID,
-    new_photo_url: Optional[str],
     composite_score: float,
 ) -> None:
-    """Mark ``report_id`` as a duplicate of ``primary_id`` and update photo.
+    """Queue a high-confidence duplicate for analyst confirmation.
 
-    All writes share the caller's transaction — the caller is responsible for
-    ``commit()`` and ``rollback()``.  If the audit log INSERT raises, the
-    transaction must be rolled back by the caller.
+    Instead of silently merging (old AUTO_MERGE behaviour), the report is set
+    to ``pending_merge_review`` with ``possible_duplicate_of_id`` pointing at
+    the likely primary.  An analyst must confirm or reject the merge via
+    ``POST /analyst/reports/{id}/confirm-merge`` or ``…/reject-merge``.
+
+    All writes share the caller's transaction.
 
     Args:
         db:              Active synchronous session.
-        report_id:       The new report being merged.
-        primary_id:      The existing primary report to merge into.
-        new_photo_url:   Photo URL of the new report (may be None).
-        composite_score: Composite duplicate score for the audit log.
+        report_id:       The new report to hold for review.
+        primary_id:      The most probable primary report.
+        composite_score: Composite duplicate score (≥ 0.9).
     """
-    # 1. Mark the incoming report as a duplicate.
     db.execute(
         text("""
             UPDATE report
             SET
-                status            = 'duplicate',
-                duplicate_of_id   = :primary_id,
-                duplicate_score   = :score,
-                updated_at        = NOW()
+                status                   = 'pending_merge_review',
+                possible_duplicate_of_id = :primary_id,
+                duplicate_score          = :score,
+                updated_at               = NOW()
             WHERE id = :report_id
         """),
         {
@@ -322,22 +357,6 @@ def _apply_auto_merge(
         },
     )
 
-    # 2. If the new report has a photo, set it as the primary photo on the
-    #    target record (most recently submitted photo wins — spec §10.2).
-    if new_photo_url:
-        db.execute(
-            text("""
-                UPDATE report
-                SET
-                    photo_url  = :photo_url,
-                    updated_at = NOW()
-                WHERE id = :primary_id
-            """),
-            {"photo_url": new_photo_url, "primary_id": str(primary_id)},
-        )
-
-    # 3. Write audit log entry (MUST be inside the same transaction).
-    #    If this raises, the caller's rollback undoes steps 1 and 2.
     db.execute(
         text("""
             INSERT INTO audit_log (
@@ -347,7 +366,7 @@ def _apply_auto_merge(
                 before_state,
                 after_state
             ) VALUES (
-                'report.auto_merge',
+                'report.pending_merge_review',
                 'system',
                 :record_id,
                 :before_state,
@@ -359,16 +378,17 @@ def _apply_auto_merge(
             "before_state": '{"status": "pending"}',
             "after_state": json.dumps(
                 {
-                    "status": "duplicate",
-                    "duplicate_of_id": str(primary_id),
+                    "status": "pending_merge_review",
+                    "possible_duplicate_of_id": str(primary_id),
                     "duplicate_score": composite_score,
+                    "awaiting": "analyst_confirmation",
                 }
             ),
         },
     )
 
     logger.info(
-        "Auto-merge: report %s → primary %s (score=%.4f)",
+        "Pending merge review queued: report %s → possible primary %s (score=%.4f)",
         report_id,
         primary_id,
         composite_score,
@@ -437,9 +457,17 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
         )
         lat: Optional[float] = float(row.lat) if row.lat is not None else None
         lng: Optional[float] = float(row.lng) if row.lng is not None else None
+        report_created_at: datetime = row.created_at
 
         # ── 2. Fetch candidate reports ────────────────────────────────────────
-        candidates = _load_candidates(db, _report_id, building_id_str, lat, lng)
+        candidates = _load_candidates(
+            db,
+            _report_id,
+            building_id_str,
+            lat,
+            lng,
+            report_created_at,
+        )
 
         if not candidates:
             logger.info(
@@ -470,11 +498,12 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
         if result.action == DuplicateAction.AUTO_MERGE and result.best_candidate:
             primary_id = result.best_candidate.candidate.id
             try:
-                _apply_auto_merge(
+                # Human-in-the-loop: queue for analyst review instead of
+                # merging silently. The analyst confirms or rejects via API.
+                _apply_pending_merge_review(
                     db=db,
                     report_id=_report_id,
                     primary_id=primary_id,
-                    new_photo_url=row.photo_url,
                     composite_score=result.best_score,
                 )
                 db.commit()
@@ -482,8 +511,8 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
                 db.rollback()
                 _rolled_back = True
                 logger.error(
-                    "Duplicate task: auto-merge transaction failed for report %s "
-                    "— rolling back; report status unchanged",
+                    "Duplicate task: pending-merge-review write failed for "
+                    "report %s — rolling back; report status unchanged",
                     _report_id,
                 )
                 raise

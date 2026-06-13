@@ -30,6 +30,7 @@ from app.models.enums import (
     PhotoStatus,
     ReportDamageSeverity,
     ReportStatus,
+    ReviewPriority,
 )
 
 # ---------------------------------------------------------------------------
@@ -95,6 +96,8 @@ class ReportSummarySchema(BaseModel):
     ai_confidence: Optional[float] = None
     ai_severity_prediction: Optional[ReportDamageSeverity] = None
     ai_divergence: Optional[bool] = None
+    analyst_severity_override: Optional[ReportDamageSeverity] = None
+    review_priority: ReviewPriority = ReviewPriority.normal
     reporter_trust_tier: int
     created_at: datetime
     updated_at: datetime
@@ -163,8 +166,16 @@ class ReportDetailSchema(BaseModel):
     ai_confidence: Optional[float] = None
     ai_divergence: Optional[bool] = None
 
+    # Analyst AI correction (None = analyst has not overridden the AI)
+    analyst_severity_override: Optional[ReportDamageSeverity] = None
+
     # Workflow
     status: ReportStatus
+    possible_duplicate_of_id: Optional[UUID] = None
+    duplicate_score: Optional[float] = None
+
+    # Analyst queue priority — set by AI worker, drives feed sort order
+    review_priority: ReviewPriority = ReviewPriority.normal
 
     # Reporter — trust tier only; no hash/token
     reporter_trust_tier: int
@@ -271,4 +282,135 @@ class StatsSummaryResponse(BaseModel):
     total: int
     by_severity: SeverityBreakdown
     by_crisis_type: CrisisTypeBreakdown
+    # Reports awaiting analyst merge confirmation (status=pending_merge_review).
+    # Non-zero means analysts have unactioned merge decisions in their queue.
+    pending_duplicate_count: int = 0
     last_updated: datetime
+
+
+# ---------------------------------------------------------------------------
+# Analyst severity override
+# ---------------------------------------------------------------------------
+
+
+class SeverityOverrideRequest(BaseModel):
+    """Request body for ``POST /analyst/reports/{id}/severity-override``."""
+
+    analyst_severity_override: ReportDamageSeverity = Field(
+        ...,
+        description=(
+            "Analyst's corrected damage severity assessment. "
+            "Does not modify the reporter's damage_severity or the AI's "
+            "ai_severity_prediction — stored as a separate field."
+        ),
+    )
+
+
+class SeverityOverrideResponse(BaseModel):
+    """Response body for ``POST /analyst/reports/{id}/severity-override``."""
+
+    id: UUID
+    analyst_severity_override: ReportDamageSeverity
+
+
+# ---------------------------------------------------------------------------
+# Pending merge review — confirm / reject
+# ---------------------------------------------------------------------------
+
+
+class ConfirmMergeResponse(BaseModel):
+    """Response body for ``POST /analyst/reports/{id}/confirm-merge``."""
+
+    id: UUID
+    status: str
+    merged_into: UUID
+
+
+class RejectMergeResponse(BaseModel):
+    """Response body for ``POST /analyst/reports/{id}/reject-merge``."""
+
+    id: UUID
+    status: str
+
+
+# ---------------------------------------------------------------------------
+# AI accuracy (active learning metrics)
+# ---------------------------------------------------------------------------
+
+
+class FeedbackTypeBreakdown(BaseModel):
+    count: int
+    agreement_rate: Optional[float] = None
+
+
+class AIAccuracyResponse(BaseModel):
+    """Response body for ``GET /analyst/ai-accuracy``.
+
+    Summarises how often the AI's severity prediction has agreed with analyst
+    decisions across all recorded feedback entries.  Drives calibration of the
+    divergence threshold over time.
+    """
+
+    total_feedback: int = Field(
+        ..., description="Total analyst feedback entries recorded."
+    )
+    agreement_rate: Optional[float] = Field(
+        None,
+        description=(
+            "Fraction of cases where AI prediction matched analyst decision"
+            " (0.0–1.0)."
+        ),
+    )
+    high_confidence_agreement_rate: Optional[float] = Field(
+        None,
+        description="Agreement rate restricted to cases where ai_confidence > 0.7.",
+    )
+    avg_ai_confidence: Optional[float] = Field(
+        None,
+        description="Mean AI confidence across all feedback entries.",
+    )
+    by_feedback_type: dict = Field(
+        default_factory=dict,
+        description=(
+            "Per-type breakdown: "
+            "{'verify': {...}, 'reject': {...}, 'severity_override': {...}}."
+        ),
+    )
+    recommended_divergence_threshold: Optional[float] = Field(
+        None,
+        description=(
+            "Suggested divergence confidence threshold derived from observed"
+            " accuracy. Applied to Redis only when high_confidence_feedback_count"
+            " >= min_sample_for_calibration."
+        ),
+    )
+    high_confidence_feedback_count: int = Field(
+        0,
+        description=(
+            "Number of high-confidence (ai_confidence > 0.7) feedback entries."
+            " Calibration is applied only when this reaches"
+            " min_sample_for_calibration."
+        ),
+    )
+    min_sample_for_calibration: int = Field(
+        30,
+        description=(
+            "Minimum high-confidence entries required before the divergence"
+            " threshold is auto-applied. Prevents oscillation on small samples."
+        ),
+    )
+    threshold_updated_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "UTC timestamp of the last successful threshold calibration."
+            " None if the threshold has never been auto-calibrated."
+        ),
+    )
+    threshold_is_stale: bool = Field(
+        False,
+        description=(
+            "True when the stored threshold has not been refreshed within"
+            " AI_DIVERGENCE_STALENESS_DAYS days. Indicates that analyst"
+            " throughput may have dropped and recalibration is overdue."
+        ),
+    )

@@ -122,6 +122,7 @@ class TestEnums:
             "verified",
             "rejected",
             "duplicate",
+            "pending_merge_review",
         }
 
     def test_notification_type_values(self):

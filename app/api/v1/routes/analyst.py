@@ -53,12 +53,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.routes.auth import require_role
 from app.core.dependencies import get_db, get_redis
 from app.schemas.analyst_schemas import (
+    AIAccuracyResponse,
     AnalystNoteCreateRequest,
     AnalystNoteOut,
+    ConfirmMergeResponse,
     MergeRequest,
     MergeResponse,
     PaginatedReports,
+    RejectMergeResponse,
     ReportDetailSchema,
+    SeverityOverrideRequest,
+    SeverityOverrideResponse,
     StatsSummaryResponse,
     StatusTransitionRequest,
 )
@@ -149,10 +154,28 @@ async def list_reports(
         le=1.0,
         description="Minimum AI confidence threshold.",
     ),
+    review_priority: Optional[str] = Query(
+        default=None,
+        description=(
+            "Comma-separated priority levels to include: "
+            "critical, high, normal, low. "
+            "Example: ?review_priority=critical,high"
+        ),
+    ),
+    divergence_only: Optional[bool] = Query(
+        default=None,
+        description=(
+            "When true, restrict to reports where the AI's severity prediction "
+            "disagrees with the reporter's classification (ai_divergence=true). "
+            "These are the cases most in need of analyst adjudication."
+        ),
+    ),
     sort_by: Optional[str] = Query(
         default=None,
         description=(
-            "Sort order: 'severity' (destroyed first) or default created_at DESC."
+            "Sort order: 'severity' (priority+destroyed first), "
+            "'created_at' (pure chronological), "
+            "or omit for default priority-first ordering."
         ),
     ),
     current_user: dict = Depends(require_role(Role.analyst, Role.responder)),
@@ -176,6 +199,8 @@ async def list_reports(
         time_from=time_from,
         time_to=time_to,
         min_ai_confidence=min_ai_confidence,
+        review_priority=_split(review_priority),
+        ai_divergence_only=divergence_only,
         sort_by=sort_by,
         region_geojson=_region_geojson(current_user),
     )
@@ -353,6 +378,155 @@ async def create_note(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# POST /analyst/reports/{id}/severity-override — Feature 1
+# ---------------------------------------------------------------------------
+
+
+@analyst_router.post(
+    "/reports/{report_id}/severity-override",
+    response_model=SeverityOverrideResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Override AI severity prediction",
+    description=(
+        "Records the analyst's explicit correction of the AI's damage severity "
+        "prediction. Writes to ``analyst_severity_override`` only — never "
+        "modifies the reporter's ``damage_severity`` or the AI's "
+        "``ai_severity_prediction``. Also logs an ``AIFeedback`` entry for "
+        "accuracy calibration. Requires ``analyst`` role."
+    ),
+)
+async def set_severity_override(
+    report_id: UUID,
+    body: SeverityOverrideRequest,
+    current_user: dict = Depends(require_role(Role.analyst)),
+    db: AsyncSession = Depends(get_db),
+) -> SeverityOverrideResponse:
+    """Record an analyst's corrected severity assessment."""
+    try:
+        result = await analyst_service.set_severity_override(
+            db,
+            report_id,
+            override=body.analyst_severity_override,
+            analyst_id_hash=_analyst_id_hash(current_user),
+        )
+        await db.commit()
+        return result
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# POST /analyst/reports/{id}/confirm-merge — Feature 2
+# ---------------------------------------------------------------------------
+
+
+@analyst_router.post(
+    "/reports/{report_id}/confirm-merge",
+    response_model=ConfirmMergeResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Confirm a pending duplicate merge",
+    description=(
+        "Confirms a system-suggested duplicate merge. The report must be in "
+        "``pending_merge_review`` status (set by the duplicate detection worker "
+        "when the similarity score ≥ 0.9). Executes the actual merge: sets "
+        "``status=duplicate``, links ``duplicate_of_id``, and optionally "
+        "promotes the photo to the primary record. Requires ``analyst`` role."
+    ),
+)
+async def confirm_merge(
+    report_id: UUID,
+    current_user: dict = Depends(require_role(Role.analyst)),
+    db: AsyncSession = Depends(get_db),
+) -> ConfirmMergeResponse:
+    """Confirm and execute a pending duplicate merge."""
+    try:
+        result = await analyst_service.confirm_pending_merge(
+            db,
+            report_id,
+            analyst_id_hash=_analyst_id_hash(current_user),
+        )
+        await db.commit()
+        return result
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# POST /analyst/reports/{id}/reject-merge — Feature 2
+# ---------------------------------------------------------------------------
+
+
+@analyst_router.post(
+    "/reports/{report_id}/reject-merge",
+    response_model=RejectMergeResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Reject a pending duplicate merge",
+    description=(
+        "Rejects a system-suggested duplicate merge. The report is returned to "
+        "``pending`` status for normal analyst review. ``possible_duplicate_of_id`` "
+        "and ``duplicate_score`` are cleared. Requires ``analyst`` role."
+    ),
+)
+async def reject_merge(
+    report_id: UUID,
+    current_user: dict = Depends(require_role(Role.analyst)),
+    db: AsyncSession = Depends(get_db),
+) -> RejectMergeResponse:
+    """Reject a pending duplicate merge and restore the report to pending."""
+    try:
+        result = await analyst_service.reject_pending_merge(
+            db,
+            report_id,
+            analyst_id_hash=_analyst_id_hash(current_user),
+        )
+        await db.commit()
+        return result
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# GET /analyst/ai-accuracy — Feature 3
+# ---------------------------------------------------------------------------
+
+
+@analyst_router.get(
+    "/ai-accuracy",
+    response_model=AIAccuracyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="AI accuracy metrics",
+    description=(
+        "Returns accuracy metrics derived from analyst feedback records. "
+        "Shows how often the AI's severity prediction has agreed with analyst "
+        "decisions (verify, reject, severity override). Includes a recommended "
+        "divergence threshold adjustment to calibrate the auto-flagging system "
+        "based on observed accuracy. Requires ``analyst`` role."
+    ),
+)
+async def ai_accuracy(
+    current_user: dict = Depends(require_role(Role.analyst)),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> AIAccuracyResponse:
+    """Return AI accuracy metrics and apply the recommended divergence threshold."""
+    return await analyst_service.get_ai_accuracy(db, redis)
 
 
 # ---------------------------------------------------------------------------

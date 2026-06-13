@@ -41,6 +41,8 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
+from app.models.ai_feedback import AIFeedback
 from app.models.analyst_note import AnalystNote
 from app.models.audit_log import AuditLog
 from app.models.building import Building
@@ -52,11 +54,16 @@ from app.models.enums import (
 from app.models.report import Report
 from app.schemas.analyst_schemas import (
     _REJECTION_REASON_CODES,
+    AIAccuracyResponse,
     AnalystNoteOut,
+    ConfirmMergeResponse,
+    FeedbackTypeBreakdown,
     MergeResponse,
     PaginatedReports,
+    RejectMergeResponse,
     ReportDetailSchema,
     ReportSummarySchema,
+    SeverityOverrideResponse,
     StatsSummaryResponse,
     TimelineReportItem,
 )
@@ -73,6 +80,22 @@ _STATS_CACHE_TTL = 60  # seconds
 
 # Redis Pub/Sub channel for SSE streaming (spec §13.4 / issue #15)
 ANALYST_EVENTS_CHANNEL = "crisismap:analyst_events"
+
+# Redis key holding the live divergence threshold written by get_ai_accuracy().
+# The AI Celery worker reads this key before each divergence evaluation so the
+# threshold auto-adjusts as analyst feedback accumulates.
+AI_DIVERGENCE_THRESHOLD_KEY = "crisismap:ai:divergence_threshold"
+
+# ISO-8601 UTC timestamp written alongside the threshold so staleness can be
+# detected by the AI worker and surfaced via the accuracy API.
+_AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY = "crisismap:ai:divergence_threshold:updated_at"
+
+# Capped ring-buffer of the last N calibration events (LPUSH / LTRIM).
+# Each entry is a JSON object: {timestamp, old_threshold, new_threshold,
+# feedback_n, hc_n, hc_agreement_rate}.  Readable via the accuracy API
+# for accountability without a DB query.
+_AI_CALIBRATION_HISTORY_KEY = "crisismap:ai:calibration_history"
+_AI_CALIBRATION_HISTORY_MAX = 100
 
 # ---------------------------------------------------------------------------
 # Severity ordering helper (for trust-tier-aware building severity update)
@@ -97,6 +120,16 @@ _DAMAGE_TO_BUILDING_SEVERITY: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+# Priority numeric mapping for ORDER BY — higher number = shown first.
+_PRIORITY_ORDER = sa.case(
+    (Report.review_priority == "critical", 4),
+    (Report.review_priority == "high", 3),
+    (Report.review_priority == "normal", 2),
+    (Report.review_priority == "low", 1),
+    else_=2,
+)
+
+
 def _build_report_filters(
     query: sa.Select,
     *,
@@ -107,6 +140,8 @@ def _build_report_filters(
     time_from: Optional[datetime],
     time_to: Optional[datetime],
     min_ai_confidence: Optional[float],
+    review_priority: Optional[List[str]],
+    ai_divergence_only: Optional[bool],
     region_geojson: Optional[str],
 ) -> sa.Select:
     """Apply all active filter predicates to *query* and return it.
@@ -130,6 +165,10 @@ def _build_report_filters(
         query = query.where(Report.created_at <= time_to)
     if min_ai_confidence is not None:
         query = query.where(Report.ai_confidence >= min_ai_confidence)
+    if review_priority:
+        query = query.where(Report.review_priority.in_(review_priority))
+    if ai_divergence_only:
+        query = query.where(Report.ai_divergence.is_(True))
     if region_geojson:
         # PostGIS geographic scope for regional responders.
         # The filter uses a raw text clause to avoid importing geoalchemy2
@@ -159,6 +198,31 @@ async def _get_building_footprint_geojson(
     )
     result = row.fetchone()
     return result.geojson if result else None
+
+
+async def _log_ai_feedback(
+    db: AsyncSession,
+    *,
+    report_id: UUID,
+    feedback_type: str,
+    ai_prediction: Optional[str],
+    analyst_decision: Optional[str],
+    ai_confidence: Optional[float],
+) -> None:
+    """Append one AI feedback row within the current transaction."""
+    is_agreement: Optional[bool] = None
+    if ai_prediction is not None and analyst_decision is not None:
+        is_agreement = ai_prediction == analyst_decision
+
+    entry = AIFeedback(
+        report_id=report_id,
+        feedback_type=feedback_type,
+        ai_prediction=ai_prediction,
+        analyst_decision=analyst_decision,
+        is_agreement=is_agreement,
+        ai_confidence=ai_confidence,
+    )
+    db.add(entry)
 
 
 async def _write_audit_log(
@@ -198,6 +262,8 @@ async def list_reports(
     time_from: Optional[datetime] = None,
     time_to: Optional[datetime] = None,
     min_ai_confidence: Optional[float] = None,
+    review_priority: Optional[List[str]] = None,
+    ai_divergence_only: Optional[bool] = None,
     sort_by: Optional[str] = None,
     region_geojson: Optional[str] = None,
 ) -> PaginatedReports:
@@ -214,8 +280,12 @@ async def list_reports(
         time_from:           ISO 8601 UTC lower bound on ``created_at``.
         time_to:             ISO 8601 UTC upper bound on ``created_at``.
         min_ai_confidence:   Minimum ``ai_confidence`` threshold.
-        sort_by:             ``"severity"`` for destroyed-first ordering;
-                             default is ``created_at DESC``.
+        review_priority:     Multi-value filter list (critical/high/normal/low).
+        ai_divergence_only:  When True, restrict to reports where AI prediction
+                             disagrees with the reporter's severity assessment.
+        sort_by:             ``"severity"`` for priority+destroyed-first ordering;
+                             ``"created_at"`` for pure chronological (bypasses
+                             priority); default is priority-first + created_at.
         region_geojson:      Responder geographic scope (GeoJSON Polygon string).
 
     Returns:
@@ -233,6 +303,8 @@ async def list_reports(
         time_from=time_from,
         time_to=time_to,
         min_ai_confidence=min_ai_confidence,
+        review_priority=review_priority,
+        ai_divergence_only=ai_divergence_only,
         region_geojson=region_geojson,
     )
     count_query = _build_report_filters(
@@ -244,12 +316,19 @@ async def list_reports(
         time_from=time_from,
         time_to=time_to,
         min_ai_confidence=min_ai_confidence,
+        review_priority=review_priority,
+        ai_divergence_only=ai_divergence_only,
         region_geojson=region_geojson,
     )
 
     # Sorting
-    if sort_by == "severity":
-        # destroyed(3) first, then partial(2), minimal(1), none(0)
+    # Priority always leads (critical → high → normal → low) unless the caller
+    # explicitly requests pure chronological order with sort_by="created_at".
+    # This ensures analysts always see the reports that most need human review
+    # regardless of when they were submitted.
+    if sort_by == "created_at":
+        base_query = base_query.order_by(Report.created_at.desc())
+    elif sort_by == "severity":
         severity_order = sa.case(
             (Report.damage_severity == "destroyed", 3),
             (Report.damage_severity == "partial", 2),
@@ -257,10 +336,15 @@ async def list_reports(
             else_=0,
         )
         base_query = base_query.order_by(
-            severity_order.desc(), Report.created_at.desc()
+            _PRIORITY_ORDER.desc(),
+            severity_order.desc(),
+            Report.created_at.desc(),
         )
     else:
-        base_query = base_query.order_by(Report.created_at.desc())
+        # Default: priority-first, then newest within each priority tier.
+        base_query = base_query.order_by(
+            _PRIORITY_ORDER.desc(), Report.created_at.desc()
+        )
 
     # Count total matching records
     total_result = await db.execute(count_query)
@@ -418,7 +502,7 @@ async def transition_report_status(
                      reason_code value, or invalid target status).
         LookupError: Report not found.
     """
-    # Validate target status
+    # Validate target status — pending_merge_review is system-managed only
     if new_status not in (
         ReportStatus.verified,
         ReportStatus.rejected,
@@ -498,6 +582,33 @@ async def transition_report_status(
         before_state=before_state,
         after_state=after_state,
     )
+
+    # Active learning: record the analyst decision vs AI prediction.
+    # The ground-truth severity is the analyst's explicit override if present,
+    # otherwise the reporter's damage_severity (which the analyst confirmed).
+    if new_status in (ReportStatus.verified, ReportStatus.rejected):
+        ai_pred = (
+            report.ai_severity_prediction.value
+            if report.ai_severity_prediction
+            else None
+        )
+        analyst_dec = (
+            report.analyst_severity_override.value
+            if report.analyst_severity_override
+            else (
+                report.damage_severity.value
+                if hasattr(report.damage_severity, "value")
+                else str(report.damage_severity)
+            )
+        )
+        await _log_ai_feedback(
+            db,
+            report_id=report_id,
+            feedback_type=new_status.value,  # 'verify' or 'reject'
+            ai_prediction=ai_pred,
+            analyst_decision=analyst_dec,
+            ai_confidence=report.ai_confidence,
+        )
 
     await db.flush()
     return report
@@ -675,6 +786,400 @@ async def create_analyst_note(
 
 
 # ---------------------------------------------------------------------------
+# Public API — analyst severity override (Feature 1)
+# ---------------------------------------------------------------------------
+
+
+async def set_severity_override(
+    db: AsyncSession,
+    report_id: UUID,
+    *,
+    override: ReportDamageSeverity,
+    analyst_id_hash: str,
+) -> SeverityOverrideResponse:
+    """Record an analyst's explicit correction of the AI severity prediction.
+
+    Writes to ``report.analyst_severity_override`` only — never modifies
+    ``damage_severity`` (reporter) or ``ai_severity_prediction`` (AI).
+    Also logs one ``AIFeedback`` row so the correction feeds into accuracy
+    calibration.
+
+    Args:
+        db:              Async database session.
+        report_id:       UUID of the report to override.
+        override:        Analyst's corrected severity value.
+        analyst_id_hash: Anonymised analyst identifier for audit log.
+
+    Returns:
+        ``SeverityOverrideResponse`` with the updated field.
+
+    Raises:
+        LookupError: Report not found.
+    """
+    result = await db.execute(sa.select(Report).where(Report.id == report_id))
+    report = result.scalar_one_or_none()
+    if report is None:
+        raise LookupError(f"Report {report_id} not found.")
+
+    previous = (
+        report.analyst_severity_override.value
+        if report.analyst_severity_override
+        else None
+    )
+    report.analyst_severity_override = override
+
+    await _write_audit_log(
+        db,
+        operation="report.severity_override",
+        actor_id_hash=analyst_id_hash,
+        record_id=report_id,
+        before_state={"analyst_severity_override": previous},
+        after_state={"analyst_severity_override": override.value},
+    )
+
+    # Log AI feedback: analyst explicitly disagreed with (or confirmed) AI
+    ai_pred = (
+        report.ai_severity_prediction.value if report.ai_severity_prediction else None
+    )
+    await _log_ai_feedback(
+        db,
+        report_id=report_id,
+        feedback_type="severity_override",
+        ai_prediction=ai_pred,
+        analyst_decision=override.value,
+        ai_confidence=report.ai_confidence,
+    )
+
+    await db.flush()
+    return SeverityOverrideResponse(
+        id=report_id,
+        analyst_severity_override=override,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public API — pending merge confirmation / rejection (Feature 2)
+# ---------------------------------------------------------------------------
+
+
+async def confirm_pending_merge(
+    db: AsyncSession,
+    report_id: UUID,
+    *,
+    analyst_id_hash: str,
+) -> ConfirmMergeResponse:
+    """Confirm a system-flagged pending merge, executing the actual merge.
+
+    The duplicate detection worker sets ``status = 'pending_merge_review'``
+    and ``possible_duplicate_of_id`` when a report scores ≥ 0.9.  This
+    endpoint lets the analyst review and confirm the merge instead of it
+    happening silently.
+
+    Side-effects:
+    * ``status``               → ``duplicate``
+    * ``duplicate_of_id``      ← ``possible_duplicate_of_id``
+    * ``possible_duplicate_of_id`` cleared
+    * Primary report photo updated if this report has one and primary does not.
+
+    Args:
+        db:              Async database session.
+        report_id:       UUID of the report in ``pending_merge_review`` state.
+        analyst_id_hash: Anonymised analyst identifier for audit log.
+
+    Returns:
+        ``ConfirmMergeResponse`` with the primary report UUID.
+
+    Raises:
+        LookupError: Report not found.
+        ValueError:  Report is not in ``pending_merge_review`` status.
+    """
+    result = await db.execute(sa.select(Report).where(Report.id == report_id))
+    report = result.scalar_one_or_none()
+    if report is None:
+        raise LookupError(f"Report {report_id} not found.")
+    if report.status != ReportStatus.pending_merge_review:
+        raise ValueError(
+            f"Report {report_id} is not pending merge review "
+            f"(current status: {report.status})."
+        )
+    if report.possible_duplicate_of_id is None:
+        raise ValueError(f"Report {report_id} has no possible_duplicate_of_id set.")
+
+    primary_id = report.possible_duplicate_of_id
+
+    # Execute the merge
+    report.status = ReportStatus.duplicate
+    report.duplicate_of_id = primary_id
+    report.possible_duplicate_of_id = None
+
+    # Most-recently-submitted photo wins — update primary if it has no photo
+    if report.photo_url:
+        primary_result = await db.execute(
+            sa.select(Report).where(Report.id == primary_id)
+        )
+        primary = primary_result.scalar_one_or_none()
+        if primary and not primary.photo_url:
+            primary.photo_url = report.photo_url
+
+    await _write_audit_log(
+        db,
+        operation="report.confirm_merge",
+        actor_id_hash=analyst_id_hash,
+        record_id=report_id,
+        before_state={"status": "pending_merge_review"},
+        after_state={
+            "status": "duplicate",
+            "duplicate_of_id": str(primary_id),
+            "confirmed_by": "analyst",
+        },
+    )
+
+    await db.flush()
+    return ConfirmMergeResponse(
+        id=report_id,
+        status="duplicate",
+        merged_into=primary_id,
+    )
+
+
+async def reject_pending_merge(
+    db: AsyncSession,
+    report_id: UUID,
+    *,
+    analyst_id_hash: str,
+) -> RejectMergeResponse:
+    """Reject a system-flagged pending merge, restoring the report to pending.
+
+    The report is returned to ``status = 'pending'`` for normal analyst review.
+    ``possible_duplicate_of_id`` and ``duplicate_score`` are cleared.
+
+    Args:
+        db:              Async database session.
+        report_id:       UUID of the report in ``pending_merge_review`` state.
+        analyst_id_hash: Anonymised analyst identifier for audit log.
+
+    Returns:
+        ``RejectMergeResponse``.
+
+    Raises:
+        LookupError: Report not found.
+        ValueError:  Report is not in ``pending_merge_review`` status.
+    """
+    result = await db.execute(sa.select(Report).where(Report.id == report_id))
+    report = result.scalar_one_or_none()
+    if report is None:
+        raise LookupError(f"Report {report_id} not found.")
+    if report.status != ReportStatus.pending_merge_review:
+        raise ValueError(
+            f"Report {report_id} is not pending merge review "
+            f"(current status: {report.status})."
+        )
+
+    before_primary = str(report.possible_duplicate_of_id)
+    report.status = ReportStatus.pending
+    report.possible_duplicate_of_id = None
+    report.duplicate_score = None
+
+    await _write_audit_log(
+        db,
+        operation="report.reject_merge",
+        actor_id_hash=analyst_id_hash,
+        record_id=report_id,
+        before_state={
+            "status": "pending_merge_review",
+            "possible_duplicate_of_id": before_primary,
+        },
+        after_state={"status": "pending", "merge_rejected_by": "analyst"},
+    )
+
+    await db.flush()
+    return RejectMergeResponse(id=report_id, status="pending")
+
+
+# ---------------------------------------------------------------------------
+# Public API — AI accuracy metrics (Feature 3)
+# ---------------------------------------------------------------------------
+
+
+async def get_ai_accuracy(db: AsyncSession, redis: Redis) -> AIAccuracyResponse:
+    """Return accuracy metrics and auto-apply the recommended divergence threshold.
+
+    Queries the ``ai_feedback`` table to compute how often the AI's severity
+    prediction has agreed with analyst decisions.  When enough feedback exists
+    to make a calibrated recommendation, the recommended divergence threshold
+    is written to Redis so the AI Celery worker picks it up automatically on
+    the next task run — closing the active learning loop without a restart.
+
+    Threshold logic (based on high-confidence prediction agreement rate):
+        ≥ 0.85 → 0.70  (model is reliable; keep current sensitivity)
+        ≥ 0.70 → 0.60  (model drifting; flag more reports for review)
+        < 0.70 → 0.50  (model poorly calibrated; flag broadly)
+
+    The threshold is only written when at least
+    ``settings.AI_DIVERGENCE_MIN_SAMPLE`` high-confidence feedback entries
+    exist.  Below that count the sample is statistically too small and the
+    existing (or default) threshold is preserved unchanged.
+
+    Every successful calibration is:
+    * Persisted to Redis (threshold + ISO timestamp).
+    * Appended to a capped history list (last 100 events) for accountability.
+
+    Args:
+        db:    Async database session.
+        redis: Async Redis client — used to persist the threshold.
+
+    Returns:
+        ``AIAccuracyResponse`` with overall and per-type accuracy metrics,
+        the threshold that was applied (or None if insufficient data), and
+        metadata about the last calibration event.
+    """
+    rows_result = await db.execute(sa.select(AIFeedback))
+    all_feedback = list(rows_result.scalars().all())
+
+    total = len(all_feedback)
+
+    # Read the current threshold timestamp regardless of whether we recalibrate,
+    # so the response always reflects the state of the live threshold.
+    threshold_updated_at: Optional[datetime] = None
+    threshold_is_stale: bool = False
+    try:
+        raw_ts = await redis.get(_AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY)
+        if raw_ts:
+            threshold_updated_at = datetime.fromisoformat(
+                raw_ts if isinstance(raw_ts, str) else raw_ts.decode()
+            )
+            age_days = (datetime.now(tz=timezone.utc) - threshold_updated_at).days
+            threshold_is_stale = age_days > settings.AI_DIVERGENCE_STALENESS_DAYS
+    except Exception:  # noqa: BLE001
+        pass
+
+    if total == 0:
+        return AIAccuracyResponse(
+            total_feedback=0,
+            agreement_rate=None,
+            high_confidence_agreement_rate=None,
+            avg_ai_confidence=None,
+            by_feedback_type={},
+            recommended_divergence_threshold=None,
+            high_confidence_feedback_count=0,
+            min_sample_for_calibration=settings.AI_DIVERGENCE_MIN_SAMPLE,
+            threshold_updated_at=threshold_updated_at,
+            threshold_is_stale=threshold_is_stale,
+        )
+
+    agreements = [f for f in all_feedback if f.is_agreement]
+    overall_rate = len(agreements) / total
+
+    high_conf = [f for f in all_feedback if f.ai_confidence and f.ai_confidence > 0.7]
+    hc_rate = (
+        len([f for f in high_conf if f.is_agreement]) / len(high_conf)
+        if high_conf
+        else None
+    )
+
+    conf_vals = [f.ai_confidence for f in all_feedback if f.ai_confidence is not None]
+    avg_conf = sum(conf_vals) / len(conf_vals) if conf_vals else None
+
+    by_type: Dict[str, Any] = {}
+    for ft in ("verify", "reject", "severity_override"):
+        subset = [f for f in all_feedback if f.feedback_type == ft]
+        subset_agreements = [f for f in subset if f.is_agreement]
+        by_type[ft] = FeedbackTypeBreakdown(
+            count=len(subset),
+            agreement_rate=(len(subset_agreements) / len(subset) if subset else None),
+        ).model_dump()
+
+    # Compute recommended threshold.  Only write to Redis when the
+    # high-confidence sample is large enough to be statistically meaningful.
+    recommended_threshold: Optional[float] = None
+    if hc_rate is not None:
+        if hc_rate >= 0.85:
+            recommended_threshold = 0.7  # model reliable — keep current sensitivity
+        elif hc_rate >= 0.70:
+            recommended_threshold = 0.6  # model drifting — flag more for review
+        else:
+            recommended_threshold = 0.5  # poorly calibrated — flag broadly
+
+    hc_count = len(high_conf)
+    min_sample = settings.AI_DIVERGENCE_MIN_SAMPLE
+
+    if recommended_threshold is not None and hc_count >= min_sample:
+        now_utc = datetime.now(tz=timezone.utc)
+        now_iso = now_utc.isoformat()
+
+        # Read the previous threshold for the audit record.
+        try:
+            prev_raw = await redis.get(AI_DIVERGENCE_THRESHOLD_KEY)
+            prev_threshold = float(prev_raw) if prev_raw is not None else None
+        except Exception:  # noqa: BLE001
+            prev_threshold = None
+
+        try:
+            # Atomically write threshold + timestamp so they are always
+            # consistent even if a second calibration fires concurrently.
+            await redis.set(AI_DIVERGENCE_THRESHOLD_KEY, str(recommended_threshold))
+            await redis.set(_AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY, now_iso)
+
+            # Append to capped calibration history (newest first).
+            history_entry = json.dumps(
+                {
+                    "timestamp": now_iso,
+                    "old_threshold": prev_threshold,
+                    "new_threshold": recommended_threshold,
+                    "feedback_n": total,
+                    "hc_n": hc_count,
+                    "hc_agreement_rate": round(hc_rate, 4),  # type: ignore[arg-type]
+                }
+            )
+            await redis.lpush(_AI_CALIBRATION_HISTORY_KEY, history_entry)
+            await redis.ltrim(
+                _AI_CALIBRATION_HISTORY_KEY, 0, _AI_CALIBRATION_HISTORY_MAX - 1
+            )
+
+            threshold_updated_at = now_utc
+            threshold_is_stale = False
+
+            logger.info(
+                "Divergence threshold calibrated: %.2f → %.2f "
+                "(hc_agreement_rate=%.4f, hc_n=%d, feedback_n=%d)",
+                prev_threshold,
+                recommended_threshold,
+                hc_rate,
+                hc_count,
+                total,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not persist divergence threshold to Redis: %s",
+                type(exc).__name__,
+            )
+    elif recommended_threshold is not None:
+        # Enough data to compute a recommendation but not enough to apply it.
+        logger.info(
+            "Divergence threshold recommendation %.2f deferred "
+            "(hc_n=%d < min_sample=%d)",
+            recommended_threshold,
+            hc_count,
+            min_sample,
+        )
+
+    return AIAccuracyResponse(
+        total_feedback=total,
+        agreement_rate=round(overall_rate, 4),
+        high_confidence_agreement_rate=(
+            round(hc_rate, 4) if hc_rate is not None else None
+        ),
+        avg_ai_confidence=round(avg_conf, 4) if avg_conf is not None else None,
+        by_feedback_type=by_type,
+        recommended_divergence_threshold=recommended_threshold,
+        high_confidence_feedback_count=hc_count,
+        min_sample_for_calibration=min_sample,
+        threshold_updated_at=threshold_updated_at,
+        threshold_is_stale=threshold_is_stale,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public API — stats summary (public, cached 60 s)
 # ---------------------------------------------------------------------------
 
@@ -742,11 +1247,21 @@ async def get_stats_summary(
         if key in by_crisis_type:
             by_crisis_type[key] = crisis_row[1]
 
+    # Reports awaiting analyst merge confirmation — the backlog analysts must
+    # action via /confirm-merge or /reject-merge before reports are resolved.
+    pending_dup_result = await db.execute(
+        sa.select(sa.func.count())
+        .select_from(Report)
+        .where(Report.status == ReportStatus.pending_merge_review)
+    )
+    pending_duplicate_count = pending_dup_result.scalar_one()
+
     now = datetime.now(tz=timezone.utc)
     response = StatsSummaryResponse(
         total=total,
         by_severity=by_severity,  # type: ignore[arg-type]
         by_crisis_type=by_crisis_type,  # type: ignore[arg-type]
+        pending_duplicate_count=pending_duplicate_count,
         last_updated=now,
     )
 

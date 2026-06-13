@@ -430,6 +430,8 @@ def _mock_report_row(
     crisis_type: str = "flood",
     infrastructure_type: str = "residential",
 ) -> MagicMock:
+    from datetime import datetime, timezone
+
     row = MagicMock()
     row.id = str(_REPORT_UUID)
     row.building_id = building_id
@@ -440,6 +442,8 @@ def _mock_report_row(
     row.crisis_type = crisis_type
     row.infrastructure_type = infrastructure_type
     row.status = "pending"
+    # created_at is required by _load_candidates for the time-window filter.
+    row.created_at = datetime(2026, 6, 14, 12, 0, 0, tzinfo=timezone.utc)
     return row
 
 
@@ -647,13 +651,25 @@ class TestScoreReportImpl:
 
     # ── test: atomicity — audit log failure rolls back ────────────────────
 
-    def test_auto_merge_rollback_on_audit_log_failure(self) -> None:
-        """If audit log INSERT raises, the transaction is rolled back.
+    def test_pending_merge_review_rollback_on_audit_log_failure(self) -> None:
+        """If audit log INSERT raises in _apply_pending_merge_review, transaction rolls back.  # noqa: E501
 
-        _load_candidates makes 3 execute calls when building_id AND lat/lng
-        are both present (building query → PostGIS attempt fails → bbox
-        fallback). The sixth side_effect entry is a raw RuntimeError instance
-        so that db.execute() itself raises on the INSERT audit_log call.
+        With HITL, AUTO_MERGE no longer directly merges — it calls
+        _apply_pending_merge_review which makes exactly 2 execute calls:
+          (1) UPDATE report SET status='pending_merge_review'
+          (2) INSERT INTO audit_log  ← raises here → rollback
+
+        _load_candidates makes up to 3 execute calls when building_id AND
+        lat/lng are both present (building query → PostGIS → bbox fallback if
+        PostGIS raises).  In this mock setup PostGIS returns [] without raising,
+        so only 2 _load_candidates queries are made.
+
+        Total execute call sequence:
+          1. _load_report
+          2. _load_candidates — building query → [cand_row]
+          3. _load_candidates — PostGIS → [] (succeeds; no bbox needed)
+          4. UPDATE status='pending_merge_review'
+          5. INSERT audit_log → RuntimeError
         """
         from app.workers.duplicate_tasks import _score_report_impl
 
@@ -678,17 +694,16 @@ class TestScoreReportImpl:
         candidate_res.fetchall.return_value = [cand_row]
         update_res = MagicMock()
 
-        # Bounding-box fallback — returns no additional candidates.
-        fallback_res = MagicMock()
-        fallback_res.fetchall.return_value = []
+        # PostGIS succeeds but returns no extra candidates.
+        postgis_res = MagicMock()
+        postgis_res.fetchall.return_value = []
 
         db.execute.side_effect = [
             report_res,  # (1) _load_report
             candidate_res,  # (2) _load_candidates — building query
-            fallback_res,  # (3) _load_candidates — bbox fallback
-            update_res,  # (4) UPDATE report SET status='duplicate'
-            update_res,  # (5) UPDATE report SET photo_url
-            RuntimeError("audit log constraint violation"),  # (6) INSERT
+            postgis_res,  # (3) _load_candidates — PostGIS (returns [])
+            update_res,  # (4) UPDATE status='pending_merge_review'
+            RuntimeError("audit log constraint violation"),  # (5) INSERT audit_log
         ]
 
         with self._patch_session(db):

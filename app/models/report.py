@@ -30,6 +30,7 @@ from app.models.enums import (
     PhotoStatus,
     ReportDamageSeverity,
     ReportStatus,
+    ReviewPriority,
 )
 from app.models.notification import Notification  # noqa: F401
 
@@ -127,6 +128,27 @@ class Report(TimestampMixin, Base):
     ai_confidence: Mapped[Optional[float]] = mapped_column(sa.Float, nullable=True)
     ai_quality_score: Mapped[Optional[float]] = mapped_column(sa.Float, nullable=True)
     ai_divergence: Mapped[Optional[bool]] = mapped_column(sa.Boolean, nullable=True)
+
+    # ── Confidence-based analyst queue priority ───────────────────────────────
+    # Set by the AI worker after image analysis. Drives default sort order in
+    # the analyst feed so critical items surface immediately.
+    # Values: critical > high > normal > low (see ReviewPriority docstring).
+    review_priority: Mapped[ReviewPriority] = mapped_column(
+        sa.Enum(ReviewPriority, name="review_priority_enum"),
+        nullable=False,
+        default=ReviewPriority.normal,
+        server_default=ReviewPriority.normal.value,
+        index=True,
+    )
+
+    # ── Analyst AI override ───────────────────────────────────────────────────
+    # Explicit analyst correction of the AI's severity prediction.
+    # Populated via POST /analyst/reports/{id}/severity-override.
+    # Never touches damage_severity (reporter) or ai_severity_prediction (AI).
+    analyst_severity_override: Mapped[Optional[ReportDamageSeverity]] = mapped_column(
+        sa.Enum(ReportDamageSeverity, name="report_damage_severity_enum"),
+        nullable=True,
+    )
 
     # ── GIS worker results ────────────────────────────────────────────────────
     footprint_match_confidence: Mapped[Optional[float]] = mapped_column(
