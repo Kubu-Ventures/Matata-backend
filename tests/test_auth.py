@@ -199,7 +199,7 @@ class TestVerifyOtp:
         redis.delete = AsyncMock()
         redis.set = AsyncMock()
 
-        access, refresh = await verify_otp(_PHONE, _OTP, redis)
+        access, refresh, role = await verify_otp(_PHONE, _OTP, redis)
         assert isinstance(access, str)
         assert isinstance(refresh, str)
 
@@ -543,7 +543,7 @@ def _make_app():
     from fastapi import FastAPI
 
     from app.api.v1.routes.auth import router
-    from app.core.dependencies import get_redis
+    from app.core.dependencies import get_db, get_redis
 
     app = FastAPI()
 
@@ -557,7 +557,11 @@ def _make_app():
         redis.expire = AsyncMock(return_value=True)
         return redis
 
+    async def override_db():
+        yield AsyncMock()
+
     app.dependency_overrides[get_redis] = override_redis
+    app.dependency_overrides[get_db] = override_db
     app.include_router(router, prefix="/api/v1")
     return app
 
@@ -608,7 +612,9 @@ class TestVerifyOtpEndpoint:
 
         with patch(
             "app.api.v1.routes.auth.auth_service.verify_otp",
-            new=AsyncMock(return_value=("access.token.here", "refresh-token")),
+            new=AsyncMock(
+                return_value=("access.token.here", "refresh-token", "reporter")
+            ),
         ):
             resp = client.post(
                 "/api/v1/auth/otp/verify",
