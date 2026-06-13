@@ -41,6 +41,7 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.ai_feedback import AIFeedback
 from app.models.analyst_note import AnalystNote
 from app.models.audit_log import AuditLog
 from app.models.building import Building
@@ -52,11 +53,16 @@ from app.models.enums import (
 from app.models.report import Report
 from app.schemas.analyst_schemas import (
     _REJECTION_REASON_CODES,
+    AIAccuracyResponse,
     AnalystNoteOut,
+    ConfirmMergeResponse,
+    FeedbackTypeBreakdown,
     MergeResponse,
     PaginatedReports,
+    RejectMergeResponse,
     ReportDetailSchema,
     ReportSummarySchema,
+    SeverityOverrideResponse,
     StatsSummaryResponse,
     TimelineReportItem,
 )
@@ -159,6 +165,31 @@ async def _get_building_footprint_geojson(
     )
     result = row.fetchone()
     return result.geojson if result else None
+
+
+async def _log_ai_feedback(
+    db: AsyncSession,
+    *,
+    report_id: UUID,
+    feedback_type: str,
+    ai_prediction: Optional[str],
+    analyst_decision: Optional[str],
+    ai_confidence: Optional[float],
+) -> None:
+    """Append one AI feedback row within the current transaction."""
+    is_agreement: Optional[bool] = None
+    if ai_prediction is not None and analyst_decision is not None:
+        is_agreement = ai_prediction == analyst_decision
+
+    entry = AIFeedback(
+        report_id=report_id,
+        feedback_type=feedback_type,
+        ai_prediction=ai_prediction,
+        analyst_decision=analyst_decision,
+        is_agreement=is_agreement,
+        ai_confidence=ai_confidence,
+    )
+    db.add(entry)
 
 
 async def _write_audit_log(
@@ -418,7 +449,7 @@ async def transition_report_status(
                      reason_code value, or invalid target status).
         LookupError: Report not found.
     """
-    # Validate target status
+    # Validate target status — pending_merge_review is system-managed only
     if new_status not in (
         ReportStatus.verified,
         ReportStatus.rejected,
@@ -498,6 +529,33 @@ async def transition_report_status(
         before_state=before_state,
         after_state=after_state,
     )
+
+    # Active learning: record the analyst decision vs AI prediction.
+    # The ground-truth severity is the analyst's explicit override if present,
+    # otherwise the reporter's damage_severity (which the analyst confirmed).
+    if new_status in (ReportStatus.verified, ReportStatus.rejected):
+        ai_pred = (
+            report.ai_severity_prediction.value
+            if report.ai_severity_prediction
+            else None
+        )
+        analyst_dec = (
+            report.analyst_severity_override.value
+            if report.analyst_severity_override
+            else (
+                report.damage_severity.value
+                if hasattr(report.damage_severity, "value")
+                else str(report.damage_severity)
+            )
+        )
+        await _log_ai_feedback(
+            db,
+            report_id=report_id,
+            feedback_type=new_status.value,  # 'verify' or 'reject'
+            ai_prediction=ai_pred,
+            analyst_decision=analyst_dec,
+            ai_confidence=report.ai_confidence,
+        )
 
     await db.flush()
     return report
@@ -672,6 +730,297 @@ async def create_analyst_note(
     await db.flush()
 
     return AnalystNoteOut.model_validate(note)
+
+
+# ---------------------------------------------------------------------------
+# Public API — analyst severity override (Feature 1)
+# ---------------------------------------------------------------------------
+
+
+async def set_severity_override(
+    db: AsyncSession,
+    report_id: UUID,
+    *,
+    override: ReportDamageSeverity,
+    analyst_id_hash: str,
+) -> SeverityOverrideResponse:
+    """Record an analyst's explicit correction of the AI severity prediction.
+
+    Writes to ``report.analyst_severity_override`` only — never modifies
+    ``damage_severity`` (reporter) or ``ai_severity_prediction`` (AI).
+    Also logs one ``AIFeedback`` row so the correction feeds into accuracy
+    calibration.
+
+    Args:
+        db:              Async database session.
+        report_id:       UUID of the report to override.
+        override:        Analyst's corrected severity value.
+        analyst_id_hash: Anonymised analyst identifier for audit log.
+
+    Returns:
+        ``SeverityOverrideResponse`` with the updated field.
+
+    Raises:
+        LookupError: Report not found.
+    """
+    result = await db.execute(sa.select(Report).where(Report.id == report_id))
+    report = result.scalar_one_or_none()
+    if report is None:
+        raise LookupError(f"Report {report_id} not found.")
+
+    previous = (
+        report.analyst_severity_override.value
+        if report.analyst_severity_override
+        else None
+    )
+    report.analyst_severity_override = override
+
+    await _write_audit_log(
+        db,
+        operation="report.severity_override",
+        actor_id_hash=analyst_id_hash,
+        record_id=report_id,
+        before_state={"analyst_severity_override": previous},
+        after_state={"analyst_severity_override": override.value},
+    )
+
+    # Log AI feedback: analyst explicitly disagreed with (or confirmed) AI
+    ai_pred = (
+        report.ai_severity_prediction.value if report.ai_severity_prediction else None
+    )
+    await _log_ai_feedback(
+        db,
+        report_id=report_id,
+        feedback_type="severity_override",
+        ai_prediction=ai_pred,
+        analyst_decision=override.value,
+        ai_confidence=report.ai_confidence,
+    )
+
+    await db.flush()
+    return SeverityOverrideResponse(
+        id=report_id,
+        analyst_severity_override=override,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public API — pending merge confirmation / rejection (Feature 2)
+# ---------------------------------------------------------------------------
+
+
+async def confirm_pending_merge(
+    db: AsyncSession,
+    report_id: UUID,
+    *,
+    analyst_id_hash: str,
+) -> ConfirmMergeResponse:
+    """Confirm a system-flagged pending merge, executing the actual merge.
+
+    The duplicate detection worker sets ``status = 'pending_merge_review'``
+    and ``possible_duplicate_of_id`` when a report scores ≥ 0.9.  This
+    endpoint lets the analyst review and confirm the merge instead of it
+    happening silently.
+
+    Side-effects:
+    * ``status``               → ``duplicate``
+    * ``duplicate_of_id``      ← ``possible_duplicate_of_id``
+    * ``possible_duplicate_of_id`` cleared
+    * Primary report photo updated if this report has one and primary does not.
+
+    Args:
+        db:              Async database session.
+        report_id:       UUID of the report in ``pending_merge_review`` state.
+        analyst_id_hash: Anonymised analyst identifier for audit log.
+
+    Returns:
+        ``ConfirmMergeResponse`` with the primary report UUID.
+
+    Raises:
+        LookupError: Report not found.
+        ValueError:  Report is not in ``pending_merge_review`` status.
+    """
+    result = await db.execute(sa.select(Report).where(Report.id == report_id))
+    report = result.scalar_one_or_none()
+    if report is None:
+        raise LookupError(f"Report {report_id} not found.")
+    if report.status != ReportStatus.pending_merge_review:
+        raise ValueError(
+            f"Report {report_id} is not pending merge review "
+            f"(current status: {report.status})."
+        )
+    if report.possible_duplicate_of_id is None:
+        raise ValueError(
+            f"Report {report_id} has no possible_duplicate_of_id set."
+        )
+
+    primary_id = report.possible_duplicate_of_id
+
+    # Execute the merge
+    report.status = ReportStatus.duplicate
+    report.duplicate_of_id = primary_id
+    report.possible_duplicate_of_id = None
+
+    # Most-recently-submitted photo wins — update primary if it has no photo
+    if report.photo_url:
+        primary_result = await db.execute(
+            sa.select(Report).where(Report.id == primary_id)
+        )
+        primary = primary_result.scalar_one_or_none()
+        if primary and not primary.photo_url:
+            primary.photo_url = report.photo_url
+
+    await _write_audit_log(
+        db,
+        operation="report.confirm_merge",
+        actor_id_hash=analyst_id_hash,
+        record_id=report_id,
+        before_state={"status": "pending_merge_review"},
+        after_state={
+            "status": "duplicate",
+            "duplicate_of_id": str(primary_id),
+            "confirmed_by": "analyst",
+        },
+    )
+
+    await db.flush()
+    return ConfirmMergeResponse(
+        id=report_id,
+        status="duplicate",
+        merged_into=primary_id,
+    )
+
+
+async def reject_pending_merge(
+    db: AsyncSession,
+    report_id: UUID,
+    *,
+    analyst_id_hash: str,
+) -> RejectMergeResponse:
+    """Reject a system-flagged pending merge, restoring the report to pending.
+
+    The report is returned to ``status = 'pending'`` for normal analyst review.
+    ``possible_duplicate_of_id`` and ``duplicate_score`` are cleared.
+
+    Args:
+        db:              Async database session.
+        report_id:       UUID of the report in ``pending_merge_review`` state.
+        analyst_id_hash: Anonymised analyst identifier for audit log.
+
+    Returns:
+        ``RejectMergeResponse``.
+
+    Raises:
+        LookupError: Report not found.
+        ValueError:  Report is not in ``pending_merge_review`` status.
+    """
+    result = await db.execute(sa.select(Report).where(Report.id == report_id))
+    report = result.scalar_one_or_none()
+    if report is None:
+        raise LookupError(f"Report {report_id} not found.")
+    if report.status != ReportStatus.pending_merge_review:
+        raise ValueError(
+            f"Report {report_id} is not pending merge review "
+            f"(current status: {report.status})."
+        )
+
+    before_primary = str(report.possible_duplicate_of_id)
+    report.status = ReportStatus.pending
+    report.possible_duplicate_of_id = None
+    report.duplicate_score = None
+
+    await _write_audit_log(
+        db,
+        operation="report.reject_merge",
+        actor_id_hash=analyst_id_hash,
+        record_id=report_id,
+        before_state={
+            "status": "pending_merge_review",
+            "possible_duplicate_of_id": before_primary,
+        },
+        after_state={"status": "pending", "merge_rejected_by": "analyst"},
+    )
+
+    await db.flush()
+    return RejectMergeResponse(id=report_id, status="pending")
+
+
+# ---------------------------------------------------------------------------
+# Public API — AI accuracy metrics (Feature 3)
+# ---------------------------------------------------------------------------
+
+
+async def get_ai_accuracy(db: AsyncSession) -> AIAccuracyResponse:
+    """Return accuracy metrics derived from analyst feedback records.
+
+    Queries the ``ai_feedback`` table to compute how often the AI's severity
+    prediction has agreed with analyst decisions.  Provides a recommended
+    divergence threshold adjustment when agreement on high-confidence
+    predictions drops below an actionable level.
+
+    Args:
+        db: Async database session.
+
+    Returns:
+        ``AIAccuracyResponse`` with overall and per-type accuracy metrics.
+    """
+    rows_result = await db.execute(sa.select(AIFeedback))
+    all_feedback = list(rows_result.scalars().all())
+
+    total = len(all_feedback)
+    if total == 0:
+        return AIAccuracyResponse(
+            total_feedback=0,
+            agreement_rate=None,
+            high_confidence_agreement_rate=None,
+            avg_ai_confidence=None,
+            by_feedback_type={},
+            recommended_divergence_threshold=None,
+        )
+
+    agreements = [f for f in all_feedback if f.is_agreement]
+    overall_rate = len(agreements) / total
+
+    high_conf = [f for f in all_feedback if f.ai_confidence and f.ai_confidence > 0.7]
+    hc_rate = (
+        len([f for f in high_conf if f.is_agreement]) / len(high_conf)
+        if high_conf
+        else None
+    )
+
+    conf_vals = [f.ai_confidence for f in all_feedback if f.ai_confidence is not None]
+    avg_conf = sum(conf_vals) / len(conf_vals) if conf_vals else None
+
+    by_type: Dict[str, Any] = {}
+    for ft in ("verify", "reject", "severity_override"):
+        subset = [f for f in all_feedback if f.feedback_type == ft]
+        subset_agreements = [f for f in subset if f.is_agreement]
+        by_type[ft] = FeedbackTypeBreakdown(
+            count=len(subset),
+            agreement_rate=(
+                len(subset_agreements) / len(subset) if subset else None
+            ),
+        ).model_dump()
+
+    # Recommend lowering the divergence threshold when high-confidence
+    # predictions are only right ~60 % of the time or less.
+    recommended_threshold: Optional[float] = None
+    if hc_rate is not None:
+        if hc_rate >= 0.85:
+            recommended_threshold = 0.7   # current default — no change needed
+        elif hc_rate >= 0.70:
+            recommended_threshold = 0.6   # flag more reports for review
+        else:
+            recommended_threshold = 0.5   # AI is poorly calibrated; flag broadly
+
+    return AIAccuracyResponse(
+        total_feedback=total,
+        agreement_rate=round(overall_rate, 4),
+        high_confidence_agreement_rate=round(hc_rate, 4) if hc_rate is not None else None,
+        avg_ai_confidence=round(avg_conf, 4) if avg_conf is not None else None,
+        by_feedback_type=by_type,
+        recommended_divergence_threshold=recommended_threshold,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -70,6 +70,7 @@ class ReportStatus(str, enum.Enum):
     verified = "verified"
     rejected = "rejected"
     duplicate = "duplicate"
+    pending_merge_review = "pending_merge_review"
 
 
 class NotificationType(str, enum.Enum):

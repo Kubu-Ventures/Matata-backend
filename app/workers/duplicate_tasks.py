@@ -284,35 +284,35 @@ def _load_candidates(
 # ---------------------------------------------------------------------------
 
 
-def _apply_auto_merge(
+def _apply_pending_merge_review(
     db: Session,
     report_id: UUID,
     primary_id: UUID,
-    new_photo_url: Optional[str],
     composite_score: float,
 ) -> None:
-    """Mark ``report_id`` as a duplicate of ``primary_id`` and update photo.
+    """Queue a high-confidence duplicate for analyst confirmation.
 
-    All writes share the caller's transaction — the caller is responsible for
-    ``commit()`` and ``rollback()``.  If the audit log INSERT raises, the
-    transaction must be rolled back by the caller.
+    Instead of silently merging (old AUTO_MERGE behaviour), the report is set
+    to ``pending_merge_review`` with ``possible_duplicate_of_id`` pointing at
+    the likely primary.  An analyst must confirm or reject the merge via
+    ``POST /analyst/reports/{id}/confirm-merge`` or ``…/reject-merge``.
+
+    All writes share the caller's transaction.
 
     Args:
         db:              Active synchronous session.
-        report_id:       The new report being merged.
-        primary_id:      The existing primary report to merge into.
-        new_photo_url:   Photo URL of the new report (may be None).
-        composite_score: Composite duplicate score for the audit log.
+        report_id:       The new report to hold for review.
+        primary_id:      The most probable primary report.
+        composite_score: Composite duplicate score (≥ 0.9).
     """
-    # 1. Mark the incoming report as a duplicate.
     db.execute(
         text("""
             UPDATE report
             SET
-                status            = 'duplicate',
-                duplicate_of_id   = :primary_id,
-                duplicate_score   = :score,
-                updated_at        = NOW()
+                status                   = 'pending_merge_review',
+                possible_duplicate_of_id = :primary_id,
+                duplicate_score          = :score,
+                updated_at               = NOW()
             WHERE id = :report_id
         """),
         {
@@ -322,22 +322,6 @@ def _apply_auto_merge(
         },
     )
 
-    # 2. If the new report has a photo, set it as the primary photo on the
-    #    target record (most recently submitted photo wins — spec §10.2).
-    if new_photo_url:
-        db.execute(
-            text("""
-                UPDATE report
-                SET
-                    photo_url  = :photo_url,
-                    updated_at = NOW()
-                WHERE id = :primary_id
-            """),
-            {"photo_url": new_photo_url, "primary_id": str(primary_id)},
-        )
-
-    # 3. Write audit log entry (MUST be inside the same transaction).
-    #    If this raises, the caller's rollback undoes steps 1 and 2.
     db.execute(
         text("""
             INSERT INTO audit_log (
@@ -347,7 +331,7 @@ def _apply_auto_merge(
                 before_state,
                 after_state
             ) VALUES (
-                'report.auto_merge',
+                'report.pending_merge_review',
                 'system',
                 :record_id,
                 :before_state,
@@ -359,16 +343,17 @@ def _apply_auto_merge(
             "before_state": '{"status": "pending"}',
             "after_state": json.dumps(
                 {
-                    "status": "duplicate",
-                    "duplicate_of_id": str(primary_id),
+                    "status": "pending_merge_review",
+                    "possible_duplicate_of_id": str(primary_id),
                     "duplicate_score": composite_score,
+                    "awaiting": "analyst_confirmation",
                 }
             ),
         },
     )
 
     logger.info(
-        "Auto-merge: report %s → primary %s (score=%.4f)",
+        "Pending merge review queued: report %s → possible primary %s (score=%.4f)",
         report_id,
         primary_id,
         composite_score,
@@ -470,11 +455,12 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
         if result.action == DuplicateAction.AUTO_MERGE and result.best_candidate:
             primary_id = result.best_candidate.candidate.id
             try:
-                _apply_auto_merge(
+                # Human-in-the-loop: queue for analyst review instead of
+                # merging silently. The analyst confirms or rejects via API.
+                _apply_pending_merge_review(
                     db=db,
                     report_id=_report_id,
                     primary_id=primary_id,
-                    new_photo_url=row.photo_url,
                     composite_score=result.best_score,
                 )
                 db.commit()
@@ -482,8 +468,8 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
                 db.rollback()
                 _rolled_back = True
                 logger.error(
-                    "Duplicate task: auto-merge transaction failed for report %s "
-                    "— rolling back; report status unchanged",
+                    "Duplicate task: pending-merge-review write failed for "
+                    "report %s — rolling back; report status unchanged",
                     _report_id,
                 )
                 raise
