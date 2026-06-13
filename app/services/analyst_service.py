@@ -41,6 +41,7 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.ai_feedback import AIFeedback
 from app.models.analyst_note import AnalystNote
 from app.models.audit_log import AuditLog
@@ -84,6 +85,17 @@ ANALYST_EVENTS_CHANNEL = "crisismap:analyst_events"
 # The AI Celery worker reads this key before each divergence evaluation so the
 # threshold auto-adjusts as analyst feedback accumulates.
 AI_DIVERGENCE_THRESHOLD_KEY = "crisismap:ai:divergence_threshold"
+
+# ISO-8601 UTC timestamp written alongside the threshold so staleness can be
+# detected by the AI worker and surfaced via the accuracy API.
+_AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY = "crisismap:ai:divergence_threshold:updated_at"
+
+# Capped ring-buffer of the last N calibration events (LPUSH / LTRIM).
+# Each entry is a JSON object: {timestamp, old_threshold, new_threshold,
+# feedback_n, hc_n, hc_agreement_rate}.  Readable via the accuracy API
+# for accountability without a DB query.
+_AI_CALIBRATION_HISTORY_KEY = "crisismap:ai:calibration_history"
+_AI_CALIBRATION_HISTORY_MAX = 100
 
 # ---------------------------------------------------------------------------
 # Severity ordering helper (for trust-tier-aware building severity update)
@@ -1003,21 +1015,44 @@ async def get_ai_accuracy(db: AsyncSession, redis: Redis) -> AIAccuracyResponse:
         ≥ 0.70 → 0.60  (model drifting; flag more reports for review)
         < 0.70 → 0.50  (model poorly calibrated; flag broadly)
 
-    Nothing is written to Redis when total_feedback == 0 (no data yet) or
-    when high-confidence agreement rate cannot be computed.
+    The threshold is only written when at least
+    ``settings.AI_DIVERGENCE_MIN_SAMPLE`` high-confidence feedback entries
+    exist.  Below that count the sample is statistically too small and the
+    existing (or default) threshold is preserved unchanged.
+
+    Every successful calibration is:
+    * Persisted to Redis (threshold + ISO timestamp).
+    * Appended to a capped history list (last 100 events) for accountability.
 
     Args:
         db:    Async database session.
         redis: Async Redis client — used to persist the threshold.
 
     Returns:
-        ``AIAccuracyResponse`` with overall and per-type accuracy metrics
-        and the threshold that was applied (or None if insufficient data).
+        ``AIAccuracyResponse`` with overall and per-type accuracy metrics,
+        the threshold that was applied (or None if insufficient data), and
+        metadata about the last calibration event.
     """
     rows_result = await db.execute(sa.select(AIFeedback))
     all_feedback = list(rows_result.scalars().all())
 
     total = len(all_feedback)
+
+    # Read the current threshold timestamp regardless of whether we recalibrate,
+    # so the response always reflects the state of the live threshold.
+    threshold_updated_at: Optional[datetime] = None
+    threshold_is_stale: bool = False
+    try:
+        raw_ts = await redis.get(_AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY)
+        if raw_ts:
+            threshold_updated_at = datetime.fromisoformat(
+                raw_ts if isinstance(raw_ts, str) else raw_ts.decode()
+            )
+            age_days = (datetime.now(tz=timezone.utc) - threshold_updated_at).days
+            threshold_is_stale = age_days > settings.AI_DIVERGENCE_STALENESS_DAYS
+    except Exception:  # noqa: BLE001
+        pass
+
     if total == 0:
         return AIAccuracyResponse(
             total_feedback=0,
@@ -1026,6 +1061,10 @@ async def get_ai_accuracy(db: AsyncSession, redis: Redis) -> AIAccuracyResponse:
             avg_ai_confidence=None,
             by_feedback_type={},
             recommended_divergence_threshold=None,
+            high_confidence_feedback_count=0,
+            min_sample_for_calibration=settings.AI_DIVERGENCE_MIN_SAMPLE,
+            threshold_updated_at=threshold_updated_at,
+            threshold_is_stale=threshold_is_stale,
         )
 
     agreements = [f for f in all_feedback if f.is_agreement]
@@ -1050,8 +1089,8 @@ async def get_ai_accuracy(db: AsyncSession, redis: Redis) -> AIAccuracyResponse:
             agreement_rate=(len(subset_agreements) / len(subset) if subset else None),
         ).model_dump()
 
-    # Compute recommended threshold and persist it to Redis so the AI worker
-    # picks it up automatically — no restart or manual config change required.
+    # Compute recommended threshold.  Only write to Redis when the
+    # high-confidence sample is large enough to be statistically meaningful.
     recommended_threshold: Optional[float] = None
     if hc_rate is not None:
         if hc_rate >= 0.85:
@@ -1061,16 +1100,52 @@ async def get_ai_accuracy(db: AsyncSession, redis: Redis) -> AIAccuracyResponse:
         else:
             recommended_threshold = 0.5  # poorly calibrated — flag broadly
 
-        # Write to Redis. The AI Celery worker reads this key before each
-        # divergence evaluation; no TTL is set so the value persists until
-        # the next accuracy check overwrites it.
+    hc_count = len(high_conf)
+    min_sample = settings.AI_DIVERGENCE_MIN_SAMPLE
+
+    if recommended_threshold is not None and hc_count >= min_sample:
+        now_utc = datetime.now(tz=timezone.utc)
+        now_iso = now_utc.isoformat()
+
+        # Read the previous threshold for the audit record.
         try:
+            prev_raw = await redis.get(AI_DIVERGENCE_THRESHOLD_KEY)
+            prev_threshold = float(prev_raw) if prev_raw is not None else None
+        except Exception:  # noqa: BLE001
+            prev_threshold = None
+
+        try:
+            # Atomically write threshold + timestamp so they are always
+            # consistent even if a second calibration fires concurrently.
             await redis.set(AI_DIVERGENCE_THRESHOLD_KEY, str(recommended_threshold))
+            await redis.set(_AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY, now_iso)
+
+            # Append to capped calibration history (newest first).
+            history_entry = json.dumps(
+                {
+                    "timestamp": now_iso,
+                    "old_threshold": prev_threshold,
+                    "new_threshold": recommended_threshold,
+                    "feedback_n": total,
+                    "hc_n": hc_count,
+                    "hc_agreement_rate": round(hc_rate, 4),  # type: ignore[arg-type]
+                }
+            )
+            await redis.lpush(_AI_CALIBRATION_HISTORY_KEY, history_entry)
+            await redis.ltrim(
+                _AI_CALIBRATION_HISTORY_KEY, 0, _AI_CALIBRATION_HISTORY_MAX - 1
+            )
+
+            threshold_updated_at = now_utc
+            threshold_is_stale = False
+
             logger.info(
-                "Divergence threshold updated to %.2f "
-                "(hc_agreement_rate=%.4f, feedback_n=%d)",
+                "Divergence threshold calibrated: %.2f → %.2f "
+                "(hc_agreement_rate=%.4f, hc_n=%d, feedback_n=%d)",
+                prev_threshold,
                 recommended_threshold,
                 hc_rate,
+                hc_count,
                 total,
             )
         except Exception as exc:  # noqa: BLE001
@@ -1078,6 +1153,15 @@ async def get_ai_accuracy(db: AsyncSession, redis: Redis) -> AIAccuracyResponse:
                 "Could not persist divergence threshold to Redis: %s",
                 type(exc).__name__,
             )
+    elif recommended_threshold is not None:
+        # Enough data to compute a recommendation but not enough to apply it.
+        logger.info(
+            "Divergence threshold recommendation %.2f deferred "
+            "(hc_n=%d < min_sample=%d)",
+            recommended_threshold,
+            hc_count,
+            min_sample,
+        )
 
     return AIAccuracyResponse(
         total_feedback=total,
@@ -1088,6 +1172,10 @@ async def get_ai_accuracy(db: AsyncSession, redis: Redis) -> AIAccuracyResponse:
         avg_ai_confidence=round(avg_conf, 4) if avg_conf is not None else None,
         by_feedback_type=by_type,
         recommended_divergence_threshold=recommended_threshold,
+        high_confidence_feedback_count=hc_count,
+        min_sample_for_calibration=min_sample,
+        threshold_updated_at=threshold_updated_at,
+        threshold_is_stale=threshold_is_stale,
     )
 
 

@@ -130,6 +130,15 @@ class Settings(BaseSettings):
     # accumulated.  Once get_ai_accuracy() has enough data it writes a
     # calibrated value to Redis and the AI worker reads it from there instead.
     AI_DIVERGENCE_THRESHOLD_DEFAULT: float = 0.70
+    # Minimum number of high-confidence (ai_confidence > 0.7) feedback entries
+    # required before the auto-calibration loop is allowed to write a new
+    # threshold to Redis.  Below this count the sample is statistically too
+    # small and the existing (or default) threshold is preserved unchanged.
+    AI_DIVERGENCE_MIN_SAMPLE: int = 30
+    # AI worker logs a WARNING when it reads a threshold that has not been
+    # refreshed within this many days — a sign that analyst throughput has
+    # dropped and the calibration may have drifted.
+    AI_DIVERGENCE_STALENESS_DAYS: int = 7
 
     # ── Duplicate detection ────────────────────────────────────────────────────
     # Candidate reports must fall within ±DUPLICATE_TIME_WINDOW_HOURS of the

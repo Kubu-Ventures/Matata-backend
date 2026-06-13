@@ -357,7 +357,8 @@ class AIAccuracyResponse(BaseModel):
     agreement_rate: Optional[float] = Field(
         None,
         description=(
-            "Fraction of cases where AI prediction matched analyst decision (0.0–1.0)."
+            "Fraction of cases where AI prediction matched analyst decision"
+            " (0.0–1.0)."
         ),
     )
     high_confidence_agreement_rate: Optional[float] = Field(
@@ -378,8 +379,38 @@ class AIAccuracyResponse(BaseModel):
     recommended_divergence_threshold: Optional[float] = Field(
         None,
         description=(
-            "Suggested divergence confidence threshold derived from observed accuracy. "
-            "When high-confidence agreement rate drops below 0.6, a lower threshold "
-            "flags more reports for review."
+            "Suggested divergence confidence threshold derived from observed"
+            " accuracy. Applied to Redis only when high_confidence_feedback_count"
+            " >= min_sample_for_calibration."
+        ),
+    )
+    high_confidence_feedback_count: int = Field(
+        0,
+        description=(
+            "Number of high-confidence (ai_confidence > 0.7) feedback entries."
+            " Calibration is applied only when this reaches"
+            " min_sample_for_calibration."
+        ),
+    )
+    min_sample_for_calibration: int = Field(
+        30,
+        description=(
+            "Minimum high-confidence entries required before the divergence"
+            " threshold is auto-applied. Prevents oscillation on small samples."
+        ),
+    )
+    threshold_updated_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "UTC timestamp of the last successful threshold calibration."
+            " None if the threshold has never been auto-calibrated."
+        ),
+    )
+    threshold_is_stale: bool = Field(
+        False,
+        description=(
+            "True when the stored threshold has not been refreshed within"
+            " AI_DIVERGENCE_STALENESS_DAYS days. Indicates that analyst"
+            " throughput may have dropped and recalibration is overdue."
         ),
     )

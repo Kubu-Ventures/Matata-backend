@@ -74,6 +74,10 @@ logger = logging.getLogger(__name__)
 # Must match analyst_service.AI_DIVERGENCE_THRESHOLD_KEY.
 _AI_DIVERGENCE_THRESHOLD_KEY = "crisismap:ai:divergence_threshold"
 
+# ISO-8601 UTC timestamp written alongside the threshold by get_ai_accuracy().
+# Must match analyst_service._AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY.
+_AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY = "crisismap:ai:divergence_threshold:updated_at"
+
 # Redis Pub/Sub channel consumed by the analyst SSE stream.
 # Must match analyst_service.ANALYST_EVENTS_CHANNEL.
 _ANALYST_EVENTS_CHANNEL = "crisismap:analyst_events"
@@ -87,20 +91,52 @@ def _get_divergence_threshold() -> float:
     - No analyst feedback has been collected yet (key absent).
     - Redis is temporarily unavailable.
 
+    Also reads the companion timestamp key and logs a WARNING if the stored
+    threshold has not been refreshed within
+    ``settings.AI_DIVERGENCE_STALENESS_DAYS`` days, so ops teams can detect
+    stalled analyst throughput before it silently degrades calibration quality.
+
     A fresh synchronous connection is opened and closed per call so this
     function is safe under both forked and threaded Celery worker models.
-    The read is cheap (single GET) and performed once per task invocation.
+    The read is cheap (two GETs) and performed once per task invocation.
     """
+    from datetime import datetime, timezone  # local import — avoid module-level
+
     try:
         import redis as _redis_sync
 
         r = _redis_sync.from_url(settings.REDIS_URL, decode_responses=True)
         try:
             value = r.get(_AI_DIVERGENCE_THRESHOLD_KEY)
+            updated_at_raw = r.get(_AI_DIVERGENCE_THRESHOLD_UPDATED_AT_KEY)
         finally:
             r.close()
+
         if value is not None:
             threshold = float(value)
+
+            # Staleness check — warn ops if calibration is overdue.
+            if updated_at_raw:
+                try:
+                    ts_str = (
+                        updated_at_raw
+                        if isinstance(updated_at_raw, str)
+                        else updated_at_raw.decode()
+                    )
+                    updated_at = datetime.fromisoformat(ts_str)
+                    age_days = (datetime.now(tz=timezone.utc) - updated_at).days
+                    if age_days > settings.AI_DIVERGENCE_STALENESS_DAYS:
+                        logger.warning(
+                            "Divergence threshold %.2f is %d days old "
+                            "(staleness limit: %d days). "
+                            "Call GET /analyst/ai-accuracy to recalibrate.",
+                            threshold,
+                            age_days,
+                            settings.AI_DIVERGENCE_STALENESS_DAYS,
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
             logger.debug("Divergence threshold from Redis: %.2f", threshold)
             return threshold
     except Exception as exc:  # noqa: BLE001
