@@ -103,8 +103,8 @@ class Settings(BaseSettings):
     # VISION_PROVIDER=openai      — GPT-4o (requires OPENAI_API_KEY).
     # VISION_PROVIDER=anthropic   — Claude claude-opus-4-6 (requires ANTHROPIC_API_KEY).
     # VISION_PROVIDER=ollama      — local open-source model via Ollama (free, no key).
-    #                               Requires Ollama running locally with a vision-capable
-    #                               model pulled (e.g. `ollama pull llava`).
+    #                               Requires Ollama running locally with a
+    #                               vision-capable model (e.g. `ollama pull llava`).
     VISION_PROVIDER: str = "mock"
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""

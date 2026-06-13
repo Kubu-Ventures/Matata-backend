@@ -5,7 +5,7 @@ Defines the ``VisionProvider`` Protocol and four concrete implementations:
 * ``MockVisionProvider``      — deterministic, configurable via fixtures; no API calls.
 * ``OpenAIVisionProvider``    — GPT-4o with ``response_format={"type": "json_object"}``.
 * ``AnthropicVisionProvider`` — Claude claude-opus-4-6 vision (optional alternative).
-* ``OllamaVisionProvider``    — local open-source vision model via Ollama (free, no key).
+* ``OllamaVisionProvider``    — local open-source vision model via Ollama (no API key).
 
 A factory ``get_vision_provider()`` selects the implementation from the
 ``VISION_PROVIDER`` environment variable.
@@ -643,7 +643,9 @@ class FallbackVisionProvider:
         last_exc: VisionAPIError | None = None
         for provider in self._providers:
             try:
-                return await provider.analyse_damage_image(image_bytes, reporter_severity)
+                return await provider.analyse_damage_image(
+                    image_bytes, reporter_severity
+                )
             except VisionAPIError as exc:
                 logger.warning(
                     "Vision provider %s failed, trying next in chain: %s",
