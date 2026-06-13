@@ -154,10 +154,20 @@ async def list_reports(
         le=1.0,
         description="Minimum AI confidence threshold.",
     ),
+    review_priority: Optional[str] = Query(
+        default=None,
+        description=(
+            "Comma-separated priority levels to include: "
+            "critical, high, normal, low. "
+            "Example: ?review_priority=critical,high"
+        ),
+    ),
     sort_by: Optional[str] = Query(
         default=None,
         description=(
-            "Sort order: 'severity' (destroyed first) or default created_at DESC."
+            "Sort order: 'severity' (priority+destroyed first), "
+            "'created_at' (pure chronological), "
+            "or omit for default priority-first ordering."
         ),
     ),
     current_user: dict = Depends(require_role(Role.analyst, Role.responder)),
@@ -181,6 +191,7 @@ async def list_reports(
         time_from=time_from,
         time_to=time_to,
         min_ai_confidence=min_ai_confidence,
+        review_priority=_split(review_priority),
         sort_by=sort_by,
         region_geojson=_region_geojson(current_user),
     )

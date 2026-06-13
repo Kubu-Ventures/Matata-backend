@@ -71,6 +71,89 @@ logger = logging.getLogger(__name__)
 
 _DIVERGENCE_CONFIDENCE_THRESHOLD = 0.7
 
+
+# ---------------------------------------------------------------------------
+# Confidence-based analyst routing
+# ---------------------------------------------------------------------------
+
+
+def _compute_review_priority(
+    *,
+    ai_confidence: Optional[float],
+    ai_quality_score: Optional[float],
+    ai_divergence: bool,
+) -> str:
+    """Map AI output metrics to an analyst queue priority string.
+
+    Priority rules (evaluated top-to-bottom; first match wins):
+
+    ``critical``
+        - Image quality below the unusable threshold (score < 0.30): any
+          severity prediction derived from this image is unreliable noise.
+        - AI confidence below 0.60: the model is insufficiently certain to
+          support an operational decision without a human second opinion.
+          Threshold follows responsible-AI guidance for humanitarian
+          decision-support systems.
+
+    ``high``
+        - AI disagrees with the reporter's own classification (divergence).
+          One party is wrong; an analyst must adjudicate.
+        - AI confidence in the 0.60–0.79 band: model is uncertain enough that
+          divergence or image issues could tip the prediction either way.
+
+    ``low``
+        - AI confidence ≥ 0.80, no divergence, quality above the unusable
+          threshold.  The model is confident and agrees with the reporter; this
+          report can be safely deprioritised in the analyst queue.
+
+    ``normal``
+        - Fallback for any case not matched above (e.g. confidence is None
+          because the report is still being processed).
+
+    Args:
+        ai_confidence:   Scalar 0.0–1.0 from the vision provider, or None.
+        ai_quality_score: Scalar 0.0–1.0 image quality score, or None.
+        ai_divergence:   True when AI prediction ≠ reporter severity AND
+                         ai_confidence > _DIVERGENCE_CONFIDENCE_THRESHOLD.
+
+    Returns:
+        One of ``"critical"``, ``"high"``, ``"normal"``, ``"low"``.
+    """
+    # Unusable image — severity prediction is noise regardless of confidence.
+    if (
+        ai_quality_score is not None
+        and ai_quality_score < settings.AI_QUALITY_CRITICAL_THRESHOLD
+    ):
+        return "critical"
+
+    # Confidence too low for autonomous action.
+    if (
+        ai_confidence is not None
+        and ai_confidence < settings.AI_CONFIDENCE_CRITICAL_THRESHOLD
+    ):
+        return "critical"
+
+    # AI and reporter disagree — one of them is wrong; analyst must decide.
+    if ai_divergence:
+        return "high"
+
+    # Medium confidence band — uncertain enough to warrant a second look.
+    if (
+        ai_confidence is not None
+        and ai_confidence < settings.AI_CONFIDENCE_HIGH_PRIORITY_THRESHOLD
+    ):
+        return "high"
+
+    # High confidence, no divergence, acceptable image quality → safe to defer.
+    if (
+        ai_confidence is not None
+        and ai_confidence >= settings.AI_CONFIDENCE_HIGH_PRIORITY_THRESHOLD
+    ):
+        return "low"
+
+    return "normal"
+
+
 # ---------------------------------------------------------------------------
 # Synchronous SQLAlchemy engine (Celery context — no async)
 # ---------------------------------------------------------------------------
@@ -298,18 +381,26 @@ def _process_report_image_impl(
 
         # ── 4. Handle unusable image (Stage 3.1) ──────────────────────────────
         if result.quality_flag == "unusable":
+            # Unusable image → critical priority: no reliable AI data at all.
+            priority = _compute_review_priority(
+                ai_confidence=None,
+                ai_quality_score=result.quality_score,
+                ai_divergence=False,
+            )
             db.execute(
                 text("""
                     UPDATE report
                     SET
                         ai_quality_score = :score,
                         photo_status     = :photo_status,
+                        review_priority  = :priority,
                         updated_at       = CURRENT_TIMESTAMP
                     WHERE id = :report_id
                 """),
                 {
                     "score": result.quality_score,
                     "photo_status": "insufficient_quality",
+                    "priority": priority,
                     "report_id": str(_report_id),
                 },
             )
@@ -317,7 +408,10 @@ def _process_report_image_impl(
             db.commit()
 
             logger.info(
-                "AI task: report %s photo marked insufficient_quality", _report_id
+                "AI task: report %s photo marked insufficient_quality "
+                "(review_priority=%s)",
+                _report_id,
+                priority,
             )
             return {
                 "photo_status": "insufficient_quality",
@@ -326,6 +420,7 @@ def _process_report_image_impl(
                 "ai_confidence": None,
                 "ai_divergence": None,
                 "photo_phash": None,
+                "review_priority": priority,
             }
 
         # ── 5. Compute perceptual hash (usable / borderline only) ─────────────
@@ -337,7 +432,14 @@ def _process_report_image_impl(
             and result.ai_confidence > _DIVERGENCE_CONFIDENCE_THRESHOLD
         )
 
-        # ── 7. Write AI results back to report (Stage 3.2) ────────────────────
+        # ── 7. Compute analyst queue priority ─────────────────────────────────
+        priority = _compute_review_priority(
+            ai_confidence=result.ai_confidence,
+            ai_quality_score=result.quality_score,
+            ai_divergence=divergence,
+        )
+
+        # ── 8. Write AI results back to report (Stage 3.2) ────────────────────
         # CRITICAL: ai_severity_prediction NEVER overwrites damage_severity.
         db.execute(
             text("""
@@ -349,6 +451,7 @@ def _process_report_image_impl(
                     ai_divergence           = :divergence,
                     photo_phash             = :phash,
                     photo_status            = :photo_status,
+                    review_priority         = :priority,
                     updated_at              = CURRENT_TIMESTAMP
                 WHERE id = :report_id
             """),
@@ -359,16 +462,19 @@ def _process_report_image_impl(
                 "divergence": divergence,
                 "phash": photo_phash,
                 "photo_status": "accepted",
+                "priority": priority,
                 "report_id": str(_report_id),
             },
         )
         db.commit()
 
         logger.info(
-            "AI task complete for report %s — divergence=%s phash=%s",
+            "AI task complete for report %s — divergence=%s phash=%s "
+            "review_priority=%s",
             _report_id,
             divergence,
             photo_phash is not None,
+            priority,
         )
 
         return {
@@ -378,6 +484,7 @@ def _process_report_image_impl(
             "ai_confidence": result.ai_confidence,
             "ai_divergence": divergence,
             "photo_phash": photo_phash,
+            "review_priority": priority,
         }
 
     except VisionAPIError:
@@ -461,12 +568,15 @@ def process_report_image(
             try:
                 db: Session = _SyncSessionLocal()
                 try:
+                    # No AI data at all → critical: analyst must review before
+                    # any action is taken on this report.
                     db.execute(
                         text("""
                             UPDATE report
                             SET
-                                photo_status = :photo_status,
-                                updated_at   = CURRENT_TIMESTAMP
+                                photo_status    = :photo_status,
+                                review_priority = 'critical',
+                                updated_at      = CURRENT_TIMESTAMP
                             WHERE id = :report_id
                         """),
                         {
@@ -479,7 +589,8 @@ def process_report_image(
                     db.close()
             except Exception as db_exc:  # noqa: BLE001
                 logger.error(
-                    "AI task: could not write ai_processing_failed for report %s: %s",
+                    "AI task: could not write ai_processing_failed for "
+                    "report %s: %s",
                     report_id,
                     type(db_exc).__name__,
                 )
@@ -491,4 +602,5 @@ def process_report_image(
                 "ai_confidence": None,
                 "ai_divergence": None,
                 "photo_phash": None,
+                "review_priority": "critical",
             }

@@ -73,6 +73,25 @@ class ReportStatus(str, enum.Enum):
     pending_merge_review = "pending_merge_review"
 
 
+class ReviewPriority(str, enum.Enum):
+    """Analyst queue priority assigned by the AI worker after image processing.
+
+    Routing logic (thresholds from config):
+      critical — ai_confidence < 0.60 OR quality_score < 0.30 OR AI failed.
+                 Human review is mandatory before any action propagates.
+      high     — 0.60 ≤ ai_confidence < 0.80 OR ai_divergence is True.
+                 Analyst should review; something needs a second look.
+      normal   — Default before AI processes the report.
+      low      — ai_confidence ≥ 0.80, no divergence, quality ≥ 0.60.
+                 Safe to defer; AI is confident and agrees with reporter.
+    """
+
+    critical = "critical"
+    high = "high"
+    normal = "normal"
+    low = "low"
+
+
 class NotificationType(str, enum.Enum):
     analyst_alert = "analyst_alert"
     reporter_photo_request = "reporter_photo_request"

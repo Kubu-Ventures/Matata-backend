@@ -108,6 +108,25 @@ class Settings(BaseSettings):
     # Alert ops when the AI queue depth exceeds this value.
     AI_PROCESSING_QUEUE_ALERT_DEPTH: int = 500
 
+    # ── Confidence-based analyst routing thresholds ────────────────────────────
+    # Rationale: responsible AI guidelines require that predictions
+    # below 60% confidence are treated as operationally unreliable and must
+    # receive mandatory human review before influencing response decisions.
+    #
+    # AI_CONFIDENCE_CRITICAL_THRESHOLD (< value → critical priority)
+    #   0.60: model is essentially choosing between three severity levels with
+    #   less than 60% certainty — too uncertain for autonomous action.
+    #
+    # AI_CONFIDENCE_HIGH_PRIORITY_THRESHOLD (< value → high priority)
+    #   0.80: moderate confidence; divergence or borderline quality triggers
+    #   analyst flag even when confidence is in this band.
+    #
+    # AI_QUALITY_CRITICAL_THRESHOLD (< value → critical priority)
+    #   0.30: image is unusable; any severity prediction is noise.
+    AI_CONFIDENCE_CRITICAL_THRESHOLD: float = 0.60
+    AI_CONFIDENCE_HIGH_PRIORITY_THRESHOLD: float = 0.80
+    AI_QUALITY_CRITICAL_THRESHOLD: float = 0.30
+
     # ── i18n / Translation ────────────────────────────────────────────────────
     # TRANSLATION_PROVIDER=libretranslate  — calls a self-hosted LibreTranslate
     #                                        container (default; no API key needed

@@ -103,6 +103,16 @@ _DAMAGE_TO_BUILDING_SEVERITY: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+# Priority numeric mapping for ORDER BY — higher number = shown first.
+_PRIORITY_ORDER = sa.case(
+    (Report.review_priority == "critical", 4),
+    (Report.review_priority == "high", 3),
+    (Report.review_priority == "normal", 2),
+    (Report.review_priority == "low", 1),
+    else_=2,
+)
+
+
 def _build_report_filters(
     query: sa.Select,
     *,
@@ -113,6 +123,7 @@ def _build_report_filters(
     time_from: Optional[datetime],
     time_to: Optional[datetime],
     min_ai_confidence: Optional[float],
+    review_priority: Optional[List[str]],
     region_geojson: Optional[str],
 ) -> sa.Select:
     """Apply all active filter predicates to *query* and return it.
@@ -136,6 +147,8 @@ def _build_report_filters(
         query = query.where(Report.created_at <= time_to)
     if min_ai_confidence is not None:
         query = query.where(Report.ai_confidence >= min_ai_confidence)
+    if review_priority:
+        query = query.where(Report.review_priority.in_(review_priority))
     if region_geojson:
         # PostGIS geographic scope for regional responders.
         # The filter uses a raw text clause to avoid importing geoalchemy2
@@ -229,6 +242,7 @@ async def list_reports(
     time_from: Optional[datetime] = None,
     time_to: Optional[datetime] = None,
     min_ai_confidence: Optional[float] = None,
+    review_priority: Optional[List[str]] = None,
     sort_by: Optional[str] = None,
     region_geojson: Optional[str] = None,
 ) -> PaginatedReports:
@@ -245,8 +259,10 @@ async def list_reports(
         time_from:           ISO 8601 UTC lower bound on ``created_at``.
         time_to:             ISO 8601 UTC upper bound on ``created_at``.
         min_ai_confidence:   Minimum ``ai_confidence`` threshold.
-        sort_by:             ``"severity"`` for destroyed-first ordering;
-                             default is ``created_at DESC``.
+        review_priority:     Multi-value filter list (critical/high/normal/low).
+        sort_by:             ``"severity"`` for priority+destroyed-first ordering;
+                             ``"created_at"`` for pure chronological (bypasses
+                             priority); default is priority-first + created_at.
         region_geojson:      Responder geographic scope (GeoJSON Polygon string).
 
     Returns:
@@ -264,6 +280,7 @@ async def list_reports(
         time_from=time_from,
         time_to=time_to,
         min_ai_confidence=min_ai_confidence,
+        review_priority=review_priority,
         region_geojson=region_geojson,
     )
     count_query = _build_report_filters(
@@ -275,12 +292,18 @@ async def list_reports(
         time_from=time_from,
         time_to=time_to,
         min_ai_confidence=min_ai_confidence,
+        review_priority=review_priority,
         region_geojson=region_geojson,
     )
 
     # Sorting
-    if sort_by == "severity":
-        # destroyed(3) first, then partial(2), minimal(1), none(0)
+    # Priority always leads (critical → high → normal → low) unless the caller
+    # explicitly requests pure chronological order with sort_by="created_at".
+    # This ensures analysts always see the reports that most need human review
+    # regardless of when they were submitted.
+    if sort_by == "created_at":
+        base_query = base_query.order_by(Report.created_at.desc())
+    elif sort_by == "severity":
         severity_order = sa.case(
             (Report.damage_severity == "destroyed", 3),
             (Report.damage_severity == "partial", 2),
@@ -288,10 +311,15 @@ async def list_reports(
             else_=0,
         )
         base_query = base_query.order_by(
-            severity_order.desc(), Report.created_at.desc()
+            _PRIORITY_ORDER.desc(),
+            severity_order.desc(),
+            Report.created_at.desc(),
         )
     else:
-        base_query = base_query.order_by(Report.created_at.desc())
+        # Default: priority-first, then newest within each priority tier.
+        base_query = base_query.order_by(
+            _PRIORITY_ORDER.desc(), Report.created_at.desc()
+        )
 
     # Count total matching records
     total_result = await db.execute(count_query)

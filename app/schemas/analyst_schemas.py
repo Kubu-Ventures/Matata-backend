@@ -30,6 +30,7 @@ from app.models.enums import (
     PhotoStatus,
     ReportDamageSeverity,
     ReportStatus,
+    ReviewPriority,
 )
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,7 @@ class ReportSummarySchema(BaseModel):
     ai_severity_prediction: Optional[ReportDamageSeverity] = None
     ai_divergence: Optional[bool] = None
     analyst_severity_override: Optional[ReportDamageSeverity] = None
+    review_priority: ReviewPriority = ReviewPriority.normal
     reporter_trust_tier: int
     created_at: datetime
     updated_at: datetime
@@ -171,6 +173,9 @@ class ReportDetailSchema(BaseModel):
     status: ReportStatus
     possible_duplicate_of_id: Optional[UUID] = None
     duplicate_score: Optional[float] = None
+
+    # Analyst queue priority — set by AI worker, drives feed sort order
+    review_priority: ReviewPriority = ReviewPriority.normal
 
     # Reporter — trust tier only; no hash/token
     reporter_trust_tier: int
