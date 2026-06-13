@@ -28,9 +28,6 @@ __pycache__/
 dist/
 build/
 
-# Alembic versions — migrations are applied at runtime via entrypoint.sh,
-# not baked into the image, so that the same image can migrate any DB state.
-alembic/versions/
 
 # Infrastructure configs — not needed inside the app container
 infra/
