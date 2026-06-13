@@ -43,6 +43,7 @@ All database access is synchronous (Celery runs in threads, not an async loop).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from io import BytesIO
 from typing import Optional
@@ -70,6 +71,45 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _DIVERGENCE_CONFIDENCE_THRESHOLD = 0.7
+
+# Redis Pub/Sub channel consumed by the analyst SSE stream.
+# Must match analyst_service.ANALYST_EVENTS_CHANNEL.
+_ANALYST_EVENTS_CHANNEL = "crisismap:analyst_events"
+
+
+# ---------------------------------------------------------------------------
+# Analyst SSE event publisher
+# ---------------------------------------------------------------------------
+
+
+def _publish_analyst_event(payload: dict) -> None:
+    """Publish *payload* to the analyst SSE Redis channel.
+
+    Creates a fresh synchronous Redis connection per call so this function is
+    safe under both forked and threaded Celery worker models.  Failures are
+    logged as warnings and never propagate — the DB write has already committed
+    so the report is consistent even if the SSE push is dropped.
+
+    Args:
+        payload: Dict that will be JSON-serialised and published.  Must include
+                 an ``"event"`` key so the SSE handler emits the correct event
+                 type to connected dashboard clients.
+    """
+    try:
+        import redis as _redis_sync  # local import keeps startup lightweight
+
+        r = _redis_sync.from_url(settings.REDIS_URL, decode_responses=True)
+        try:
+            r.publish(_ANALYST_EVENTS_CHANNEL, json.dumps(payload))
+        finally:
+            r.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not publish analyst event %r for report %s: %s",
+            payload.get("event"),
+            payload.get("report_id"),
+            type(exc).__name__,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +362,7 @@ def _process_report_image_impl(
         # ── 1. Load report ────────────────────────────────────────────────────
         row = db.execute(
             text("""
-                SELECT id, photo_url, damage_severity
+                SELECT id, photo_url, damage_severity, lat, lng
                 FROM report
                 WHERE id = :report_id
             """),
@@ -476,6 +516,23 @@ def _process_report_image_impl(
             photo_phash is not None,
             priority,
         )
+
+        # ── 9. Real-time SSE alert for divergent predictions ──────────────────
+        # Published AFTER commit so the report is readable when an analyst
+        # clicks through.  Fire-and-forget: Redis failure never fails the task.
+        if divergence:
+            _publish_analyst_event(
+                {
+                    "event": "report.ai_divergence",
+                    "report_id": str(_report_id),
+                    "ai_severity_prediction": result.ai_severity_prediction,
+                    "reporter_severity": reporter_severity,
+                    "ai_confidence": result.ai_confidence,
+                    "review_priority": priority,
+                    "lat": float(row.lat) if row.lat is not None else None,
+                    "lng": float(row.lng) if row.lng is not None else None,
+                }
+            )
 
         return {
             "photo_status": "accepted",

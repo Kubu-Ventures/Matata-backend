@@ -124,6 +124,7 @@ def _build_report_filters(
     time_to: Optional[datetime],
     min_ai_confidence: Optional[float],
     review_priority: Optional[List[str]],
+    ai_divergence_only: Optional[bool],
     region_geojson: Optional[str],
 ) -> sa.Select:
     """Apply all active filter predicates to *query* and return it.
@@ -149,6 +150,8 @@ def _build_report_filters(
         query = query.where(Report.ai_confidence >= min_ai_confidence)
     if review_priority:
         query = query.where(Report.review_priority.in_(review_priority))
+    if ai_divergence_only:
+        query = query.where(Report.ai_divergence.is_(True))
     if region_geojson:
         # PostGIS geographic scope for regional responders.
         # The filter uses a raw text clause to avoid importing geoalchemy2
@@ -243,6 +246,7 @@ async def list_reports(
     time_to: Optional[datetime] = None,
     min_ai_confidence: Optional[float] = None,
     review_priority: Optional[List[str]] = None,
+    ai_divergence_only: Optional[bool] = None,
     sort_by: Optional[str] = None,
     region_geojson: Optional[str] = None,
 ) -> PaginatedReports:
@@ -260,6 +264,8 @@ async def list_reports(
         time_to:             ISO 8601 UTC upper bound on ``created_at``.
         min_ai_confidence:   Minimum ``ai_confidence`` threshold.
         review_priority:     Multi-value filter list (critical/high/normal/low).
+        ai_divergence_only:  When True, restrict to reports where AI prediction
+                             disagrees with the reporter's severity assessment.
         sort_by:             ``"severity"`` for priority+destroyed-first ordering;
                              ``"created_at"`` for pure chronological (bypasses
                              priority); default is priority-first + created_at.
@@ -281,6 +287,7 @@ async def list_reports(
         time_to=time_to,
         min_ai_confidence=min_ai_confidence,
         review_priority=review_priority,
+        ai_divergence_only=ai_divergence_only,
         region_geojson=region_geojson,
     )
     count_query = _build_report_filters(
@@ -293,6 +300,7 @@ async def list_reports(
         time_to=time_to,
         min_ai_confidence=min_ai_confidence,
         review_priority=review_priority,
+        ai_divergence_only=ai_divergence_only,
         region_geojson=region_geojson,
     )
 

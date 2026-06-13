@@ -162,6 +162,14 @@ async def list_reports(
             "Example: ?review_priority=critical,high"
         ),
     ),
+    divergence_only: Optional[bool] = Query(
+        default=None,
+        description=(
+            "When true, restrict to reports where the AI's severity prediction "
+            "disagrees with the reporter's classification (ai_divergence=true). "
+            "These are the cases most in need of analyst adjudication."
+        ),
+    ),
     sort_by: Optional[str] = Query(
         default=None,
         description=(
@@ -192,6 +200,7 @@ async def list_reports(
         time_to=time_to,
         min_ai_confidence=min_ai_confidence,
         review_priority=_split(review_priority),
+        ai_divergence_only=divergence_only,
         sort_by=sort_by,
         region_geojson=_region_geojson(current_user),
     )
