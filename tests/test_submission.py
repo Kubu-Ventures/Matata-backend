@@ -562,6 +562,13 @@ def _make_redis_mock():
 
 
 class TestCreateReport:
+    @pytest.fixture(autouse=True)
+    def _mock_compress_image(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.submission_service.compress_image",
+            lambda image_bytes, **kw: (image_bytes, "image/jpeg"),
+        )
+
     _BASE_KWARGS = dict(
         crisis_type="flood",
         infrastructure_type="residential",
@@ -791,6 +798,13 @@ class TestCreateReport:
 
 
 class TestAddPhotoToReport:
+    @pytest.fixture(autouse=True)
+    def _mock_compress_image(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.submission_service.compress_image",
+            lambda image_bytes, **kw: (image_bytes, "image/jpeg"),
+        )
+
     @pytest.mark.asyncio
     async def test_happy_path_updates_report(self):
         import hashlib
