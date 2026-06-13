@@ -102,9 +102,15 @@ class Settings(BaseSettings):
     # VISION_PROVIDER=mock        — deterministic stub (default, dev/CI).
     # VISION_PROVIDER=openai      — GPT-4o (requires OPENAI_API_KEY).
     # VISION_PROVIDER=anthropic   — Claude claude-opus-4-6 (requires ANTHROPIC_API_KEY).
+    # VISION_PROVIDER=ollama      — local open-source model via Ollama (free, no key).
+    #                               Requires Ollama running locally with a vision-capable
+    #                               model pulled (e.g. `ollama pull llava`).
     VISION_PROVIDER: str = "mock"
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
+    # Ollama — only required when VISION_PROVIDER=ollama.
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_VISION_MODEL: str = "llava"
     # Alert ops when the AI queue depth exceeds this value.
     AI_PROCESSING_QUEUE_ALERT_DEPTH: int = 500
 
