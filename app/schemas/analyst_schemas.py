@@ -282,6 +282,9 @@ class StatsSummaryResponse(BaseModel):
     total: int
     by_severity: SeverityBreakdown
     by_crisis_type: CrisisTypeBreakdown
+    # Reports awaiting analyst merge confirmation (status=pending_merge_review).
+    # Non-zero means analysts have unactioned merge decisions in their queue.
+    pending_duplicate_count: int = 0
     last_updated: datetime
 
 

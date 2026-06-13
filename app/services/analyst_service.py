@@ -1125,11 +1125,21 @@ async def get_stats_summary(
         if key in by_crisis_type:
             by_crisis_type[key] = crisis_row[1]
 
+    # Reports awaiting analyst merge confirmation — the backlog analysts must
+    # action via /confirm-merge or /reject-merge before reports are resolved.
+    pending_dup_result = await db.execute(
+        sa.select(sa.func.count())
+        .select_from(Report)
+        .where(Report.status == ReportStatus.pending_merge_review)
+    )
+    pending_duplicate_count = pending_dup_result.scalar_one()
+
     now = datetime.now(tz=timezone.utc)
     response = StatsSummaryResponse(
         total=total,
         by_severity=by_severity,  # type: ignore[arg-type]
         by_crisis_type=by_crisis_type,  # type: ignore[arg-type]
+        pending_duplicate_count=pending_duplicate_count,
         last_updated=now,
     )
 
