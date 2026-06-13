@@ -26,6 +26,7 @@ from app.models.enums import (
     PhotoStatus,
     ReportDamageSeverity,
     ReportStatus,
+    ReviewPriority,
 )
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,10 @@ def _make_report(
     r.most_pressing_needs = None
     r.debris_clearing_needed = None
     r.duplicate_of_id = None
+    r.possible_duplicate_of_id = None
+    r.duplicate_score = None
+    r.analyst_severity_override = None
+    r.review_priority = ReviewPriority.normal
     r.analyst_notes = []
     r.created_at = datetime.now(tz=timezone.utc)
     r.updated_at = datetime.now(tz=timezone.utc)
@@ -127,6 +132,8 @@ class TestBuildReportFilters:
             time_from=None,
             time_to=None,
             min_ai_confidence=None,
+            review_priority=None,
+            ai_divergence_only=None,
             region_geojson=None,
         )
         assert result is not None
@@ -147,6 +154,8 @@ class TestBuildReportFilters:
             time_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
             time_to=datetime(2026, 6, 1, tzinfo=timezone.utc),
             min_ai_confidence=0.7,
+            review_priority=["critical", "high"],
+            ai_divergence_only=True,
             region_geojson=None,
         )
         compiled = str(result.compile())
@@ -172,6 +181,8 @@ class TestBuildReportFilters:
             time_from=None,
             time_to=None,
             min_ai_confidence=None,
+            review_priority=None,
+            ai_divergence_only=None,
             region_geojson=region,
         )
         compiled = str(result.compile())
@@ -844,7 +855,12 @@ class TestGetStatsSummary:
         crisis_rows = MagicMock()
         crisis_rows.__iter__ = MagicMock(return_value=iter([]))
 
-        db.execute = AsyncMock(side_effect=[total_result, sev_rows, crisis_rows])
+        pending_dup_result = MagicMock()
+        pending_dup_result.scalar_one = MagicMock(return_value=0)
+
+        db.execute = AsyncMock(
+            side_effect=[total_result, sev_rows, crisis_rows, pending_dup_result]
+        )
 
         result = await get_stats_summary(db, redis)
 
@@ -864,8 +880,12 @@ class TestGetStatsSummary:
         total_result.scalar_one = MagicMock(return_value=0)
         empty_rows = MagicMock()
         empty_rows.__iter__ = MagicMock(return_value=iter([]))
+        pending_dup_result = MagicMock()
+        pending_dup_result.scalar_one = MagicMock(return_value=0)
 
-        db.execute = AsyncMock(side_effect=[total_result, empty_rows, empty_rows])
+        db.execute = AsyncMock(
+            side_effect=[total_result, empty_rows, empty_rows, pending_dup_result]
+        )
 
         result = await get_stats_summary(db, redis)
         assert result.total == 0
@@ -891,10 +911,16 @@ class TestGetStatsSummary:
         crisis_rows = MagicMock()
         crisis_rows.__iter__ = MagicMock(return_value=iter([]))
 
-        db.execute = AsyncMock(side_effect=[total_result, sev_rows, crisis_rows])
+        pending_dup_result = MagicMock()
+        pending_dup_result.scalar_one = MagicMock(return_value=2)
+
+        db.execute = AsyncMock(
+            side_effect=[total_result, sev_rows, crisis_rows, pending_dup_result]
+        )
 
         result = await get_stats_summary(db, redis)
         assert result.by_severity.partial == 3
+        assert result.pending_duplicate_count == 2
 
 
 class TestGetHeatmap:
@@ -1327,3 +1353,408 @@ class TestWriteAuditLog:
         db.add.assert_called_once()
         call_arg = db.add.call_args[0][0]
         assert call_arg.before_state is None
+
+
+# ============================================================
+# HITL — Analyst severity override (Feature 1)
+# ============================================================
+
+
+class TestSetSeverityOverride:
+    """Tests for set_severity_override in analyst_service."""
+
+    @pytest.mark.asyncio
+    async def test_raises_lookup_error_when_report_not_found(self):
+        from app.services.analyst_service import set_severity_override
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(None))
+
+        with pytest.raises(LookupError, match="not found"):
+            await set_severity_override(
+                db,
+                uuid4(),
+                override=ReportDamageSeverity.destroyed,
+                analyst_id_hash="a" * 64,
+            )
+
+    @pytest.mark.asyncio
+    async def test_writes_override_without_touching_reporter_severity(self):
+        from app.schemas.analyst_schemas import SeverityOverrideResponse
+        from app.services.analyst_service import set_severity_override
+
+        report = _make_report(damage_severity="partial")
+        report.ai_severity_prediction = ReportDamageSeverity("minimal")
+        report.analyst_severity_override = None
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(report))
+        db.flush = AsyncMock()
+        db.add = MagicMock()
+
+        result = await set_severity_override(
+            db,
+            report.id,
+            override=ReportDamageSeverity.destroyed,
+            analyst_id_hash="a" * 64,
+        )
+
+        assert isinstance(result, SeverityOverrideResponse)
+        assert result.analyst_severity_override == ReportDamageSeverity.destroyed
+        # Reporter severity MUST NOT be modified.
+        assert report.damage_severity == ReportDamageSeverity("partial")
+
+    @pytest.mark.asyncio
+    async def test_logs_ai_feedback_and_audit_entry(self):
+        from app.services.analyst_service import set_severity_override
+
+        report = _make_report()
+        report.ai_severity_prediction = ReportDamageSeverity("partial")
+        report.analyst_severity_override = None
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(report))
+        db.flush = AsyncMock()
+        db.add = MagicMock()
+
+        await set_severity_override(
+            db,
+            report.id,
+            override=ReportDamageSeverity.minimal,
+            analyst_id_hash="b" * 64,
+        )
+
+        # db.add should be called at least twice: AuditLog + AIFeedback.
+        assert db.add.call_count >= 2
+
+
+# ============================================================
+# HITL — Pending merge review (Feature 2)
+# ============================================================
+
+
+class TestConfirmPendingMerge:
+    """Tests for confirm_pending_merge in analyst_service."""
+
+    @pytest.mark.asyncio
+    async def test_raises_lookup_error_when_not_found(self):
+        from app.services.analyst_service import confirm_pending_merge
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(None))
+
+        with pytest.raises(LookupError):
+            await confirm_pending_merge(db, uuid4(), analyst_id_hash="a" * 64)
+
+    @pytest.mark.asyncio
+    async def test_raises_value_error_for_wrong_status(self):
+        from app.services.analyst_service import confirm_pending_merge
+
+        report = _make_report(status="pending")  # not pending_merge_review
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(report))
+
+        with pytest.raises(ValueError, match="not pending merge review"):
+            await confirm_pending_merge(db, report.id, analyst_id_hash="a" * 64)
+
+    @pytest.mark.asyncio
+    async def test_raises_value_error_when_no_possible_duplicate_id(self):
+        from app.services.analyst_service import confirm_pending_merge
+
+        report = _make_report(status="pending_merge_review")
+        report.possible_duplicate_of_id = None
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(report))
+
+        with pytest.raises(ValueError, match="no possible_duplicate_of_id"):
+            await confirm_pending_merge(db, report.id, analyst_id_hash="a" * 64)
+
+    @pytest.mark.asyncio
+    async def test_successful_confirm_sets_duplicate_status(self):
+        from app.schemas.analyst_schemas import ConfirmMergeResponse
+        from app.services.analyst_service import confirm_pending_merge
+
+        primary_id = uuid4()
+        report = _make_report(status="pending_merge_review")
+        report.possible_duplicate_of_id = primary_id
+        report.photo_url = None
+
+        # Second execute for the primary report lookup.
+        primary = _make_report()
+        primary.photo_url = None
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[_scalar_result(report), _scalar_result(primary)]
+        )
+        db.flush = AsyncMock()
+        db.add = MagicMock()
+
+        result = await confirm_pending_merge(
+            db, report.id, analyst_id_hash="a" * 64
+        )
+
+        assert isinstance(result, ConfirmMergeResponse)
+        assert result.merged_into == primary_id
+        assert report.status == ReportStatus.duplicate
+        assert report.duplicate_of_id == primary_id
+        assert report.possible_duplicate_of_id is None
+
+    @pytest.mark.asyncio
+    async def test_photo_transferred_to_primary_on_confirm(self):
+        from app.services.analyst_service import confirm_pending_merge
+
+        primary_id = uuid4()
+        report = _make_report(status="pending_merge_review")
+        report.possible_duplicate_of_id = primary_id
+        report.photo_url = "s3://bucket/new.jpg"
+
+        primary = _make_report()
+        primary.photo_url = None  # primary has no photo
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[_scalar_result(report), _scalar_result(primary)]
+        )
+        db.flush = AsyncMock()
+        db.add = MagicMock()
+
+        await confirm_pending_merge(db, report.id, analyst_id_hash="a" * 64)
+
+        assert primary.photo_url == "s3://bucket/new.jpg"
+
+
+class TestRejectPendingMerge:
+    """Tests for reject_pending_merge in analyst_service."""
+
+    @pytest.mark.asyncio
+    async def test_raises_lookup_error_when_not_found(self):
+        from app.services.analyst_service import reject_pending_merge
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(None))
+
+        with pytest.raises(LookupError):
+            await reject_pending_merge(db, uuid4(), analyst_id_hash="a" * 64)
+
+    @pytest.mark.asyncio
+    async def test_raises_value_error_for_wrong_status(self):
+        from app.services.analyst_service import reject_pending_merge
+
+        report = _make_report(status="pending")
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(report))
+
+        with pytest.raises(ValueError, match="not pending merge review"):
+            await reject_pending_merge(db, report.id, analyst_id_hash="a" * 64)
+
+    @pytest.mark.asyncio
+    async def test_successful_reject_restores_pending_status(self):
+        from app.schemas.analyst_schemas import RejectMergeResponse
+        from app.services.analyst_service import reject_pending_merge
+
+        report = _make_report(status="pending_merge_review")
+        report.possible_duplicate_of_id = uuid4()
+        report.duplicate_score = 0.93
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(report))
+        db.flush = AsyncMock()
+        db.add = MagicMock()
+
+        result = await reject_pending_merge(db, report.id, analyst_id_hash="a" * 64)
+
+        assert isinstance(result, RejectMergeResponse)
+        assert result.status == "pending"
+        assert report.status == ReportStatus.pending
+        assert report.possible_duplicate_of_id is None
+        assert report.duplicate_score is None
+
+
+# ============================================================
+# HITL — AI accuracy / active learning (Feature 3)
+# ============================================================
+
+
+class TestGetAiAccuracy:
+    """Tests for get_ai_accuracy in analyst_service."""
+
+    def _make_feedback(
+        self,
+        *,
+        feedback_type: str = "verify",
+        is_agreement: bool = True,
+        ai_confidence: float = 0.85,
+        ai_prediction: str = "partial",
+        analyst_decision: str = "partial",
+    ):
+        f = MagicMock()
+        f.feedback_type = feedback_type
+        f.is_agreement = is_agreement
+        f.ai_confidence = ai_confidence
+        f.ai_prediction = ai_prediction
+        f.analyst_decision = analyst_decision
+        return f
+
+    @pytest.mark.asyncio
+    async def test_returns_zeros_when_no_feedback(self):
+        from app.services.analyst_service import get_ai_accuracy
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalars_result([]))
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+
+        result = await get_ai_accuracy(db, redis)
+
+        assert result.total_feedback == 0
+        assert result.agreement_rate is None
+        assert result.recommended_divergence_threshold is None
+
+    @pytest.mark.asyncio
+    async def test_does_not_write_threshold_below_min_sample(self):
+        """With fewer than 30 HC entries, threshold must NOT be written."""
+        from app.services.analyst_service import get_ai_accuracy
+
+        # 10 high-confidence agreeing feedback entries — below MIN_SAMPLE (30).
+        feedback = [
+            self._make_feedback(ai_confidence=0.9, is_agreement=True)
+            for _ in range(10)
+        ]
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalars_result(feedback))
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+        redis.set = AsyncMock()
+
+        result = await get_ai_accuracy(db, redis)
+
+        assert result.high_confidence_feedback_count == 10
+        assert result.recommended_divergence_threshold == 0.7  # computed…
+        # …but NOT written to Redis because sample is too small.
+        redis.set.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_writes_threshold_when_min_sample_met(self):
+        """With >= 30 HC entries, threshold IS written to Redis."""
+        from app.services.analyst_service import get_ai_accuracy
+
+        feedback = [
+            self._make_feedback(ai_confidence=0.9, is_agreement=True)
+            for _ in range(30)
+        ]
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalars_result(feedback))
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)  # no prior threshold
+        redis.set = AsyncMock()
+        redis.lpush = AsyncMock()
+        redis.ltrim = AsyncMock()
+
+        result = await get_ai_accuracy(db, redis)
+
+        assert result.high_confidence_feedback_count == 30
+        # hc_rate = 1.0 >= 0.85 → threshold = 0.70
+        assert result.recommended_divergence_threshold == 0.7
+        # Threshold and timestamp were written.
+        assert redis.set.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_threshold_logic_drifting_model(self):
+        """hc_rate in [0.70, 0.85) → threshold = 0.60."""
+        from app.services.analyst_service import get_ai_accuracy
+
+        # 30 HC entries, 75% agreement.
+        feedback = [
+            self._make_feedback(ai_confidence=0.9, is_agreement=(i < 23))
+            for i in range(30)
+        ]
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalars_result(feedback))
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+        redis.set = AsyncMock()
+        redis.lpush = AsyncMock()
+        redis.ltrim = AsyncMock()
+
+        result = await get_ai_accuracy(db, redis)
+
+        assert result.recommended_divergence_threshold == pytest.approx(0.6)
+
+    @pytest.mark.asyncio
+    async def test_threshold_logic_poorly_calibrated(self):
+        """hc_rate < 0.70 → threshold = 0.50."""
+        from app.services.analyst_service import get_ai_accuracy
+
+        # 30 HC entries, 60% agreement.
+        feedback = [
+            self._make_feedback(ai_confidence=0.9, is_agreement=(i < 18))
+            for i in range(30)
+        ]
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalars_result(feedback))
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+        redis.set = AsyncMock()
+        redis.lpush = AsyncMock()
+        redis.ltrim = AsyncMock()
+
+        result = await get_ai_accuracy(db, redis)
+
+        assert result.recommended_divergence_threshold == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_staleness_flag_set_when_threshold_is_old(self):
+        """threshold_is_stale=True when updated_at > AI_DIVERGENCE_STALENESS_DAYS ago."""
+        from app.services.analyst_service import get_ai_accuracy
+
+        # Return a timestamp 10 days in the past.
+        old_ts = datetime(2026, 6, 4, tzinfo=timezone.utc).isoformat()
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalars_result([]))
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=old_ts)
+
+        result = await get_ai_accuracy(db, redis)
+
+        assert result.threshold_is_stale is True
+        assert result.threshold_updated_at is not None
+
+    @pytest.mark.asyncio
+    async def test_staleness_flag_clear_when_threshold_is_fresh(self):
+        """threshold_is_stale=False when updated_at is within the staleness window."""
+        from app.services.analyst_service import get_ai_accuracy
+
+        fresh_ts = datetime.now(tz=timezone.utc).isoformat()
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalars_result([]))
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=fresh_ts)
+
+        result = await get_ai_accuracy(db, redis)
+
+        assert result.threshold_is_stale is False
+
+    @pytest.mark.asyncio
+    async def test_calibration_history_pushed_on_write(self):
+        """Each successful calibration pushes an entry to the history list."""
+        from app.services.analyst_service import get_ai_accuracy
+
+        feedback = [
+            self._make_feedback(ai_confidence=0.9, is_agreement=True)
+            for _ in range(30)
+        ]
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalars_result(feedback))
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+        redis.set = AsyncMock()
+        redis.lpush = AsyncMock()
+        redis.ltrim = AsyncMock()
+
+        await get_ai_accuracy(db, redis)
+
+        redis.lpush.assert_awaited_once()
+        redis.ltrim.assert_awaited_once()
