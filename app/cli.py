@@ -95,9 +95,7 @@ async def _create_admin(phone: str) -> None:
     print()
     print("The admin can now log in via:")
     print(f'  POST /api/v1/auth/otp/send   {{"phone": "{phone}"}}')
-    print(
-        f'  POST /api/v1/auth/otp/verify {{"phone": "{phone}", "otp": "<code>"}}'
-    )
+    print(f'  POST /api/v1/auth/otp/verify {{"phone": "{phone}", "otp": "<code>"}}')
 
 
 async def _list_accounts() -> None:
@@ -112,10 +110,14 @@ async def _list_accounts() -> None:
 
     async with factory() as session:
         rows = (
-            await session.execute(
-                sa.select(AnalystAccount).order_by(AnalystAccount.created_at)
+            (
+                await session.execute(
+                    sa.select(AnalystAccount).order_by(AnalystAccount.created_at)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     await engine.dispose()
 
@@ -127,12 +129,14 @@ async def _list_accounts() -> None:
     print(fmt.format("ID", "ROLE", "ACTIVE", "CREATED AT"))
     print("-" * 75)
     for row in rows:
-        print(fmt.format(
-            str(row.id),
-            row.role,
-            "yes" if row.is_active else "no",
-            str(row.created_at)[:19] if row.created_at else "—",
-        ))
+        print(
+            fmt.format(
+                str(row.id),
+                row.role,
+                "yes" if row.is_active else "no",
+                str(row.created_at)[:19] if row.created_at else "—",
+            )
+        )
 
 
 async def _deactivate_account(account_id: str) -> None:
