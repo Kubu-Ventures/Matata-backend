@@ -210,21 +210,27 @@ class GISService:
     def _nearest_neighbour(
         self, lat: float, lng: float, search_radius_m: float
     ) -> Optional[BuildingMatch]:
-        """Step 2 — nearest-centroid within ``search_radius_m`` metres."""
+        """Step 2 — nearest building footprint edge within ``search_radius_m`` metres.
+
+        Measures distance to the polygon boundary (not the centroid) so that
+        large institutional buildings — hospitals, schools, government offices —
+        are matched correctly even when the GPS point is near an edge rather
+        than the geometric centre.
+        """
         row = self._db.execute(
             text("""
                 SELECT
                     id,
                     ST_AsGeoJSON(footprint)        AS footprint_geojson,
                     ST_Distance(
-                        centroid::geography,
+                        footprint::geography,
                         ST_SetSRID(
                             ST_Point(:lng, :lat), 4326
                         )::geography
                     )                              AS distance_m
                 FROM building
                 WHERE ST_DWithin(
-                    centroid::geography,
+                    footprint::geography,
                     ST_SetSRID(ST_Point(:lng, :lat), 4326)::geography,
                     :radius_m
                 )
@@ -238,7 +244,10 @@ class GISService:
             return None
 
         distance_m: float = float(row.distance_m)
-        confidence = max(0.0, 1.0 - (distance_m / search_radius_m))
+        confidence = 1.0 - (distance_m / search_radius_m)
+
+        if confidence <= 0.0:
+            return None
 
         logger.debug(
             "Nearest-neighbour match: building_id=%s distance=%.1fm confidence=%.3f",

@@ -116,17 +116,17 @@ class TestGISServiceNearestNeighbour:
         assert abs(result.confidence - 0.5) < 0.001
         assert result.distance_m == pytest.approx(15.0)
 
-    def test_confidence_zero_at_radius_boundary(self):
+    def test_returns_none_at_radius_boundary(self):
         from app.services.gis_service import GISService
 
+        # distance == radius → confidence = 0.0 → treated as no match
         row = _make_row(distance_m=30.0)
         db = _make_db(fetchone_return=row)
 
         svc = GISService(db)
         result = svc._nearest_neighbour(lat=-1.295, lng=36.805, search_radius_m=30.0)
 
-        assert result is not None
-        assert result.confidence == pytest.approx(0.0)
+        assert result is None
 
     def test_returns_none_when_no_building_in_radius(self):
         from app.services.gis_service import GISService

@@ -38,7 +38,7 @@ from app.api.v1.routes.health import router as health_router
 from app.api.v1.routes.metrics import router as metrics_router
 from app.api.v1.routes.reports import router as reports_router
 from app.core.config import settings
-from app.core.dependencies import _engine  # noqa: WPS436
+from app.core.dependencies import _async_session_factory, _engine  # noqa: WPS436
 from app.core.logging import configure_logging
 from app.core.middleware import RequestIDMiddleware
 
@@ -54,9 +54,39 @@ async def lifespan(app: FastAPI):  # noqa: ANN001
         environment=settings.ENVIRONMENT,
         version="0.1.0",
     )
+    await _warn_if_no_building_footprints()
     yield
     await _engine.dispose()
     logger.info("shutdown")
+
+
+async def _warn_if_no_building_footprints() -> None:
+    """Log a WARNING at startup when the building table is empty.
+
+    An empty building table means every report will receive building_id=NULL
+    and confidence=0.0 — the GIS matching pipeline produces no results until
+    footprints are imported via ``python -m app.cli.import_footprints``.
+    """
+    from sqlalchemy import text
+
+    try:
+        async with _async_session_factory() as db:
+            result = await db.execute(text("SELECT COUNT(*) FROM building"))
+            count: int = result.scalar_one()
+        if count == 0:
+            logger.warning(
+                "building_table_empty",
+                message=(
+                    "No building footprints loaded — GPS matching will return "
+                    "building_id=NULL for every report. "
+                    "Import data with: "
+                    "python -m app.cli.import_footprints --source <path>"
+                ),
+            )
+        else:
+            logger.info("building_footprints_loaded", count=count)
+    except Exception as exc:
+        logger.warning("building_footprint_check_failed", error=str(exc))
 
 
 app = FastAPI(

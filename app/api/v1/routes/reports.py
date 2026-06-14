@@ -156,7 +156,7 @@ async def submit_report(
         meta = ReportCreateSchema.model_validate(parsed)
     except (json.JSONDecodeError, ValidationError) as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
         ) from exc
 
@@ -210,7 +210,7 @@ async def submit_report(
     except ModerationRejectionError:
         # Generic message — do not disclose rejection reason (spec §8.2.1).
         raise LocalisedHTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             message_key="errors.image_rejected",
             lang=lang,
         )
@@ -285,7 +285,7 @@ async def upload_report_photo(
         ) from exc
     except ModerationRejectionError:
         raise LocalisedHTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             message_key="errors.image_rejected",
             lang=lang,
         )
