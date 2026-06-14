@@ -171,11 +171,18 @@ class AfricasTalkingSMSGateway:
             # AT reports per-recipient status; anything other than "Success" means
             # the carrier rejected or queued the message — treat it as a failure
             # so the caller gets a 503 rather than a silent no-op.
-            status = recipients[0].get("status", "unknown")
-            logger.info("Africa's Talking OTP dispatch status: %s", status)
+            recipient = recipients[0]
+            status = recipient.get("status", "unknown")
+            status_code = recipient.get("statusCode", "unknown")
+            logger.info(
+                "Africa's Talking OTP dispatch — status: %s, statusCode: %s",
+                status,
+                status_code,
+            )
             if status != "Success":
                 raise SMSDeliveryError(
-                    f"Africa's Talking rejected the message (status: {status}). "
+                    f"Africa's Talking rejected the message "
+                    f"(status: {status}, statusCode: {status_code}). "
                     "Check the AT dashboard for details."
                 )
 
