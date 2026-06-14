@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     # Set to your AT-assigned shortcode (e.g. "20880") or registered alphanumeric ID.
     # Leave empty to use Africa's Talking's default shared sender.
     AFRICASTALKING_SENDER_ID: str = ""
+    # Voice OTP fallback via Africa's Talking outbound call (TTS).
+    # Enable when SMS is carrier-rejected (e.g. Safaricom Kenya rejects unregistered senders).
+    AFRICASTALKING_VOICE_ENABLED: bool = False
+    # AT-assigned virtual phone number for outbound voice calls (e.g. "+254711082XXX").
+    # Required when AFRICASTALKING_VOICE_ENABLED=true.
+    AFRICASTALKING_VOICE_NUMBER: str = ""
+    # Publicly reachable base URL of this server — used to build AT voice callback URLs.
+    # Must be accessible from the internet when AFRICASTALKING_VOICE_ENABLED=true.
+    # Example: https://api.crisismap.matata.org
+    APP_PUBLIC_URL: str = ""
 
     # ── Email delivery ────────────────────────────────────────────────────────
     # EMAIL_PROVIDER=console  — prints to stdout; no network call (default, dev/CI).

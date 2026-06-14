@@ -1,34 +1,40 @@
 """SMS Gateway abstraction layer.
 
 Defines the ``SMSGateway`` Protocol that all SMS back-ends must satisfy,
-plus two concrete implementations:
+plus concrete implementations:
 
-* ``ConsoleSMSGateway``  — prints the OTP to stdout; used in development
-  and automated tests so no real SMS account is needed.
-* ``AfricasTalkingSMSGateway`` — production gateway via the Africa's Talking
-  SMS API, used when ``SMS_GATEWAY=africastalking`` in the environment.
+* ``ConsoleSMSGateway``        — prints OTP to stdout; used in dev/CI.
+* ``AfricasTalkingSMSGateway`` — production SMS via Africa's Talking API.
+* ``AtVoiceGateway``           — fallback: AT outbound voice call reads OTP
+                                 via TTS when SMS is carrier-rejected.
+* ``FallbackSMSGateway``       — tries SMS first; on failure automatically
+                                 retries with the voice gateway.
 
 A factory function ``get_sms_gateway()`` returns the correct implementation
-based on the ``SMS_GATEWAY`` setting, keeping all gateway selection logic in
-one place.
+based on the ``SMS_GATEWAY`` and ``AFRICASTALKING_VOICE_ENABLED`` settings.
 
-Design notes
-------------
-* Using ``typing.Protocol`` (structural subtyping) rather than an ABC keeps
-  the contract explicit without requiring inheritance, making it easy to add
-  a third gateway (e.g. Twilio) without modifying this file.
-* ``send_otp`` is intentionally synchronous in its signature so that a simple
-  test implementation does not need to set up an async runtime.  The
-  AfricasTalking implementation uses httpx with a sync client; if the API
-  ever needs high concurrency, swap to ``async def`` and ``AsyncClient``.
+Voice fallback design
+---------------------
+When ``AFRICASTALKING_VOICE_ENABLED=true`` the factory wraps the AT SMS
+gateway in ``FallbackSMSGateway``.  If the SMS carrier rejects the message
+(``SMSDeliveryError``), an outbound AT Voice call is placed to the same
+number.  When the recipient answers, AT fetches
+``GET {APP_PUBLIC_URL}/voice/otp/{session_id}`` and the handler returns
+JSON actions that instruct AT to read the OTP digits via TTS.
+
+The session → OTP mapping is stored in Redis under
+``voice_otp:{session_id}`` with a 5-minute TTL so the plaintext OTP is
+never embedded in the callback URL.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Protocol, runtime_checkable
 
 import httpx
+import redis as sync_redis
 
 from app.core.config import settings
 
@@ -203,16 +209,156 @@ class AfricasTalkingSMSGateway:
 
 
 # ---------------------------------------------------------------------------
+# AtVoiceGateway — voice call OTP via Africa's Talking Voice API
+# ---------------------------------------------------------------------------
+
+_AT_VOICE_URL = "https://voice.africastalking.com/call"
+_VOICE_OTP_TTL = 300  # 5 minutes, matching OTP validity window
+
+
+def _digits_spaced(otp_code: str) -> str:
+    """Return OTP digits separated by pauses for clear TTS reading.
+
+    '203153' → '2. 0. 3. 1. 5. 3.'
+    """
+    return ". ".join(otp_code) + "."
+
+
+class AtVoiceGateway:
+    """OTP delivery via AT outbound voice call with TTS readout.
+
+    When called, AT phones the recipient.  On answer AT fetches the
+    callback URL and reads the OTP aloud via text-to-speech.
+
+    Requires:
+        ``AFRICASTALKING_API_KEY``, ``AFRICASTALKING_USERNAME``,
+        ``AFRICASTALKING_VOICE_NUMBER`` (AT-assigned virtual number),
+        ``APP_PUBLIC_URL`` (publicly reachable base URL of this server).
+    """
+
+    def __init__(self) -> None:
+        self._api_key = settings.AFRICASTALKING_API_KEY
+        self._username = settings.AFRICASTALKING_USERNAME
+        self._from_number = settings.AFRICASTALKING_VOICE_NUMBER
+        self._app_url = settings.APP_PUBLIC_URL.rstrip("/")
+        self._redis = sync_redis.from_url(settings.REDIS_URL, decode_responses=True)
+
+        if not self._from_number:
+            raise SMSDeliveryError(
+                "AFRICASTALKING_VOICE_NUMBER must be set when voice fallback is enabled."
+            )
+        if not self._app_url:
+            raise SMSDeliveryError(
+                "APP_PUBLIC_URL must be set when voice fallback is enabled."
+            )
+
+    def send_otp(self, phone_number: str, otp_code: str) -> None:
+        """Place an outbound AT Voice call that reads *otp_code* via TTS.
+
+        Stores the OTP in Redis under ``voice_otp:{session_id}`` with a
+        5-minute TTL so the callback handler can retrieve it without
+        embedding any sensitive data in the callback URL.
+
+        Args:
+            phone_number: E.164-formatted destination number.
+            otp_code:     Six-digit OTP string.
+
+        Raises:
+            SMSDeliveryError: If the AT Voice API rejects the call request.
+        """
+        session_id = str(uuid.uuid4())
+        self._redis.setex(f"voice_otp:{session_id}", _VOICE_OTP_TTL, otp_code)
+
+        callback_url = f"{self._app_url}/voice/otp/{session_id}"
+
+        try:
+            response = httpx.post(
+                _AT_VOICE_URL,
+                headers={
+                    "apiKey": self._api_key,
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                data={
+                    "username": self._username,
+                    "from": self._from_number,
+                    "to": phone_number,
+                    "callbackUrl": callback_url,
+                },
+                timeout=15.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "AT Voice API HTTP error: %s %s",
+                exc.response.status_code,
+                exc.response.text,
+            )
+            raise SMSDeliveryError(
+                f"Voice OTP call failed with HTTP {exc.response.status_code}"
+            ) from exc
+        except httpx.RequestError as exc:
+            logger.error("AT Voice network error: %s", type(exc).__name__)
+            raise SMSDeliveryError(
+                "Voice OTP call failed due to a network error."
+            ) from exc
+
+        payload = response.json()
+        entries = payload.get("entries", [])
+        if not entries:
+            raise SMSDeliveryError("AT Voice API returned no call entries.")
+
+        call_status = entries[0].get("status", "unknown")
+        if call_status not in ("Queued", "Success"):
+            raise SMSDeliveryError(
+                f"AT Voice call not queued (status: {call_status})."
+            )
+
+        logger.info("AT Voice OTP call queued (status: %s)", call_status)
+
+
+# ---------------------------------------------------------------------------
+# FallbackSMSGateway — SMS first, voice on carrier rejection
+# ---------------------------------------------------------------------------
+
+
+class FallbackSMSGateway:
+    """Tries *primary* first; on ``SMSDeliveryError`` falls back to *fallback*.
+
+    Used to wrap ``AfricasTalkingSMSGateway`` with ``AtVoiceGateway`` so
+    that a carrier rejection automatically triggers a voice call without any
+    change to the calling code.
+    """
+
+    def __init__(self, primary: SMSGateway, fallback: SMSGateway) -> None:
+        self._primary = primary
+        self._fallback = fallback
+
+    def send_otp(self, phone_number: str, otp_code: str) -> None:
+        try:
+            self._primary.send_otp(phone_number, otp_code)
+        except SMSDeliveryError as exc:
+            logger.warning(
+                "SMS gateway failed (%s); attempting voice fallback.", exc
+            )
+            self._fallback.send_otp(phone_number, otp_code)
+
+
+# ---------------------------------------------------------------------------
 # Gateway factory
 # ---------------------------------------------------------------------------
 
 
 def get_sms_gateway() -> SMSGateway:
-    """Return the SMS gateway implementation selected by ``SMS_GATEWAY``.
+    """Return the SMS gateway selected by ``SMS_GATEWAY``.
+
+    When ``SMS_GATEWAY=africastalking`` and ``AFRICASTALKING_VOICE_ENABLED=true``
+    the AT SMS gateway is wrapped in ``FallbackSMSGateway`` with ``AtVoiceGateway``
+    so that a carrier rejection automatically retries via voice call.
 
     Supported values for ``SMS_GATEWAY``:
     * ``console``        — ``ConsoleSMSGateway`` (default, development/test)
-    * ``africastalking`` — ``AfricasTalkingSMSGateway`` (production)
+    * ``africastalking`` — ``AfricasTalkingSMSGateway`` (+ voice fallback if enabled)
 
     Returns:
         An object that satisfies the ``SMSGateway`` Protocol.
@@ -224,8 +370,12 @@ def get_sms_gateway() -> SMSGateway:
 
     if gateway_name == "console":
         return ConsoleSMSGateway()
+
     if gateway_name == "africastalking":
-        return AfricasTalkingSMSGateway()
+        sms = AfricasTalkingSMSGateway()
+        if settings.AFRICASTALKING_VOICE_ENABLED:
+            return FallbackSMSGateway(primary=sms, fallback=AtVoiceGateway())
+        return sms
 
     raise ValueError(
         f"Unknown SMS_GATEWAY value: '{gateway_name}'. "
