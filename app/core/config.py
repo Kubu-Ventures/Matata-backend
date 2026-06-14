@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     # Required only when GEOCODING_PROVIDER=google.
     GOOGLE_GEOCODING_API_KEY: str = ""
 
+    # Optional ISO 3166-1 alpha-2 country code to bias geocoding results toward
+    # the deployment country (e.g. "ke" for Kenya, "ug" for Uganda, "ng" for
+    # Nigeria).  Leave empty to allow global geocoding with no country bias —
+    # required for multi-country or global deployments.
+    GEOCODING_COUNTRY_CODE: str = ""
+
     # Nearest-neighbour building search radius in metres (spec §9.2).
     # Expanded dynamically to min(accuracy_m * 1.5, 100) when GPS accuracy > 50 m.
     BUILDING_FOOTPRINT_SEARCH_RADIUS_M: int = 30
