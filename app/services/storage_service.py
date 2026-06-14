@@ -202,9 +202,14 @@ class S3StorageService:
         if settings.AWS_SECRET_ACCESS_KEY:
             kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY
         if settings.S3_ENDPOINT_URL:
-            # MinIO / Cloudflare R2 / other S3-compatible endpoints.
+            # Cloudflare R2 / MinIO / other S3-compatible endpoints.
             kwargs["endpoint_url"] = settings.S3_ENDPOINT_URL
         return kwargs
+
+    @property
+    def _is_aws_s3(self) -> bool:
+        """True when talking to AWS S3 directly (no custom endpoint)."""
+        return not bool(settings.S3_ENDPOINT_URL)
 
     async def upload_image(
         self,
@@ -237,14 +242,18 @@ class S3StorageService:
         session = aiobotocore.session.get_session()
         try:
             async with session.create_client("s3", **self._client_kwargs()) as client:
-                await client.put_object(
-                    Bucket=settings.S3_BUCKET_NAME,
-                    Key=object_key,
-                    Body=image_bytes,
-                    ContentType=content_type,
-                    # Spec §14.2 — all stored images encrypted at rest with AES-256.
-                    ServerSideEncryption="AES256",
-                )
+                put_kwargs: dict = {
+                    "Bucket": settings.S3_BUCKET_NAME,
+                    "Key": object_key,
+                    "Body": image_bytes,
+                    "ContentType": content_type,
+                }
+                if self._is_aws_s3:
+                    # AWS S3 requires explicit SSE opt-in (spec §14.2).
+                    # R2/MinIO encrypt all objects automatically — passing
+                    # this parameter to them raises NotImplemented.
+                    put_kwargs["ServerSideEncryption"] = "AES256"
+                await client.put_object(**put_kwargs)
         except Exception as exc:
             logger.error(
                 "S3 upload error for key %s: %s", object_key, type(exc).__name__
