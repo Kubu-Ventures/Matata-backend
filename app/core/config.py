@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # Leave empty to use Africa's Talking's default shared sender.
     AFRICASTALKING_SENDER_ID: str = ""
     # Voice OTP fallback via Africa's Talking outbound call (TTS).
-    # Enable when SMS is carrier-rejected (e.g. Safaricom Kenya rejects unregistered senders).
+    # Enable when SMS is carrier-rejected (e.g. Safaricom Kenya rejects unregistered).
     AFRICASTALKING_VOICE_ENABLED: bool = False
     # AT-assigned virtual phone number for outbound voice calls (e.g. "+254711082XXX").
     # Required when AFRICASTALKING_VOICE_ENABLED=true.

@@ -50,10 +50,13 @@ async def voice_otp_callback(
 ) -> JSONResponse:
     """Return AT TTS actions for the OTP voice call."""
     r = sync_redis.from_url(settings.REDIS_URL, decode_responses=True)
-    otp_code: str | None = r.get(f"{_VOICE_OTP_PREFIX}{session_id}")
+    raw = r.get(f"{_VOICE_OTP_PREFIX}{session_id}")
+    otp_code: str | None = raw  # type: ignore[assignment]
 
     if not otp_code:
-        logger.warning("voice_otp_callback: session not found or expired — %s", session_id)
+        logger.warning(
+            "voice_otp_callback: session not found or expired — %s", session_id
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="OTP session not found or expired.",

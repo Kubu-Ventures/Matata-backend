@@ -245,7 +245,8 @@ class AtVoiceGateway:
 
         if not self._from_number:
             raise SMSDeliveryError(
-                "AFRICASTALKING_VOICE_NUMBER must be set when voice fallback is enabled."
+                "AFRICASTALKING_VOICE_NUMBER must be set when voice"
+                " fallback is enabled."
             )
         if not self._app_url:
             raise SMSDeliveryError(
@@ -310,9 +311,7 @@ class AtVoiceGateway:
 
         call_status = entries[0].get("status", "unknown")
         if call_status not in ("Queued", "Success"):
-            raise SMSDeliveryError(
-                f"AT Voice call not queued (status: {call_status})."
-            )
+            raise SMSDeliveryError(f"AT Voice call not queued (status: {call_status}).")
 
         logger.info("AT Voice OTP call queued (status: %s)", call_status)
 
@@ -338,9 +337,7 @@ class FallbackSMSGateway:
         try:
             self._primary.send_otp(phone_number, otp_code)
         except SMSDeliveryError as exc:
-            logger.warning(
-                "SMS gateway failed (%s); attempting voice fallback.", exc
-            )
+            logger.warning("SMS gateway failed (%s); attempting voice fallback.", exc)
             self._fallback.send_otp(phone_number, otp_code)
 
 
