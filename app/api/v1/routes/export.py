@@ -169,7 +169,9 @@ async def export_geojson(
     time_to: Optional[datetime] = Query(default=None),
     min_ai_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0),
     include_footprints: bool = Query(default=False),
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
+    current_user: dict = Depends(
+        require_role(Role.analyst, Role.responder, Role.admin)
+    ),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):
@@ -243,7 +245,9 @@ async def export_csv(
     time_from: Optional[datetime] = Query(default=None),
     time_to: Optional[datetime] = Query(default=None),
     min_ai_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0),
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
+    current_user: dict = Depends(
+        require_role(Role.analyst, Role.responder, Role.admin)
+    ),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):
@@ -316,7 +320,9 @@ async def export_shapefile(
     time_from: Optional[datetime] = Query(default=None),
     time_to: Optional[datetime] = Query(default=None),
     min_ai_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0),
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
+    current_user: dict = Depends(
+        require_role(Role.analyst, Role.responder, Role.admin)
+    ),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ):
@@ -384,7 +390,9 @@ async def export_shapefile(
 )
 async def get_export_job(
     job_id: str,
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
+    current_user: dict = Depends(
+        require_role(Role.analyst, Role.responder, Role.admin)
+    ),
     redis: Redis = Depends(get_redis),
 ) -> dict:
     job = await get_export_job_status(redis, job_id)

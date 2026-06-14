@@ -178,7 +178,9 @@ async def list_reports(
             "or omit for default priority-first ordering."
         ),
     ),
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
+    current_user: dict = Depends(
+        require_role(Role.analyst, Role.responder, Role.admin)
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedReports:
     """Return a paginated, filtered report list."""
@@ -265,7 +267,9 @@ async def merge_reports(
 )
 async def get_report_detail(
     report_id: UUID,
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
+    current_user: dict = Depends(
+        require_role(Role.analyst, Role.responder, Role.admin)
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> ReportDetailSchema:
     """Return full analyst report detail."""
@@ -360,7 +364,9 @@ async def transition_status(
 async def create_note(
     report_id: UUID,
     body: AnalystNoteCreateRequest,
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
+    current_user: dict = Depends(
+        require_role(Role.analyst, Role.responder, Role.admin)
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> AnalystNoteOut:
     """Create an analyst note on a report."""
@@ -659,7 +665,9 @@ async def _heartbeat_ticker() -> None:
     },
 )
 async def analyst_stream(
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
+    current_user: dict = Depends(
+        require_role(Role.analyst, Role.responder, Role.admin)
+    ),
     redis: Redis = Depends(get_redis),
 ) -> StreamingResponse:
     """Stream real-time analyst events via Server-Sent Events."""
