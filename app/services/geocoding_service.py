@@ -33,15 +33,6 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Geographic bounding box for Kenya (spec §7.4).
-# Queries returning coordinates outside this box are silently rejected.
-_KENYA_BBOX = {
-    "min_lng": 33.9,
-    "max_lng": 41.9,
-    "min_lat": -4.7,
-    "max_lat": 4.6,
-}
-
 Coordinates = Tuple[float, float]  # (lat, lng)
 
 
@@ -160,15 +151,16 @@ class NominatimGeocodingProvider:
         # This sleep runs inside the Celery GIS worker (a regular thread),
         # so blocking here does not affect the async FastAPI event loop.
         time.sleep(1.0)
+
+        params: dict = {"q": query, "format": "json", "limit": 1}
+        country_code = getattr(settings, "GEOCODING_COUNTRY_CODE", "").strip().lower()
+        if country_code:
+            params["countrycodes"] = country_code
+
         try:
             response = httpx.get(
                 _NOMINATIM_URL,
-                params={
-                    "q": query,
-                    "format": "json",
-                    "limit": 1,
-                    "countrycodes": "ke",  # Bias toward Kenya
-                },
+                params=params,
                 headers=_NOMINATIM_HEADERS,
                 timeout=self._timeout,
             )
@@ -189,16 +181,6 @@ class NominatimGeocodingProvider:
 
         lat = float(results[0]["lat"])
         lng = float(results[0]["lon"])
-
-        # Reject coordinates outside Kenya bounding box.
-        if not _within_kenya(lat, lng):
-            logger.warning(
-                "Nominatim result outside Kenya bounds"
-                " (lat=%.4f lng=%.4f) — discarded",
-                lat,
-                lng,
-            )
-            return None
 
         logger.debug("Nominatim geocoded %r → (%.4f, %.4f)", query[:50], lat, lng)
         return lat, lng
@@ -240,14 +222,15 @@ class GoogleGeocodingProvider:
         Raises:
             GeocodingError: On HTTP error, network failure, or API error status.
         """
+        params: dict = {"address": query, "key": self._api_key}
+        country_code = getattr(settings, "GEOCODING_COUNTRY_CODE", "").strip().upper()
+        if country_code:
+            params["components"] = f"country:{country_code}"
+
         try:
             response = httpx.get(
                 _GOOGLE_GEOCODING_URL,
-                params={
-                    "address": query,
-                    "key": self._api_key,
-                    "components": "country:KE",
-                },
+                params=params,
                 timeout=self._timeout,
             )
             response.raise_for_status()
@@ -273,29 +256,8 @@ class GoogleGeocodingProvider:
         lat = float(location["lat"])
         lng = float(location["lng"])
 
-        if not _within_kenya(lat, lng):
-            logger.warning(
-                "Google result outside Kenya bounds (lat=%.4f lng=%.4f) — discarded",
-                lat,
-                lng,
-            )
-            return None
-
         logger.debug("Google geocoded %r → (%.4f, %.4f)", query[:50], lat, lng)
         return lat, lng
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _within_kenya(lat: float, lng: float) -> bool:
-    """Return ``True`` if coordinates fall within the Kenya bounding box."""
-    return (
-        _KENYA_BBOX["min_lat"] <= lat <= _KENYA_BBOX["max_lat"]
-        and _KENYA_BBOX["min_lng"] <= lng <= _KENYA_BBOX["max_lng"]
-    )
 
 
 # ---------------------------------------------------------------------------
