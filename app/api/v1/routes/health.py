@@ -91,17 +91,20 @@ async def _check_storage() -> str:
         return "ok"
 
     try:
-        import aioboto3  # type: ignore[import]
+        import aiobotocore.session  # type: ignore[import]
 
-        session = aioboto3.Session(
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_REGION,
-        )
-        async with session.client(
-            "s3",
-            endpoint_url=settings.S3_ENDPOINT_URL or None,
-        ) as s3:
+        session = aiobotocore.session.get_session()
+        client_kwargs: dict = {
+            "region_name": settings.AWS_REGION or "us-east-1",
+        }
+        if settings.AWS_ACCESS_KEY_ID:
+            client_kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
+        if settings.AWS_SECRET_ACCESS_KEY:
+            client_kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY
+        if settings.S3_ENDPOINT_URL:
+            client_kwargs["endpoint_url"] = settings.S3_ENDPOINT_URL
+
+        async with session.create_client("s3", **client_kwargs) as s3:
             await s3.head_object(
                 Bucket=settings.S3_BUCKET_NAME,
                 Key="health/sentinel",
