@@ -37,6 +37,7 @@ from app.api.v1.routes.gis import router as gis_router
 from app.api.v1.routes.health import router as health_router
 from app.api.v1.routes.metrics import router as metrics_router
 from app.api.v1.routes.reports import router as reports_router
+from app.api.v1.routes.voice import router as voice_router
 from app.core.config import settings
 from app.core.dependencies import _async_session_factory, _engine  # noqa: WPS436
 from app.core.logging import configure_logging
@@ -168,6 +169,7 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 # can reach them without knowing the API version.
 app.include_router(health_router)
 app.include_router(metrics_router)
+app.include_router(voice_router)
 
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(analyst_auth_router, prefix="/api/v1")

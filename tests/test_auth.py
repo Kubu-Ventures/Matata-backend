@@ -504,6 +504,24 @@ class TestAfricasTalkingSMSGateway:
             mock_post.return_value = mock_response
             gw.send_otp(_PHONE, "123456")  # should not raise
 
+    def test_send_otp_raises_on_non_success_status(self):
+        from app.services.sms import AfricasTalkingSMSGateway, SMSDeliveryError
+
+        with patch("app.services.sms.settings") as mock_settings:
+            mock_settings.AFRICASTALKING_API_KEY = "key"
+            mock_settings.AFRICASTALKING_USERNAME = "user"
+            gw = AfricasTalkingSMSGateway()
+
+        with patch("httpx.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json.return_value = {
+                "SMSMessageData": {"Recipients": [{"status": "UserInBlacklist"}]}
+            }
+            mock_post.return_value = mock_response
+            with pytest.raises(SMSDeliveryError, match="UserInBlacklist"):
+                gw.send_otp(_PHONE, "123456")
+
 
 class TestGetSmsGateway:
     def test_console_gateway(self):
@@ -521,8 +539,25 @@ class TestGetSmsGateway:
             s.SMS_GATEWAY = "africastalking"
             s.AFRICASTALKING_API_KEY = "key"
             s.AFRICASTALKING_USERNAME = "user"
+            s.AFRICASTALKING_VOICE_ENABLED = False
             gw = get_sms_gateway()
         assert isinstance(gw, AfricasTalkingSMSGateway)
+
+    def test_africastalking_gateway_with_voice_fallback(self):
+        from app.services.sms import FallbackSMSGateway, get_sms_gateway
+
+        with patch("app.services.sms.settings") as s:
+            s.SMS_GATEWAY = "africastalking"
+            s.AFRICASTALKING_API_KEY = "key"
+            s.AFRICASTALKING_USERNAME = "user"
+            s.AFRICASTALKING_VOICE_ENABLED = True
+            s.AFRICASTALKING_VOICE_NUMBER = "+254711000000"
+            s.APP_PUBLIC_URL = "http://localhost:8000"
+            s.REDIS_URL = "redis://localhost:6379"
+            with patch("app.services.sms.sync_redis") as mock_redis:
+                mock_redis.from_url.return_value = MagicMock()
+                gw = get_sms_gateway()
+        assert isinstance(gw, FallbackSMSGateway)
 
     def test_unknown_gateway_raises(self):
         from app.services.sms import get_sms_gateway
@@ -531,6 +566,213 @@ class TestGetSmsGateway:
             s.SMS_GATEWAY = "twilio"
             with pytest.raises(ValueError):
                 get_sms_gateway()
+
+
+# ===========================================================================
+# AtVoiceGateway tests
+# ===========================================================================
+
+
+class TestAtVoiceGateway:
+    def _make_gateway(self, mock_settings, mock_redis_module):
+        mock_settings.AFRICASTALKING_API_KEY = "key"
+        mock_settings.AFRICASTALKING_USERNAME = "user"
+        mock_settings.AFRICASTALKING_VOICE_NUMBER = "+254711000000"
+        mock_settings.APP_PUBLIC_URL = "http://localhost:8000"
+        mock_settings.REDIS_URL = "redis://localhost:6379"
+        mock_redis_module.from_url.return_value = MagicMock()
+        from app.services.sms import AtVoiceGateway
+
+        return AtVoiceGateway()
+
+    def test_raises_if_voice_number_missing(self):
+        from app.services.sms import AtVoiceGateway, SMSDeliveryError
+
+        with patch("app.services.sms.settings") as s:
+            s.AFRICASTALKING_API_KEY = "key"
+            s.AFRICASTALKING_USERNAME = "user"
+            s.AFRICASTALKING_VOICE_NUMBER = ""
+            s.APP_PUBLIC_URL = "http://localhost:8000"
+            s.REDIS_URL = "redis://localhost:6379"
+            with patch("app.services.sms.sync_redis"):
+                with pytest.raises(
+                    SMSDeliveryError, match="AFRICASTALKING_VOICE_NUMBER"
+                ):
+                    AtVoiceGateway()
+
+    def test_raises_if_app_url_missing(self):
+        from app.services.sms import AtVoiceGateway, SMSDeliveryError
+
+        with patch("app.services.sms.settings") as s:
+            s.AFRICASTALKING_API_KEY = "key"
+            s.AFRICASTALKING_USERNAME = "user"
+            s.AFRICASTALKING_VOICE_NUMBER = "+254711000000"
+            s.APP_PUBLIC_URL = ""
+            s.REDIS_URL = "redis://localhost:6379"
+            with patch("app.services.sms.sync_redis"):
+                with pytest.raises(SMSDeliveryError, match="APP_PUBLIC_URL"):
+                    AtVoiceGateway()
+
+    def test_send_otp_queues_call(self):
+        import httpx  # noqa: F401
+
+        with patch("app.services.sms.settings") as s:
+            with patch("app.services.sms.sync_redis") as mock_redis_mod:
+                gw = self._make_gateway(s, mock_redis_mod)
+                # Capture the mock instance after _make_gateway sets it
+                mock_redis_inst = mock_redis_mod.from_url.return_value
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"entries": [{"status": "Queued"}]}
+
+        with patch("httpx.post", return_value=mock_resp):
+            gw.send_otp("+254700000000", "123456")
+
+        mock_redis_inst.setex.assert_called_once()
+        key_arg = mock_redis_inst.setex.call_args[0][0]
+        assert key_arg.startswith("voice_otp:")
+
+    def test_send_otp_raises_on_http_error(self):
+        import httpx
+
+        from app.services.sms import SMSDeliveryError
+
+        with patch("app.services.sms.settings") as s:
+            with patch("app.services.sms.sync_redis") as mock_redis_mod:
+                gw = self._make_gateway(s, mock_redis_mod)
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "error",
+            request=MagicMock(),
+            response=MagicMock(status_code=400, text="bad"),
+        )
+        with patch("httpx.post", return_value=mock_resp):
+            with pytest.raises(SMSDeliveryError, match="HTTP 400"):
+                gw.send_otp("+254700000000", "123456")
+
+    def test_send_otp_raises_on_non_queued_status(self):
+        from app.services.sms import SMSDeliveryError
+
+        with patch("app.services.sms.settings") as s:
+            with patch("app.services.sms.sync_redis") as mock_redis_mod:
+                gw = self._make_gateway(s, mock_redis_mod)
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"entries": [{"status": "Failed"}]}
+
+        with patch("httpx.post", return_value=mock_resp):
+            with pytest.raises(SMSDeliveryError, match="Failed"):
+                gw.send_otp("+254700000000", "123456")
+
+    def test_send_otp_raises_on_empty_entries(self):
+        from app.services.sms import SMSDeliveryError
+
+        with patch("app.services.sms.settings") as s:
+            with patch("app.services.sms.sync_redis") as mock_redis_mod:
+                gw = self._make_gateway(s, mock_redis_mod)
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"entries": []}
+
+        with patch("httpx.post", return_value=mock_resp):
+            with pytest.raises(SMSDeliveryError, match="no call entries"):
+                gw.send_otp("+254700000000", "123456")
+
+
+# ===========================================================================
+# FallbackSMSGateway tests
+# ===========================================================================
+
+
+class TestFallbackSMSGateway:
+    def test_uses_primary_when_it_succeeds(self):
+        from app.services.sms import FallbackSMSGateway
+
+        primary = MagicMock()
+        fallback = MagicMock()
+        gw = FallbackSMSGateway(primary=primary, fallback=fallback)
+        gw.send_otp("+254700000000", "123456")
+
+        primary.send_otp.assert_called_once_with("+254700000000", "123456")
+        fallback.send_otp.assert_not_called()
+
+    def test_falls_back_when_primary_raises(self):
+        from app.services.sms import FallbackSMSGateway, SMSDeliveryError
+
+        primary = MagicMock()
+        primary.send_otp.side_effect = SMSDeliveryError("carrier rejected")
+        fallback = MagicMock()
+        gw = FallbackSMSGateway(primary=primary, fallback=fallback)
+        gw.send_otp("+254700000000", "123456")
+
+        primary.send_otp.assert_called_once()
+        fallback.send_otp.assert_called_once_with("+254700000000", "123456")
+
+    def test_raises_if_both_fail(self):
+        from app.services.sms import FallbackSMSGateway, SMSDeliveryError
+
+        primary = MagicMock()
+        primary.send_otp.side_effect = SMSDeliveryError("sms failed")
+        fallback = MagicMock()
+        fallback.send_otp.side_effect = SMSDeliveryError("voice failed")
+        gw = FallbackSMSGateway(primary=primary, fallback=fallback)
+
+        with pytest.raises(SMSDeliveryError, match="voice failed"):
+            gw.send_otp("+254700000000", "123456")
+
+
+# ===========================================================================
+# Voice OTP callback route tests
+# ===========================================================================
+
+
+class TestVoiceOtpCallback:
+    def _make_app(self):
+        from fastapi import FastAPI
+
+        from app.api.v1.routes.voice import router
+
+        app = FastAPI()
+        app.include_router(router)
+        return app
+
+    def test_returns_tts_actions_when_otp_found(self):
+        from starlette.testclient import TestClient
+
+        app = self._make_app()
+        with TestClient(app) as client:
+            with patch("app.api.v1.routes.voice.sync_redis") as mock_redis_mod:
+                mock_r = MagicMock()
+                mock_r.get.return_value = "483920"
+                mock_redis_mod.from_url.return_value = mock_r
+                with patch("app.api.v1.routes.voice.settings") as s:
+                    s.REDIS_URL = "redis://localhost:6379"
+                    resp = client.get("/voice/otp/test-session-id")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "actions" in body
+        assert body["actions"][0]["say"]["text"].startswith("Hello")
+        assert "4" in body["actions"][0]["say"]["text"]
+
+    def test_returns_404_when_session_expired(self):
+        from starlette.testclient import TestClient
+
+        app = self._make_app()
+        with TestClient(app) as client:
+            with patch("app.api.v1.routes.voice.sync_redis") as mock_redis_mod:
+                mock_r = MagicMock()
+                mock_r.get.return_value = None
+                mock_redis_mod.from_url.return_value = mock_r
+                with patch("app.api.v1.routes.voice.settings") as s:
+                    s.REDIS_URL = "redis://localhost:6379"
+                    resp = client.get("/voice/otp/expired-session-id")
+
+        assert resp.status_code == 404
 
 
 # ===========================================================================
