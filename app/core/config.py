@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     SMS_GATEWAY: str = "console"  # console | africastalking
     AFRICASTALKING_API_KEY: str = ""
     AFRICASTALKING_USERNAME: str = ""
+    # Optional sender ID or shortcode registered with your mobile network.
+    # Required for Kenya (Safaricom rejects unregistered alphanumeric senders).
+    # Set to your AT-assigned shortcode (e.g. "20880") or registered alphanumeric ID.
+    # Leave empty to use Africa's Talking's default shared sender.
+    AFRICASTALKING_SENDER_ID: str = ""
 
     # ── Email delivery ────────────────────────────────────────────────────────
     # EMAIL_PROVIDER=console  — prints to stdout; no network call (default, dev/CI).

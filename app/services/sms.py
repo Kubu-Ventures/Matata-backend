@@ -138,6 +138,15 @@ class AfricasTalkingSMSGateway:
             f"Your CrisisMap verification code is: {otp_code}. " "Valid for 5 minutes."
         )
 
+        payload: dict = {
+            "username": self._username,
+            "to": phone_number,
+            "message": message,
+        }
+        sender_id = settings.AFRICASTALKING_SENDER_ID
+        if sender_id:
+            payload["from"] = sender_id
+
         try:
             response = httpx.post(
                 _AT_SMS_URL,
@@ -146,11 +155,7 @@ class AfricasTalkingSMSGateway:
                     "Accept": "application/json",
                     "Content-Type": "application/x-www-form-urlencoded",
                 },
-                data={
-                    "username": self._username,
-                    "to": phone_number,
-                    "message": message,
-                },
+                data=payload,
                 timeout=10.0,
             )
             response.raise_for_status()
@@ -163,9 +168,16 @@ class AfricasTalkingSMSGateway:
                     "Africa's Talking returned no recipients in response."
                 )
 
-            # Log delivery status without the phone number.
+            # AT reports per-recipient status; anything other than "Success" means
+            # the carrier rejected or queued the message — treat it as a failure
+            # so the caller gets a 503 rather than a silent no-op.
             status = recipients[0].get("status", "unknown")
             logger.info("Africa's Talking OTP dispatch status: %s", status)
+            if status != "Success":
+                raise SMSDeliveryError(
+                    f"Africa's Talking rejected the message (status: {status}). "
+                    "Check the AT dashboard for details."
+                )
 
         except httpx.HTTPStatusError as exc:
             logger.error(
