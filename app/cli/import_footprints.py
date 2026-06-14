@@ -148,8 +148,8 @@ _UPSERT_SQL = text("""
         current_severity
     )
     VALUES (
-        ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326),
-        ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326)),
+        ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326)),
+        ST_Centroid(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326))),
         'microsoft_africa'::building_source_enum,
         :external_id,
         'none'::damage_severity_enum
@@ -239,7 +239,22 @@ def _run(source: str, batch_size: int, dry_run: bool) -> int:
 
         for feature in _iter_features(source):
             geometry = feature.get("geometry") or {}
-            if geometry.get("type") != "Polygon":
+            geom_type = geometry.get("type")
+
+            if geom_type == "MultiPolygon":
+                # Extract the sub-polygon with the most exterior-ring vertices
+                # (a reliable proxy for largest area without PostGIS round-trips).
+                # Building complexes recorded as MultiPolygon (e.g. hospital
+                # campuses) are retained rather than silently discarded.
+                polygons = geometry.get("coordinates") or []
+                if not polygons:
+                    counters["skipped"] += 1
+                    continue
+                largest = max(polygons, key=lambda p: len(p[0]) if p else 0)
+                geometry = {"type": "Polygon", "coordinates": largest}
+                geom_type = "Polygon"
+
+            if geom_type != "Polygon":
                 counters["skipped"] += 1
                 continue
 
@@ -271,6 +286,11 @@ def _run(source: str, batch_size: int, dry_run: bool) -> int:
         if not dry_run:
             logger.info("Verifying GIST spatial indexes…")
             _verify_indexes(db)
+            # Update planner statistics so PostGIS GIST indexes are used
+            # efficiently after a bulk load.
+            logger.info("Running ANALYZE on building table…")
+            db.execute(text("ANALYZE building"))
+            db.commit()
 
     except Exception as exc:  # noqa: BLE001
         logger.error("Import failed: %s", exc, exc_info=True)

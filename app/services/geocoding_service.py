@@ -24,6 +24,7 @@ operationally required.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional, Protocol, Tuple, runtime_checkable
 
 import httpx
@@ -155,6 +156,10 @@ class NominatimGeocodingProvider:
         Raises:
             GeocodingError: On HTTP error or network failure.
         """
+        # Nominatim usage policy: maximum 1 request per second.
+        # This sleep runs inside the Celery GIS worker (a regular thread),
+        # so blocking here does not affect the async FastAPI event loop.
+        time.sleep(1.0)
         try:
             response = httpx.get(
                 _NOMINATIM_URL,
