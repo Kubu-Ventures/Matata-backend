@@ -178,7 +178,7 @@ async def list_reports(
             "or omit for default priority-first ordering."
         ),
     ),
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder)),
+    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedReports:
     """Return a paginated, filtered report list."""
@@ -225,7 +225,7 @@ async def list_reports(
 )
 async def merge_reports(
     body: MergeRequest,
-    current_user: dict = Depends(require_role(Role.analyst)),
+    current_user: dict = Depends(require_role(Role.analyst, Role.admin)),
     db: AsyncSession = Depends(get_db),
 ) -> MergeResponse:
     """Merge duplicate reports into a primary record."""
@@ -265,7 +265,7 @@ async def merge_reports(
 )
 async def get_report_detail(
     report_id: UUID,
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder)),
+    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
     db: AsyncSession = Depends(get_db),
 ) -> ReportDetailSchema:
     """Return full analyst report detail."""
@@ -304,7 +304,7 @@ async def get_report_detail(
 async def transition_status(
     report_id: UUID,
     body: StatusTransitionRequest,
-    current_user: dict = Depends(require_role(Role.analyst)),
+    current_user: dict = Depends(require_role(Role.analyst, Role.admin)),
     db: AsyncSession = Depends(get_db),
 ) -> StatusTransitionResponse:
     """Apply a status transition with audit logging and trust-tier side-effects."""
@@ -360,7 +360,7 @@ async def transition_status(
 async def create_note(
     report_id: UUID,
     body: AnalystNoteCreateRequest,
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder)),
+    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
     db: AsyncSession = Depends(get_db),
 ) -> AnalystNoteOut:
     """Create an analyst note on a report."""
@@ -401,7 +401,7 @@ async def create_note(
 async def set_severity_override(
     report_id: UUID,
     body: SeverityOverrideRequest,
-    current_user: dict = Depends(require_role(Role.analyst)),
+    current_user: dict = Depends(require_role(Role.analyst, Role.admin)),
     db: AsyncSession = Depends(get_db),
 ) -> SeverityOverrideResponse:
     """Record an analyst's corrected severity assessment."""
@@ -440,7 +440,7 @@ async def set_severity_override(
 )
 async def confirm_merge(
     report_id: UUID,
-    current_user: dict = Depends(require_role(Role.analyst)),
+    current_user: dict = Depends(require_role(Role.analyst, Role.admin)),
     db: AsyncSession = Depends(get_db),
 ) -> ConfirmMergeResponse:
     """Confirm and execute a pending duplicate merge."""
@@ -480,7 +480,7 @@ async def confirm_merge(
 )
 async def reject_merge(
     report_id: UUID,
-    current_user: dict = Depends(require_role(Role.analyst)),
+    current_user: dict = Depends(require_role(Role.analyst, Role.admin)),
     db: AsyncSession = Depends(get_db),
 ) -> RejectMergeResponse:
     """Reject a pending duplicate merge and restore the report to pending."""
@@ -521,7 +521,7 @@ async def reject_merge(
     ),
 )
 async def ai_accuracy(
-    current_user: dict = Depends(require_role(Role.analyst)),
+    current_user: dict = Depends(require_role(Role.analyst, Role.admin)),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> AIAccuracyResponse:
@@ -659,7 +659,7 @@ async def _heartbeat_ticker() -> None:
     },
 )
 async def analyst_stream(
-    current_user: dict = Depends(require_role(Role.analyst, Role.responder)),
+    current_user: dict = Depends(require_role(Role.analyst, Role.responder, Role.admin)),
     redis: Redis = Depends(get_redis),
 ) -> StreamingResponse:
     """Stream real-time analyst events via Server-Sent Events."""
