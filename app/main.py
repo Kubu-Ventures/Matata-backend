@@ -35,9 +35,9 @@ from app.api.v1.routes.auth import router as auth_router
 from app.api.v1.routes.export import router as export_router
 from app.api.v1.routes.gis import router as gis_router
 from app.api.v1.routes.health import router as health_router
-from app.api.v1.routes.voice import router as voice_router
 from app.api.v1.routes.metrics import router as metrics_router
 from app.api.v1.routes.reports import router as reports_router
+from app.api.v1.routes.voice import router as voice_router
 from app.core.config import settings
 from app.core.dependencies import _async_session_factory, _engine  # noqa: WPS436
 from app.core.logging import configure_logging
