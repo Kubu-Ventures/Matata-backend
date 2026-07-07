@@ -159,6 +159,20 @@ _OTP_TTL_SECONDS = 300  # 5 minutes
 _OTP_MAX_ATTEMPTS = 5
 _OTP_LOCKOUT_SECONDS = 900  # 15 minutes
 
+# ---------------------------------------------------------------------------
+# Test credentials (non-production only)
+# ---------------------------------------------------------------------------
+# When the configured SMS_GATEWAY can't actually deliver a message (e.g. no
+# Africa's Talking credentials yet, or SMS_GATEWAY=console with no log
+# access), these fixed phone/OTP pairs let a tester complete the real OTP
+# login UI without receiving a real SMS. Strictly disabled when
+# ENVIRONMENT=production — see the guard in send_otp() below.
+TEST_PHONE_OTPS: dict[str, str] = {
+    "+10000000001": "111111",  # reporter-tier test login
+    "+10000000002": "222222",  # analyst-tier test login (must be provisioned
+    # in analyst_accounts — see scripts/provision_test_analyst.py)
+}
+
 
 def _generate_otp() -> str:
     """Return a cryptographically random 6-digit OTP string.
@@ -276,6 +290,19 @@ async def send_otp(phone_number: str, redis: Redis) -> None:
         SMSDeliveryError: If the SMS gateway fails to dispatch the message.
     """
     id_hash = hash_phone(phone_number)
+
+    # Test credentials — bypass the real gateway entirely for a fixed set of
+    # phone numbers outside production. See TEST_PHONE_OTPS above.
+    if settings.ENVIRONMENT != "production" and phone_number in TEST_PHONE_OTPS:
+        otp_code = TEST_PHONE_OTPS[phone_number]
+        await redis.set(_otp_key(id_hash), otp_code, ex=_OTP_TTL_SECONDS)
+        logger.info(
+            "Test OTP issued for a configured test phone number "
+            "(identifier: %s…) — non-production only.",
+            id_hash[:8],
+        )
+        return
+
     otp_code = _generate_otp()
 
     # Store the OTP in Redis with a 5-minute TTL.
