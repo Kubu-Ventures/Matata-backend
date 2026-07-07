@@ -739,6 +739,11 @@ async def get_nearby_reports(
 
     output = []
     for rpt in reports:
+        # rpt.lat/lng are Optional[float] on the model, but the BETWEEN
+        # filter above excludes NULL rows at the SQL level (BETWEEN against
+        # NULL evaluates to NULL, which WHERE treats as false) — this can
+        # never be None here.
+        assert rpt.lat is not None and rpt.lng is not None
         dist = _haversine_m(lat, lng, rpt.lat, rpt.lng)
         if dist > radius_m:
             continue  # Bounding-box overshoot — exclude.

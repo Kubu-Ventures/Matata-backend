@@ -1,3 +1,16 @@
 # OS-level CVEs pending upstream fix in base image
 CVE-2026-4878
 CVE-2026-29111
+
+# GDAL 3.10.3 (Debian trixie's apt-provided version — no newer version is
+# available in the base image's repo; the fix (3.13.1) would require
+# building GDAL from source or switching base images entirely). Stack
+# buffer overflow in the netCDF driver's scanForGeometryContainers
+# (frmts/netcdf/netcdfsg.cpp), triggered only by parsing a crafted .nc
+# file. This app never reads NetCDF and never opens arbitrary/untrusted
+# files through GDAL — the only usage (app/services/export_service.py) is
+# writing outbound Shapefile exports via the ESRI Shapefile OGR driver,
+# and app/cli/import_footprints.py reads operator-supplied Shapefile/
+# GeoJSON footprint data, not network-facing input. Revisit when Debian
+# trixie or a backport channel ships a fixed gdal-bin package.
+CVE-2026-49014
