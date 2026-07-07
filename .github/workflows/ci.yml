@@ -89,7 +89,17 @@ jobs:
         run: pip install pip-audit safety
 
       - name: pip-audit vulnerability scan
-        run: pip-audit -r requirements.txt
+        # PYSEC-2026-1325 (ecdsa, all versions through 0.19.2 — no newer
+        # release exists): a Minerva timing side-channel in
+        # ecdsa.SigningKey.sign_digest(). Upstream has explicitly declared
+        # side-channel attacks out of scope with no planned fix. Signature
+        # *verification* is unaffected. ecdsa is a transitive dependency
+        # here (via python-jose) and is never used directly for signing —
+        # JWT_ALGORITHM defaults to HS256 (HMAC, not ECDSA) — so this
+        # exposure doesn't apply to this app's own token issuance. If ES256
+        # signing (not just verification of externally-issued tokens) is
+        # ever added, revisit this ignore.
+        run: pip-audit -r requirements.txt --ignore-vuln PYSEC-2026-1325
 
       - name: Safety dependency check
         run: safety check -r requirements.txt --full-report --ignore-unpinned-requirements
