@@ -73,8 +73,11 @@ class Report(TimestampMixin, Base):
     )
 
     # ── Location ─────────────────────────────────────────────────────────────
-    lat: Mapped[float] = mapped_column(sa.Float, nullable=False)
-    lng: Mapped[float] = mapped_column(sa.Float, nullable=False)
+    # Nullable: a report may carry a landmark_description instead of GPS
+    # coordinates (see ReportCreateSchema.require_location) when GPS is
+    # unavailable to the reporter.
+    lat: Mapped[Optional[float]] = mapped_column(sa.Float, nullable=True)
+    lng: Mapped[Optional[float]] = mapped_column(sa.Float, nullable=True)
     gps_accuracy_m: Mapped[Optional[float]] = mapped_column(sa.Float, nullable=True)
     landmark_description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
 
