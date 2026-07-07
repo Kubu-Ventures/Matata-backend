@@ -115,7 +115,8 @@ _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 # User-Agent identifying the application.
 _NOMINATIM_HEADERS = {
     "User-Agent": (
-        "CrisisMap/1.0 (Matata crisis-reporting platform;" " contact: crisismap@example.com)"
+        "CrisisMap/1.0 (Matata crisis-reporting platform; "
+        "contact: crisismap@example.com)"
     ),
     "Accept-Language": "en",
 }
