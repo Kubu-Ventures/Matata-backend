@@ -644,7 +644,10 @@ async def _sse_event_generator(
         try:
             await pubsub.unsubscribe(analyst_service.ANALYST_EVENTS_CHANNEL)
         except Exception:
-            logger.debug("pubsub.unsubscribe() failed during SSE teardown", exc_info=True)
+            logger.debug(
+                "pubsub.unsubscribe() failed during SSE teardown",
+                exc_info=True,
+            )
         try:
             await pubsub.aclose()
         except Exception:
