@@ -557,6 +557,11 @@ _SSE_HEARTBEAT_INTERVAL = 30  # seconds
 _SSE_POLL_TIMEOUT = 1.0  # seconds — how long each get_message() call blocks
 
 
+async def _heartbeat_ticker() -> None:
+    """Sleep for one heartbeat interval (test compatibility helper)."""
+    await asyncio.sleep(_SSE_HEARTBEAT_INTERVAL)
+
+
 async def _sse_event_generator(
     redis: Redis,
     current_user: dict,
