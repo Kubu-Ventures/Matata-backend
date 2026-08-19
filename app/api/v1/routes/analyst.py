@@ -590,7 +590,7 @@ async def _sse_event_generator(
 
     logger.info("SSE client connected (sub: %s…)", current_user.get("sub", "")[:8])
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     last_heartbeat = loop.time()
 
     try:
