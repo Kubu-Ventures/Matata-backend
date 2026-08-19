@@ -33,6 +33,20 @@ Pub/Sub channel and streams events to connected clients using Server-Sent
 Events (text/event-stream).  A heartbeat comment is emitted every 30 seconds
 to keep the connection alive through proxies.  The handler uses ``asyncio``
 and ``aioredis`` (redis-py async) so the event loop is never blocked.
+
+Implementation note (fixed 2026-08-19)
+---------------------------------------
+The event loop for ``_sse_event_generator`` previously raced
+``pubsub.get_message()`` against a heartbeat timer using two separate
+``asyncio.create_task()`` calls inside ``asyncio.wait()``. When the client
+disconnected, ``CancelledError`` propagated through ``asyncio.wait()`` (which
+does NOT cancel the tasks it was waiting on), leaving an orphaned
+``get_message()`` task running against a pubsub connection that the
+``finally`` block then closed out from under it — producing recurring
+"Task exception was never retrieved" / ``ConnectionError`` warnings in the
+logs. The generator now polls ``pubsub.get_message(timeout=1.0)`` directly
+in a single coroutine and tracks heartbeat timing with a monotonic clock, so
+no detached background task can ever outlive the generator.
 """
 
 from __future__ import annotations
@@ -540,6 +554,12 @@ async def ai_accuracy(
 # ---------------------------------------------------------------------------
 
 _SSE_HEARTBEAT_INTERVAL = 30  # seconds
+_SSE_POLL_TIMEOUT = 1.0  # seconds — how long each get_message() call blocks
+
+
+async def _heartbeat_ticker() -> None:
+    """Sleep for one heartbeat interval (test compatibility helper)."""
+    await asyncio.sleep(_SSE_HEARTBEAT_INTERVAL)
 
 
 async def _sse_event_generator(
@@ -552,7 +572,11 @@ async def _sse_event_generator(
     A heartbeat comment (```: heartbeat\\n\\n``) is emitted every 30 seconds
     to keep the connection alive through reverse proxies.
 
-    Uses ``asyncio`` throughout; the event loop is never blocked.
+    Uses ``asyncio`` throughout; the event loop is never blocked. This
+    implementation polls ``pubsub.get_message(timeout=...)`` directly in a
+    single coroutine (no auxiliary ``asyncio.create_task``/``asyncio.wait``
+    race) so that a client disconnect can never leave an orphaned task
+    holding a reference to a pubsub connection that gets closed elsewhere.
 
     Args:
         redis:        Async Redis client (connection re-used from dependency).
@@ -566,44 +590,21 @@ async def _sse_event_generator(
 
     logger.info("SSE client connected (sub: %s…)", current_user.get("sub", "")[:8])
 
+    loop = asyncio.get_running_loop()
+    last_heartbeat = loop.time()
+
     try:
-        heartbeat_task = asyncio.create_task(_heartbeat_ticker())
-
         while True:
-            # Race: next message vs next heartbeat tick
-            message_task = asyncio.create_task(
-                pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-            )
-            done, pending = await asyncio.wait(
-                {message_task, heartbeat_task},
-                return_when=asyncio.FIRST_COMPLETED,
+            # Blocks up to _SSE_POLL_TIMEOUT seconds waiting for a message,
+            # then returns None if nothing arrived — no separate task needed.
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=_SSE_POLL_TIMEOUT
             )
 
-            if heartbeat_task in done:
+            now = loop.time()
+            if now - last_heartbeat >= _SSE_HEARTBEAT_INTERVAL:
                 yield ": heartbeat\n\n"
-                heartbeat_task = asyncio.create_task(_heartbeat_ticker())
-                # Cancel the pending message task only if it isn't done
-                if message_task in pending:
-                    message_task.cancel()
-                    try:
-                        await message_task
-                    except asyncio.CancelledError:
-                        pass
-                continue
-
-            # message_task is done
-            if heartbeat_task in pending:
-                heartbeat_task.cancel()
-                try:
-                    await heartbeat_task
-                except asyncio.CancelledError:
-                    pass
-                heartbeat_task = asyncio.create_task(_heartbeat_ticker())
-
-            try:
-                message = message_task.result()
-            except Exception:
-                message = None
+                last_heartbeat = now
 
             if message and message.get("type") == "message":
                 raw_data = message.get("data", "")
@@ -636,14 +637,26 @@ async def _sse_event_generator(
             "SSE client disconnected (sub: %s…)",
             current_user.get("sub", "")[:8],
         )
+        # Re-raise so the ASGI server sees the task as properly cancelled
+        # rather than swallowed — required for clean StreamingResponse teardown.
+        raise
     finally:
-        await pubsub.unsubscribe(analyst_service.ANALYST_EVENTS_CHANNEL)
-        await pubsub.aclose()
-
-
-async def _heartbeat_ticker() -> None:
-    """Coroutine that resolves after ``_SSE_HEARTBEAT_INTERVAL`` seconds."""
-    await asyncio.sleep(_SSE_HEARTBEAT_INTERVAL)
+        # Best-effort cleanup: the underlying connection may already be dead
+        # (e.g. Redis closed it, or the client vanished mid-unsubscribe), in
+        # which case unsubscribe()/aclose() themselves can raise. Swallow
+        # that here rather than letting it surface as another unretrieved
+        # exception — the pubsub object is being discarded regardless.
+        try:
+            await pubsub.unsubscribe(analyst_service.ANALYST_EVENTS_CHANNEL)
+        except Exception:
+            logger.debug(
+                "pubsub.unsubscribe() failed during SSE teardown",
+                exc_info=True,
+            )
+        try:
+            await pubsub.aclose()
+        except Exception:
+            logger.debug("pubsub.aclose() failed during SSE teardown", exc_info=True)
 
 
 @analyst_router.get(
