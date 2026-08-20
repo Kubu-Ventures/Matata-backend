@@ -32,7 +32,7 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from redis.asyncio import Redis
-
+from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 # Redis Stream key constants — centralised here so all code uses the same names.
@@ -75,38 +75,17 @@ class QueueService(Protocol):
 
 
 class RedisQueueService:
-    """Publishes jobs to Redis Streams using the provided async Redis client.
-
-    The caller is responsible for the Redis connection lifecycle; this class
-    holds a reference to the client but does not open or close it.
-
-    Args:
-        redis: An async Redis client (``redis.asyncio.Redis``).
-    """
-
-    def __init__(self, redis: Redis) -> None:
-        self._redis = redis
+    """Publishes jobs to Celery using Redis as the broker."""
 
     async def publish_gis_job(self, report_id: UUID) -> None:
-        """Publish a GIS footprint-matching job to the Redis stream.
-
-        Args:
-            report_id: UUID of the Report to be processed.
-
-        Notes:
-            Errors are caught and logged rather than re-raised.  A failed
-            publish does not abort the HTTP response — the GIS worker is
-            resilient and can be re-triggered via a management command.
-        """
         try:
-            await self._redis.xadd(
-                _STREAM_GIS,
-                {"report_id": str(report_id)},
-                maxlen=_STREAM_MAXLEN,
-                approximate=True,
+            celery_app.send_task(
+                "app.workers.gis_tasks.match_building",
+                args=[str(report_id)],
+                queue="gis",
             )
             logger.info("GIS job published for report %s", report_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
                 "Failed to publish GIS job for report %s: %s",
                 report_id,
@@ -114,29 +93,19 @@ class RedisQueueService:
             )
 
     async def publish_ai_job(self, report_id: UUID) -> None:
-        """Publish an AI classification job to the Redis stream.
-
-        Args:
-            report_id: UUID of the Report to be processed.
-
-        Notes:
-            Same resilience semantics as ``publish_gis_job``.
-        """
         try:
-            await self._redis.xadd(
-                _STREAM_AI,
-                {"report_id": str(report_id)},
-                maxlen=_STREAM_MAXLEN,
-                approximate=True,
+            celery_app.send_task(
+                "app.workers.ai_tasks.process_report_image",
+                args=[str(report_id)],
+                queue="ai",
             )
             logger.info("AI job published for report %s", report_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
                 "Failed to publish AI job for report %s: %s",
                 report_id,
                 type(exc).__name__,
             )
-
 
 # ---------------------------------------------------------------------------
 # MockQueueService — unit tests

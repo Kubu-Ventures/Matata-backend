@@ -91,3 +91,7 @@ docker-data/
 *.db__pycache__/
 *.pyc
 *.pyo
+
+buildings_raw.json
+footprints.geojson
+app/core/config.py

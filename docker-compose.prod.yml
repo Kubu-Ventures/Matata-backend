@@ -86,7 +86,7 @@ services:
     environment:
       LT_DISABLE_WEB_UI: "true"
       LT_SUGGESTIONS: "false"
-      LT_LOAD_ONLY: "en,ar,fr,sw,so,ha,yo,zu,xh,st,pt,es,de,hi,bn,id,ms,tr,vi,uk,pl,ln,rw,am,ti,om"
+      LT_LOAD_ONLY: "en,fr,es,de,pt,ar"
     volumes:
       - libretranslate_data:/home/libretranslate/.local/share/argos-translate
     healthcheck:
@@ -134,7 +134,7 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      test: ["CMD-SHELL", "ollama list || exit 1"]
       interval: 30s
       timeout: 15s
       retries: 10

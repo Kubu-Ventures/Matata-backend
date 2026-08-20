@@ -377,7 +377,7 @@ async def create_report(
     # Resolve injectable dependencies (factory defaults used in production).
     _moderation = moderation_provider or get_moderation_provider()
     _storage = storage_service or get_storage_service()
-    _queue: QueueService = queue_service or RedisQueueService(redis)
+    _queue: QueueService = queue_service or RedisQueueService()
 
     photo_url: Optional[str] = None
     photo_status = PhotoStatus.pending
