@@ -50,6 +50,15 @@ Every uploaded image is stored under:
 
 The original filename is **never** used — this prevents path traversal attacks,
 filename enumeration, and metadata leakage.
+
+Reading images back
+--------------------
+``report.photo_url`` holds this object *key* (e.g.
+``reports/<id>/<uuid>.jpg``) — it is NOT an HTTP(S) URL.  Any caller that
+needs the raw image bytes (e.g. the AI Celery worker) MUST go through
+``StorageService.download_image()`` rather than treating the stored value as
+a fetchable URL.  Passing it directly to an HTTP client will raise a protocol
+error, since there is no scheme (``http://`` / ``https://``) present.
 """
 
 from __future__ import annotations
@@ -100,6 +109,23 @@ class StorageService(Protocol):
 
         Raises:
             StorageError: If the upload fails.
+        """
+        ...  # pragma: no cover
+
+    async def download_image(self, object_key: str) -> bytes:
+        """Return the raw bytes stored under *object_key*.
+
+        Args:
+            object_key: Full object key as returned by ``upload_image``
+                       (e.g. ``reports/<report_id>/<uuid>.jpg``). This is a
+                       storage key, not an HTTP URL — do not pass it to an
+                       HTTP client directly.
+
+        Returns:
+            Raw image bytes.
+
+        Raises:
+            StorageError: If the object does not exist or the read fails.
         """
         ...  # pragma: no cover
 
@@ -154,6 +180,20 @@ class MockStorageService:
             "MockStorageService: stored %d bytes at %s", len(image_bytes), object_key
         )
         return object_key
+
+    async def download_image(self, object_key: str) -> bytes:
+        """Return the in-memory bytes for *object_key*.
+
+        Raises:
+            StorageError: If *object_key* is not present in the store.
+        """
+        data = self.store.get(object_key)
+        if data is None:
+            raise StorageError(f"No such object: {object_key!r}")
+        logger.debug(
+            "MockStorageService: read %d bytes from %s", len(data), object_key
+        )
+        return data
 
     async def delete_image(self, object_key: str) -> None:
         """Remove key from the in-memory store (no-op if absent)."""
@@ -264,6 +304,50 @@ class S3StorageService:
 
         logger.info("Uploaded image to storage key: %s", object_key)
         return object_key
+
+    async def download_image(self, object_key: str) -> bytes:
+        """Download and return the raw bytes stored at *object_key*.
+
+        Args:
+            object_key: Full object key (``reports/<report_id>/<uuid>.jpg``).
+
+        Returns:
+            Raw image bytes.
+
+        Raises:
+            StorageError: If the object is missing or the request fails for
+                         any other reason (network, credentials, etc.).
+        """
+        try:
+            import aiobotocore.session  # type: ignore[import]
+        except ImportError as exc:
+            raise StorageError(
+                "aiobotocore is required for STORAGE_BACKEND=s3. "
+                "Install it with: pip install aiobotocore"
+            ) from exc
+
+        session = aiobotocore.session.get_session()
+        try:
+            async with session.create_client("s3", **self._client_kwargs()) as client:
+                response = await client.get_object(
+                    Bucket=settings.S3_BUCKET_NAME,
+                    Key=object_key,
+                )
+                async with response["Body"] as stream:
+                    body = await stream.read()
+        except Exception as exc:
+            exc_name = type(exc).__name__
+            logger.error(
+                "S3 download error for key %s: %s", object_key, exc_name
+            )
+            raise StorageError(
+                f"Object storage download failed: {exc_name}"
+            ) from exc
+
+        logger.debug(
+            "Downloaded %d bytes from storage key: %s", len(body), object_key
+        )
+        return body
 
     async def delete_image(self, object_key: str) -> None:
         """Delete *object_key* from S3-compatible storage.

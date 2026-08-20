@@ -97,6 +97,22 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+  celery-duplicate:
+    build:
+      context: .
+      target: development
+    volumes:
+      - .:/app
+    command: >
+      celery -A app.workers.celery_app worker
+      -Q duplicate --concurrency 2 --loglevel info
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   celery-notifications:
     build:
