@@ -31,7 +31,6 @@ import logging
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from redis.asyncio import Redis
 from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
