@@ -16,6 +16,8 @@ services:
         condition: service_healthy
       mailpit:
         condition: service_started
+      minio:
+        condition: service_healthy
     command: >
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
@@ -47,6 +49,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 60s
+
   minio:
     image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
@@ -75,7 +78,8 @@ services:
       mc alias set local http://minio:9000 minioadmin minioadmin &&
       mc mb -p local/crisismap &&
       exit 0
-      "    
+      "
+
   # ── Mailpit — open-source local SMTP + web UI (dev/CI) ──────────────────────
   # Catches all outbound email without sending anything to real inboxes.
   # Web UI: http://localhost:8025
@@ -125,6 +129,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio:
+        condition: service_healthy
+
   celery-duplicate:
     build:
       context: .
@@ -163,3 +170,4 @@ services:
 
 volumes:
   postgres_data:
+  minio_data:
