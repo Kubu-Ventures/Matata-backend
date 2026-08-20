@@ -6,6 +6,7 @@ configured so that each task type delivers to the correct dedicated queue:
 * ``gis``           — building footprint matching (``celery-gis`` worker)
 * ``ai``            — image quality assessment and damage classification
 * ``notifications`` — analyst alerts and reporter photo requests
+* ``duplicate``     — duplicate-detection scoring (``celery-duplicate`` worker)
 * ``export``        — GeoJSON / CSV / Shapefile generation
 
 The broker and result backend default to ``REDIS_URL`` but can be overridden
@@ -39,6 +40,10 @@ celery_app = Celery(
         "app.workers.gis_tasks",
         "app.workers.ai_tasks",
         "app.workers.notification_tasks",
+        # Registers score_report — without this the task decorator never
+        # runs, and send_task("app.workers.duplicate_tasks.score_report", …)
+        # fails with "Received unregistered task of type ...".
+        "app.workers.duplicate_tasks",
     ],
 )
 
@@ -67,6 +72,7 @@ celery_app.conf.update(
         "app.workers.gis_tasks.*": {"queue": "gis"},
         "app.workers.ai_tasks.*": {"queue": "ai"},
         "app.workers.notification_tasks.*": {"queue": "notifications"},
+        "app.workers.duplicate_tasks.*": {"queue": "duplicate"},
     },
     # Default queue (for tasks without explicit routing)
     task_default_queue="default",

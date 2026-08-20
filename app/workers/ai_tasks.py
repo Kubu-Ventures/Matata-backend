@@ -31,6 +31,13 @@ Perceptual hash
 A pHash is computed from the downloaded image bytes and stored in
 ``report.photo_phash`` (after confirming the image is usable or borderline).
 
+Image retrieval
+----------------
+``report.photo_url`` holds the object storage *key* written by
+``StorageService.upload_image()`` (e.g. ``reports/<id>/<uuid>.jpg``) — it is
+NOT an HTTP(S) URL. Image bytes are therefore fetched via
+``StorageService.download_image()`` rather than a direct HTTP client call.
+
 Error handling
 --------------
 On VisionAPIError: exponential backoff retries (30 s → 2 min → 10 min).
@@ -49,7 +56,6 @@ from io import BytesIO
 from typing import Optional
 from uuid import UUID
 
-import httpx
 from celery import Task
 from celery.exceptions import MaxRetriesExceededError
 from sqlalchemy import create_engine, text
@@ -299,25 +305,36 @@ _RETRY_COUNTDOWNS = [30, 120, 600]
 # ---------------------------------------------------------------------------
 
 
-def _download_image(photo_url: str) -> bytes:
-    """Download image bytes from object storage using the stored photo_url.
+def _download_image(object_key: str) -> bytes:
+    """Download image bytes from object storage using the stored object key.
+
+    ``report.photo_url`` holds the storage *object key* produced by
+    ``StorageService.upload_image()`` (e.g. ``reports/<id>/<uuid>.jpg``) —
+    it is not an HTTP(S) URL, so it must be resolved through the configured
+    ``StorageService`` rather than fetched directly with an HTTP client.
 
     Args:
-        photo_url: Full URL or storage key of the stored image.
+        object_key: Object key as stored on ``report.photo_url``.
 
     Returns:
         Raw image bytes.
 
     Raises:
-        VisionAPIError: If the download fails.
+        VisionAPIError: If the download fails for any reason (missing key,
+                        network/credentials error, etc.).
     """
+    from app.services.storage_service import StorageError, get_storage_service
+
+    storage = get_storage_service()
     try:
-        resp = httpx.get(photo_url, timeout=30)
-        resp.raise_for_status()
-        return resp.content
+        return asyncio.run(storage.download_image(object_key))
+    except StorageError as exc:
+        raise VisionAPIError(
+            f"Image download failed for {object_key!r}: {exc}"
+        ) from exc
     except Exception as exc:
         raise VisionAPIError(
-            f"Image download failed for {photo_url!r}: {type(exc).__name__}: {exc}"
+            f"Image download failed for {object_key!r}: {type(exc).__name__}: {exc}"
         ) from exc
 
 
@@ -469,6 +486,8 @@ def _process_report_image_impl(
             }
 
         # ── 2. Download image ─────────────────────────────────────────────────
+        # NOTE: photo_url is a storage object key, not an HTTP URL — resolved
+        # via the StorageService (see _download_image docstring).
         image_bytes = _download_image(photo_url)
 
         # ── 3. Call vision provider (Stage 3.1 + 3.2 in one batched call) ─────
