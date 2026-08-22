@@ -2,8 +2,8 @@
 
 This module is the **single orchestrator** for the complete report submission
 flow.  Route handlers in ``app/api/v1/routes/reports.py`` call this service
-and must not contain any database operations, storage calls, queue publishes,
-or moderation logic directly.
+and must not contain any database operations, storage calls, moderation
+logic, or perceptual-hash computation directly.
 
 Responsibilities
 ----------------
@@ -14,17 +14,35 @@ Responsibilities
 * Object storage upload (only on moderation pass).
 * Database record creation.
 * Audit log write for moderation rejections.
-* Job dispatch to GIS and AI queues.
 * Photo upload for the offline sync path (``PATCH /reports/{id}/photo``).
+
+Background job dispatch — moved to the route layer (fixed)
+------------------------------------------------------------
+Earlier versions of this module published the GIS and AI Celery jobs
+directly from ``create_report`` / ``add_photo_to_report``, immediately after
+``await db.flush()`` but BEFORE the caller's ``await db.commit()``. Because
+Celery workers use a completely separate, synchronous database connection,
+this created a race: Redis pub/sub is fast enough that a worker could query
+the report row before the FastAPI request's transaction had actually
+committed, get "not found", and silently give up (visible in logs as
+"report ... not found — skipping"), leaving ``building_id`` / ``photo_phash``
+unset for that report.
+
+Job dispatch is therefore now the **caller's** responsibility, to be done
+strictly *after* ``await db.commit()`` succeeds. See
+``app/api/v1/routes/reports.py`` — ``submit_report`` and
+``upload_report_photo`` — for the dispatch code, including seeding the
+duplicate-scoring "pending steps" gate consumed by
+``app/workers/duplicate_dispatch.py``.
 
 Separation of concerns
 -----------------------
-``submission_service`` owns the *orchestration* logic.  It delegates to:
+``submission_service`` owns the *orchestration* logic up to and including
+the committable database write. It delegates to:
 * ``moderation_service`` — content safety evaluation.
 * ``storage_service``    — binary upload to S3/MinIO.
-* ``queue_service``      — Redis Stream job publishing.
 
-The service layer never imports from ``app/api``.  Route handlers never import
+The service layer never imports from ``app/api``. Route handlers never import
 from ``sqlalchemy`` or ``redis`` directly — they import from this module.
 
 Privacy
@@ -52,7 +70,6 @@ from app.models.enums import PhotoStatus, ReportStatus
 from app.models.report import Report
 from app.services.image_service import compress_image
 from app.services.moderation_service import ModerationProvider, get_moderation_provider
-from app.services.queue_service import QueueService, RedisQueueService
 from app.services.storage_service import StorageService, get_storage_service
 
 logger = logging.getLogger(__name__)
@@ -318,7 +335,6 @@ async def create_report(
     redis: Redis,
     moderation_provider: Optional[ModerationProvider] = None,
     storage_service: Optional[StorageService] = None,
-    queue_service: Optional[QueueService] = None,
 ) -> Report:
     """Create a new damage report — the primary submission endpoint handler.
 
@@ -331,7 +347,13 @@ async def create_report(
        - On pass: upload to object storage.
     5. Create the ``Report`` database record.
     6. Write audit log entry for the creation event.
-    7. Dispatch GIS and AI queue jobs.
+    7. Flush so server-generated timestamps are available to the caller.
+
+    IMPORTANT: this function deliberately does **not** publish the GIS/AI
+    background jobs. Dispatch must happen in the caller, strictly after
+    ``await db.commit()`` succeeds — see the module docstring and
+    ``app/api/v1/routes/reports.py`` for why (commit-race fix) and how
+    (including seeding the duplicate-scoring coordination gate).
 
     Args:
         crisis_type:           Enum value string.
@@ -354,10 +376,10 @@ async def create_report(
         redis:                 Async Redis client.
         moderation_provider:   Injected for testing; defaults to factory instance.
         storage_service:       Injected for testing; defaults to factory instance.
-        queue_service:         Injected for testing; defaults to factory instance.
 
     Returns:
-        The created ``Report`` ORM instance (not yet committed — caller commits).
+        The created ``Report`` ORM instance (not yet committed — caller commits
+        and then dispatches background jobs).
 
     Raises:
         RateLimitExceededError:   Reporter has exceeded 10 submissions/hour.
@@ -377,7 +399,6 @@ async def create_report(
     # Resolve injectable dependencies (factory defaults used in production).
     _moderation = moderation_provider or get_moderation_provider()
     _storage = storage_service or get_storage_service()
-    _queue: QueueService = queue_service or RedisQueueService()
 
     photo_url: Optional[str] = None
     photo_status = PhotoStatus.pending
@@ -485,17 +506,15 @@ async def create_report(
         },
     )
 
-    await db.flush()  # Obtain the server-generated timestamps before dispatch.
+    await db.flush()  # Obtain server-generated timestamps before the caller commits.
 
-    # ── 7. Dispatch queue jobs ───────────────────────────────────────────────
-    # Both publishes are fire-and-forget; errors are logged, not re-raised,
-    # so a Redis blip does not abort an otherwise successful submission.
-    await _queue.publish_gis_job(report_id)
-    if photo_url:
-        await _queue.publish_ai_job(report_id)
+    # NOTE: GIS/AI job dispatch intentionally happens in the route handler,
+    # after `await db.commit()` — see module docstring. Dispatching here
+    # (before commit) was the cause of the "report ... not found — skipping"
+    # race previously seen in celery-gis/celery-ai logs.
 
     logger.info(
-        "Report %s created (actor: %s…, photo: %s)",
+        "Report %s created (actor: %s…, photo: %s) — awaiting commit + job dispatch",
         report_id,
         token_hash[:8],
         "yes" if photo_url else "no",
@@ -513,7 +532,6 @@ async def add_photo_to_report(
     redis: Redis,
     moderation_provider: Optional[ModerationProvider] = None,
     storage_service: Optional[StorageService] = None,
-    queue_service: Optional[QueueService] = None,
 ) -> Report:
     """Attach a photo to an existing report (offline sync path).
 
@@ -527,7 +545,13 @@ async def add_photo_to_report(
     3. Upload to storage on pass.
     4. Update ``photo_url``, ``photo_phash``, and ``photo_status``.
     5. Write audit log.
-    6. Dispatch AI queue job.
+
+    IMPORTANT: this function deliberately does **not** publish the AI
+    background job. Dispatch must happen in the caller, strictly after
+    ``await db.commit()`` succeeds — see the module docstring and
+    ``app/api/v1/routes/reports.py`` for why and how (including reseeding the
+    duplicate-scoring coordination gate to 1, so scoring re-runs with the
+    newly available image-similarity signal).
 
     Args:
         report_id:          UUID of the existing Report to update.
@@ -538,7 +562,6 @@ async def add_photo_to_report(
         redis:              Async Redis client.
         moderation_provider: Injected for testing.
         storage_service:    Injected for testing.
-        queue_service:      Injected for testing.
 
     Returns:
         The updated ``Report`` ORM instance.
@@ -568,7 +591,6 @@ async def add_photo_to_report(
 
     _moderation = moderation_provider or get_moderation_provider()
     _storage = storage_service or get_storage_service()
-    _queue: QueueService = queue_service or RedisQueueService(redis)
 
     # ── 2. pHash + Stage 2 moderation ────────────────────────────────────────
     photo_phash = _compute_phash(image_bytes)
@@ -625,10 +647,14 @@ async def add_photo_to_report(
 
     await db.flush()
 
-    # ── 6. AI queue job ───────────────────────────────────────────────────────
-    await _queue.publish_ai_job(report_id)
+    # NOTE: AI job dispatch intentionally happens in the route handler, after
+    # `await db.commit()` — see module docstring.
 
-    logger.info("Photo added to report %s (actor: %s…)", report_id, token_hash[:8])
+    logger.info(
+        "Photo added to report %s (actor: %s…) — awaiting commit + job dispatch",
+        report_id,
+        token_hash[:8],
+    )
     return report
 
 
