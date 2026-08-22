@@ -307,4 +307,3 @@ def match_building(self: Task, report_id: str) -> dict:
             # step that will never complete.
             mark_step_done_and_maybe_dispatch(report_id)
             return {"building_id": None, "confidence": 0.0, "distance_m": None}
-        

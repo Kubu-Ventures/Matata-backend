@@ -506,7 +506,7 @@ async def create_report(
         },
     )
 
-    await db.flush()  # Obtain the server-generated timestamps before the caller commits.
+    await db.flush()  # Obtain server-generated timestamps before the caller commits.
 
     # NOTE: GIS/AI job dispatch intentionally happens in the route handler,
     # after `await db.commit()` — see module docstring. Dispatching here
