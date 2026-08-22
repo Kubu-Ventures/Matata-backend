@@ -4,9 +4,13 @@ This module implements the ``process_report_image`` Celery task, consumed by
 the ``celery-ai`` worker from the ``ai`` queue.
 
 The task is non-blocking from the reporter's perspective: it is enqueued by
-the submission service after a photo has been safely stored in object storage,
-and its results are written back to the ``report`` record for display on the
-analyst dashboard.
+the submission service after a photo has been safely stored in object storage
+AND after that report's database transaction has been committed (see
+``app/services/submission_service.py`` and ``app/api/v1/routes/reports.py``
+for the dispatch ordering fix — jobs are now published only after commit, so
+this worker's separate DB connection can always see the row it's asked to
+process), and its results are written back to the ``report`` record for
+display on the analyst dashboard.
 
 Stage 3.1 — Image quality assessment
 --------------------------------------
@@ -30,6 +34,18 @@ Perceptual hash
 ---------------
 A pHash is computed from the downloaded image bytes and stored in
 ``report.photo_phash`` (after confirming the image is usable or borderline).
+
+Duplicate-scoring coordination
+-------------------------------
+Every terminal outcome of this task (report not found, no photo, unusable
+image, success, or permanent failure after retries) calls
+``duplicate_dispatch.mark_step_done_and_maybe_dispatch`` so that
+``duplicate_tasks.score_report`` is automatically dispatched once both this
+AI step and the report's GIS step have completed. Previously nothing
+dispatched that task at all, so duplicate/merge-review detection never ran —
+this is what wires it up. Transient ``VisionAPIError`` retries are NOT
+terminal and must not call the marker (see ``duplicate_dispatch`` module
+docstring) — only the final give-up path does.
 
 Image retrieval
 ----------------
@@ -69,6 +85,7 @@ from app.services.vision_service import (
     get_vision_provider,
 )
 from app.workers.celery_app import celery_app
+from app.workers.duplicate_dispatch import mark_step_done_and_maybe_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -426,6 +443,13 @@ def _process_report_image_impl(
     a Celery worker context.  The Celery task ``process_report_image`` delegates
     here and handles the retry policy.
 
+    Every terminal return path calls
+    ``duplicate_dispatch.mark_step_done_and_maybe_dispatch`` so that
+    duplicate/merge-review scoring is triggered once this report's AI step
+    (and its GIS step) have both completed. The ``VisionAPIError`` branch is
+    NOT terminal — it re-raises for a Celery retry — so it must not call the
+    marker (see module docstring and ``duplicate_dispatch``).
+
     Args:
         report_id:       UUID string of the ``report`` record to process.
         vision_provider: Injected provider for testing; defaults to factory.
@@ -458,6 +482,7 @@ def _process_report_image_impl(
 
         if row is None:
             logger.error("AI task: report %s not found — skipping", _report_id)
+            mark_step_done_and_maybe_dispatch(str(_report_id))
             return {
                 "photo_status": "ai_processing_failed",
                 "ai_quality_score": None,
@@ -476,6 +501,7 @@ def _process_report_image_impl(
 
         if not photo_url:
             logger.warning("AI task: report %s has no photo_url — skipping", _report_id)
+            mark_step_done_and_maybe_dispatch(str(_report_id))
             return {
                 "photo_status": "ai_processing_failed",
                 "ai_quality_score": None,
@@ -542,6 +568,7 @@ def _process_report_image_impl(
                 _report_id,
                 priority,
             )
+            mark_step_done_and_maybe_dispatch(str(_report_id))
             return {
                 "photo_status": "insufficient_quality",
                 "ai_quality_score": result.quality_score,
@@ -626,6 +653,11 @@ def _process_report_image_impl(
                 }
             )
 
+        # AI step is done — signal the coordinator. Once the report's GIS
+        # step has also signalled completion, duplicate scoring (which needs
+        # both building_id and photo_phash) is dispatched automatically.
+        mark_step_done_and_maybe_dispatch(str(_report_id))
+
         return {
             "photo_status": "accepted",
             "ai_quality_score": result.quality_score,
@@ -638,7 +670,11 @@ def _process_report_image_impl(
 
     except VisionAPIError:
         db.rollback()
-        raise  # Re-raised so the Celery wrapper can apply the retry policy.
+        # NOT terminal — this propagates to the Celery wrapper, which will
+        # retry. Do not call mark_step_done_and_maybe_dispatch here; the
+        # MaxRetriesExceededError branch in the task wrapper below handles
+        # the eventual terminal (permanent-failure) case.
+        raise
 
     except Exception:
         db.rollback()
@@ -671,8 +707,9 @@ def process_report_image(
     """Stage 3 AI processing for a submitted report image.
 
     Triggered by the submission service after a photo has been confirmed
-    stored in object storage.  Delegates all logic to
-    ``_process_report_image_impl`` and handles the retry policy.
+    stored in object storage and the report's transaction has been
+    committed.  Delegates all logic to ``_process_report_image_impl`` and
+    handles the retry policy.
 
     Retry schedule (spec §8.3 error handling):
         Attempt 1 → wait 30 s
@@ -743,6 +780,12 @@ def process_report_image(
                     report_id,
                     type(db_exc).__name__,
                 )
+
+            # Permanent failure — this IS a terminal state for the AI step,
+            # so the duplicate-scoring coordinator must be told, or a report
+            # whose AI step never succeeds would sit forever waiting for a
+            # step that will never complete.
+            mark_step_done_and_maybe_dispatch(report_id)
 
             return {
                 "photo_status": "ai_processing_failed",

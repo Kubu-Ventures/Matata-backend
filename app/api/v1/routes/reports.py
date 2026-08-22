@@ -7,6 +7,27 @@ Route handlers are intentionally thin: they parse multipart/form data, call
 No database queries, storage calls, or moderation logic appear here — all of
 that lives in ``app/services/submission_service.py``.
 
+Background job dispatch (fixed)
+--------------------------------
+``POST /reports`` and ``PATCH /reports/{id}/photo`` are responsible for
+dispatching the GIS/AI Celery jobs. This is done here — in the route layer —
+rather than inside ``submission_service`` for a specific reason: it must
+happen strictly AFTER ``await db.commit()`` succeeds.
+
+Previously, ``submission_service`` published these jobs itself right after
+``await db.flush()`` but before the route's ``await db.commit()``. Because
+Celery workers query the report via a completely separate, synchronous DB
+connection, and Redis pub/sub delivers almost instantly, workers would
+sometimes query the row before the transaction had actually committed —
+getting "not found" and giving up, leaving ``building_id`` / ``photo_phash``
+unset. Dispatching here, after commit, eliminates that race.
+
+This is also where the duplicate-scoring coordination gate (consumed by
+``app/workers/duplicate_dispatch.py``) is seeded: 2 pending steps (GIS + AI)
+when the report has a photo, 1 (GIS only) when it doesn't. When a photo is
+attached later via the PATCH endpoint, the gate is reseeded to 1 (AI only) so
+duplicate scoring re-runs with the newly available image-similarity signal.
+
 OpenAPI documentation
 ---------------------
 Every endpoint is annotated with ``summary``, ``description``, and
@@ -52,6 +73,7 @@ from app.schemas.report_submission import (
     ReportDetailResponse,
     ReportPhotoResponse,
 )
+from app.services.queue_service import RedisQueueService
 from app.services.submission_service import (
     ModerationRejectionError,
     RateLimitExceededError,
@@ -66,6 +88,16 @@ from app.services.submission_service import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/reports", tags=["Reports"])
+
+# ---------------------------------------------------------------------------
+# Duplicate-scoring coordination gate — must match
+# app/workers/duplicate_dispatch.py's _PENDING_STEPS_KEY_FMT
+# ---------------------------------------------------------------------------
+
+
+def _pending_dup_steps_key(report_id: UUID) -> str:
+    return f"crisismap:report:{report_id}:pending_dup_steps"
+
 
 # ---------------------------------------------------------------------------
 # Helper — extract raw token from the authenticated user dict or headers
@@ -118,8 +150,9 @@ def _get_raw_token(
         "Stage 2 content moderation runs synchronously before any write to "
         "object storage — if the image is rejected, HTTP 422 is returned and "
         "nothing is stored.  "
-        "Jobs are dispatched asynchronously to the GIS and AI workers after a "
-        "successful submission.  "
+        "GIS and AI jobs are dispatched asynchronously to their respective "
+        "workers only after the database transaction has been committed, so "
+        "the workers' separate DB connections can always see the new row.  "
         "Requires a valid anonymous or authenticated session token."
     ),
 )
@@ -171,7 +204,7 @@ async def submit_report(
     reporter_token = current_user.get("sub", "")
     reporter_trust_tier = current_user.get("tier", 0)
 
-    # ── Call service ─────────────────────────────────────────────────────────
+    # ── Call service (creates + flushes, does NOT dispatch jobs) ─────────────
     try:
         report = await create_report(
             crisis_type=meta.crisis_type.value,
@@ -221,6 +254,27 @@ async def submit_report(
             lang=lang,
         ) from exc
 
+    # ── Dispatch background jobs — ONLY after a successful commit ────────────
+    # This ordering is the fix for the "report ... not found — skipping" race
+    # previously seen in the celery-gis / celery-ai logs: dispatching before
+    # commit let a worker query the row before it was durably visible on its
+    # own DB connection.
+    queue = RedisQueueService()
+
+    # Seed the duplicate-scoring coordination gate BEFORE publishing jobs, so
+    # there's no window where a very-fast worker could finish and decrement
+    # the counter before it exists. 2 steps (GIS + AI) if there's a photo,
+    # 1 step (GIS only) otherwise. See app/workers/duplicate_dispatch.py.
+    await redis.set(
+        _pending_dup_steps_key(report.id),
+        2 if report.photo_url else 1,
+        ex=3600,
+    )
+
+    await queue.publish_gis_job(report.id)
+    if report.photo_url:
+        await queue.publish_ai_job(report.id)
+
     return ReportCreateResponse(
         id=report.id,
         status=report.status,
@@ -242,6 +296,10 @@ async def submit_report(
         "Used by the offline sync protocol to upload a photo after the "
         "metadata has already been accepted by ``POST /reports``.  "
         "Stage 2 moderation runs synchronously.  "
+        "The AI job is dispatched only after the database transaction has "
+        "been committed, and duplicate scoring is re-triggered once it "
+        "completes so the newly available image-similarity signal is taken "
+        "into account.  "
         "The caller must be the original report submitter."
     ),
 )
@@ -295,6 +353,18 @@ async def upload_report_photo(
             message_key="errors.internal",
             lang=lang,
         ) from exc
+
+    # ── Dispatch background job — ONLY after a successful commit ─────────────
+    queue = RedisQueueService()
+
+    # Only the AI step is pending now (GIS already ran when the report was
+    # first created). Reseed to 1 so mark_step_done_and_maybe_dispatch fires
+    # duplicate scoring again once this AI run completes — this time with a
+    # photo_phash available, which the original GIS-only scoring pass did not
+    # have.
+    await redis.set(_pending_dup_steps_key(report.id), 1, ex=3600)
+
+    await queue.publish_ai_job(report.id)
 
     return ReportPhotoResponse(
         id=report.id,

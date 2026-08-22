@@ -3,10 +3,22 @@
 This module contains the ``match_building`` task, which is consumed by the
 ``celery-gis`` worker from the ``gis`` queue.
 
-The task is triggered by the submission service after a report is created.
+The task is triggered by the submission service after a report is created
+AND after that report's database transaction has been committed (see
+``app/services/submission_service.py`` and ``app/api/v1/routes/reports.py``
+for the dispatch ordering fix — jobs are now published only after commit,
+so this worker's separate DB connection can always see the row it's asked
+to process).
+
 It runs the four-step building footprint matching sequence defined in spec §9.2
 via ``GISService``, updates the ``report`` and ``building`` records, invalidates
-the affected Redis cache keys, and logs the outcome.
+the affected Redis cache keys, logs the outcome, and — via
+``duplicate_dispatch.mark_step_done_and_maybe_dispatch`` — signals that the
+GIS step for this report is complete. Once both the GIS step and (if the
+report has a photo) the AI step have signalled completion, duplicate
+detection (``duplicate_tasks.score_report``) is automatically dispatched.
+Previously nothing dispatched that task at all, so duplicate/merge-review
+detection never ran.
 
 All database access uses **synchronous** SQLAlchemy (``Session``) because Celery
 workers run in regular threads, not an async event loop.  A fresh session is
@@ -15,6 +27,13 @@ opened per task invocation and committed or rolled-back before exit.
 Retry policy:
     Up to 3 retries with 30-second backoff on any unexpected exception.
     Database integrity errors are not retried (they indicate a data problem).
+
+    IMPORTANT: ``mark_step_done_and_maybe_dispatch`` is called only at
+    genuine terminal points (success, "report not found", integrity error,
+    and the final MaxRetriesExceededError branch) — never just before an
+    exception is re-raised for a Celery retry. Calling it on every retry
+    attempt would decrement the pending-step counter multiple times for a
+    single logical step. See ``duplicate_dispatch`` module docstring.
 """
 
 from __future__ import annotations
@@ -34,6 +53,7 @@ from app.core.config import settings
 from app.services.geocoding_service import get_geocoding_provider
 from app.services.gis_service import GISService
 from app.workers.celery_app import celery_app
+from app.workers.duplicate_dispatch import mark_step_done_and_maybe_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +127,14 @@ def _match_building_impl(report_id: str) -> dict:
     directly without needing a Celery worker context or ``self`` (Task).
     The Celery task ``match_building`` delegates here and handles retries.
 
+    Every terminal return path calls
+    ``duplicate_dispatch.mark_step_done_and_maybe_dispatch`` so that
+    duplicate/merge-review scoring is triggered once this report's GIS step
+    (and its AI step, if it has a photo) have both completed. The one
+    exception is the generic-``Exception`` branch, which re-raises for a
+    Celery retry — that is NOT a terminal state, so it must not fire the
+    marker (see module docstring).
+
     Args:
         report_id: UUID string of the ``report`` record to process.
 
@@ -134,6 +162,7 @@ def _match_building_impl(report_id: str) -> dict:
 
         if row is None:
             logger.error("GIS task: report %s not found — skipping", _report_id)
+            mark_step_done_and_maybe_dispatch(str(_report_id))
             return {"building_id": None, "confidence": 0.0, "distance_m": None}
 
         lat: Optional[float] = row.lat
@@ -196,6 +225,12 @@ def _match_building_impl(report_id: str) -> dict:
             match.building_id,
             match.confidence,
         )
+
+        # GIS step is done — signal the coordinator. If this report has no
+        # photo (no AI step was scheduled), this is the call that dispatches
+        # duplicate scoring.
+        mark_step_done_and_maybe_dispatch(str(_report_id))
+
         return {
             "building_id": str(match.building_id) if match.building_id else None,
             "confidence": match.confidence,
@@ -206,11 +241,17 @@ def _match_building_impl(report_id: str) -> dict:
         db.rollback()
         logger.error("GIS task integrity error for report %s: %s", _report_id, exc)
         # Do NOT retry integrity errors — they indicate a data problem.
+        # This is a terminal state, so the coordinator must still be told.
+        mark_step_done_and_maybe_dispatch(str(_report_id))
         return {"building_id": None, "confidence": 0.0, "distance_m": None}
 
     except Exception:
         db.rollback()
-        raise  # Re-raised so the Celery task wrapper can apply retry policy.
+        # NOT terminal — this propagates to the Celery wrapper, which will
+        # retry. Do not call mark_step_done_and_maybe_dispatch here; the
+        # MaxRetriesExceededError branch in the task wrapper below handles
+        # the eventual terminal (permanent-failure) case.
+        raise
 
     finally:
         db.close()
@@ -231,8 +272,9 @@ def _match_building_impl(report_id: str) -> dict:
 def match_building(self: Task, report_id: str) -> dict:
     """Match a report's GPS coordinates to a building footprint.
 
-    Triggered by the submission service after a report is created.  Delegates
-    all logic to ``_match_building_impl`` and handles the Celery retry policy.
+    Triggered by the submission service after a report is created and its
+    transaction has been committed.  Delegates all logic to
+    ``_match_building_impl`` and handles the Celery retry policy.
 
     Args:
         report_id: UUID string of the ``report`` record to process.
@@ -259,4 +301,10 @@ def match_building(self: Task, report_id: str) -> dict:
                 report_id,
                 self.max_retries,
             )
+            # Permanent failure — this IS a terminal state for the GIS step,
+            # so the duplicate-scoring coordinator must be told, or a report
+            # whose GIS step never succeeds would sit forever waiting for a
+            # step that will never complete.
+            mark_step_done_and_maybe_dispatch(report_id)
             return {"building_id": None, "confidence": 0.0, "distance_m": None}
+        
