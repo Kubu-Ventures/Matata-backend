@@ -9,6 +9,19 @@ services:
       - "8081:8000"
     env_file:
       - .env
+    environment:
+      # S3StorageService authenticates against MinIO using AWS_ACCESS_KEY_ID /
+      # AWS_SECRET_ACCESS_KEY, but MinIO's actual credentials are
+      # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD (set on the minio service below,
+      # and now sourced from .env instead of being hardcoded here). Deriving
+      # these from MINIO_ROOT_USER/PASSWORD — rather than requiring a second,
+      # independently typed AWS_* pair in .env — makes MINIO_ROOT_USER/PASSWORD
+      # the single source of truth and prevents the two pairs from drifting
+      # out of sync (which previously caused "InvalidAccessKeyId" on every
+      # upload). Falls back to minioadmin/minioadmin if .env doesn't set them,
+      # matching MinIO's own default dev credentials below.
+      AWS_ACCESS_KEY_ID: "${MINIO_ROOT_USER:-minioadmin}"
+      AWS_SECRET_ACCESS_KEY: "${MINIO_ROOT_PASSWORD:-minioadmin}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,8 +70,12 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      # Sourced from .env (with dev-friendly defaults) instead of hardcoded,
+      # so this is the single place credentials are defined — app and
+      # celery-ai below derive their AWS_ACCESS_KEY_ID/SECRET from the same
+      # MINIO_ROOT_USER/PASSWORD values, and minio-init uses them too.
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -70,12 +87,16 @@ services:
 
   minio-init:
     image: minio/mc:latest
+    environment:
+      # Same source-of-truth values as the minio service — see note there.
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
     depends_on:
       minio:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
       mc mb -p local/crisismap &&
       exit 0
       "
@@ -124,6 +145,14 @@ services:
       -Q ai --concurrency 2 --loglevel info
     env_file:
       - .env
+    environment:
+      # This worker downloads report photos from MinIO
+      # (StorageService.download_image in ai_tasks.py) so it needs the same
+      # credential source as the app service — derived from
+      # MINIO_ROOT_USER/PASSWORD rather than a separately typed AWS_* pair in
+      # .env, to avoid "InvalidAccessKeyId" drift between the two.
+      AWS_ACCESS_KEY_ID: "${MINIO_ROOT_USER:-minioadmin}"
+      AWS_SECRET_ACCESS_KEY: "${MINIO_ROOT_PASSWORD:-minioadmin}"
     depends_on:
       postgres:
         condition: service_healthy
