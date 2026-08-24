@@ -72,6 +72,7 @@ from app.schemas.report_submission import (
     ReportCreateSchema,
     ReportDetailResponse,
     ReportPhotoResponse,
+    PaginatedOwnReports,
 )
 from app.services.queue_service import RedisQueueService
 from app.services.submission_service import (
@@ -84,6 +85,7 @@ from app.services.submission_service import (
     create_report,
     get_nearby_reports,
     get_own_report,
+    list_own_reports,
 )
 
 logger = logging.getLogger(__name__)
@@ -281,6 +283,40 @@ async def submit_report(
         building_id=report.building_id,
     )
 
+
+
+@router.get(
+    "",
+    response_model=PaginatedOwnReports,
+    status_code=status.HTTP_200_OK,
+    summary="List own submitted reports",
+    description=(
+        "Returns a paginated list of reports submitted under the caller's "
+        "current session or account token, newest first. "
+        "Anonymous sessions only see reports submitted under that same "
+        "short-lived session; phone-verified reporters see their full "
+        "history across sessions, since their identity persists."
+    ),
+)
+async def list_my_reports(
+    page: int = Query(default=1, ge=1, description="Page number (1-based)."),
+    limit: int = Query(
+        default=20, ge=1, le=100, description="Items per page (max 100)."
+    ),
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PaginatedOwnReports:
+    """Return a paginated list of the caller's own reports."""
+    reporter_token = current_user.get("sub", "")
+    reports, total = await list_own_reports(
+        reporter_token=reporter_token, page=page, limit=limit, db=db
+    )
+    return PaginatedOwnReports(
+        total=total,
+        page=page,
+        limit=limit,
+        items=[ReportDetailResponse.model_validate(r) for r in reports],
+    )
 
 # ---------------------------------------------------------------------------
 # PATCH /reports/{id}/photo — attach photo to existing report (offline sync)

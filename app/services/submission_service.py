@@ -658,6 +658,51 @@ async def add_photo_to_report(
     return report
 
 
+async def list_own_reports(
+    *,
+    reporter_token: str,
+    page: int = 1,
+    limit: int = 20,
+    db: AsyncSession,
+) -> tuple[list[Report], int]:
+    """Return a paginated list of reports submitted under *reporter_token*.
+
+    Filters by ``reporter_token_hash``, the same hash used to enforce
+    ownership on ``GET /reports/{id}``. Works for both anonymous sessions
+    (scoped to that session's ephemeral identity) and phone-verified
+    reporters (scoped to their persistent hashed phone identity).
+
+    Args:
+        reporter_token: Raw JWT ``sub`` claim of the requesting caller.
+        page:           1-based page number.
+        limit:          Items per page (max enforced by the caller/route).
+        db:             Async database session.
+
+    Returns:
+        Tuple of (reports for this page, total matching count).
+    """
+    token_hash = _hash_token(reporter_token)
+
+    count_result = await db.execute(
+        sa.select(sa.func.count())
+        .select_from(Report)
+        .where(Report.reporter_token_hash == token_hash)
+    )
+    total = count_result.scalar_one()
+
+    offset = (page - 1) * limit
+    result = await db.execute(
+        sa.select(Report)
+        .where(Report.reporter_token_hash == token_hash)
+        .order_by(Report.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    reports = result.scalars().all()
+
+    return list(reports), total
+
+
 async def get_own_report(
     *,
     report_id: UUID,
