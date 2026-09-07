@@ -4,7 +4,7 @@ Usage
 -----
 Bootstrap the very first admin account (run once on the server):
 
-    python -m app.cli create-admin --phone +254700123456
+    python -m app.cli create-admin --email admin@example.org
 
 List all provisioned analyst/responder/admin accounts:
 
@@ -26,7 +26,7 @@ import re
 import sys
 import uuid
 
-_E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -34,22 +34,19 @@ _E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 # ---------------------------------------------------------------------------
 
 
-async def _create_admin(phone: str) -> None:
+async def _create_admin(email: str) -> None:
     import sqlalchemy as sa
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from app.core.config import settings
     from app.models.analyst_account import AnalystAccount
-    from app.services.auth_service import Role, hash_phone
+    from app.services.auth_service import Role, hash_identifier
 
-    if not _E164_RE.match(phone):
-        print(
-            f"ERROR: '{phone}' is not a valid E.164 phone number "
-            "(e.g. +254700123456)."
-        )
+    if not _EMAIL_RE.match(email):
+        print(f"ERROR: '{email}' is not a valid email address.")
         sys.exit(1)
 
-    phone_hash = hash_phone(phone)
+    email_hash = hash_identifier(email.strip().lower())
 
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -58,7 +55,7 @@ async def _create_admin(phone: str) -> None:
         existing = (
             await session.execute(
                 sa.select(AnalystAccount).where(
-                    AnalystAccount.phone_hash == phone_hash,
+                    AnalystAccount.email_hash == email_hash,
                 )
             )
         ).scalar_one_or_none()
@@ -66,7 +63,7 @@ async def _create_admin(phone: str) -> None:
         if existing is not None:
             status = "active" if existing.is_active else "inactive (deactivated)"
             print(
-                f"INFO: This phone number is already registered as "
+                f"INFO: This email address is already registered as "
                 f"role={existing.role} ({status})."
             )
             if existing.role != Role.admin.value:
@@ -78,7 +75,7 @@ async def _create_admin(phone: str) -> None:
 
         account = AnalystAccount(
             id=uuid.uuid4(),
-            phone_hash=phone_hash,
+            email_hash=email_hash,
             role=Role.admin.value,
             region_geojson=None,
             created_by_sub="cli-bootstrap",
@@ -93,9 +90,8 @@ async def _create_admin(phone: str) -> None:
     print(f"  Account ID : {account.id}")
     print("  Role       : admin")
     print()
-    print("The admin can now log in via:")
-    print(f'  POST /api/v1/auth/otp/send   {{"phone": "{phone}"}}')
-    print(f'  POST /api/v1/auth/otp/verify {{"phone": "{phone}", "otp": "<code>"}}')
+    print("The admin can now log in through the frontend's Privy email OTP flow,")
+    print("which posts the resulting tokens to POST /api/v1/auth/privy/verify.")
 
 
 async def _list_accounts() -> None:
@@ -195,13 +191,13 @@ def main() -> None:
     # create-admin
     p_create = sub.add_parser(
         "create-admin",
-        help="Bootstrap the first admin account from a phone number.",
+        help="Bootstrap the first admin account from an email address.",
     )
     p_create.add_argument(
-        "--phone",
+        "--email",
         required=True,
-        metavar="E164",
-        help="E.164-formatted phone number, e.g. +254700123456",
+        metavar="EMAIL",
+        help="Email address, e.g. admin@example.org",
     )
 
     # list-accounts
@@ -226,7 +222,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "create-admin":
-        asyncio.run(_create_admin(args.phone))
+        asyncio.run(_create_admin(args.email))
     elif args.command == "list-accounts":
         asyncio.run(_list_accounts())
     elif args.command == "deactivate-account":

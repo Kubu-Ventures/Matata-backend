@@ -10,13 +10,23 @@ What it does
 ------------
 1. Validates the e-mail format and the requested role.
 2. Calls ``auth_service.issue_analyst_token`` which:
-   * Hashes the e-mail address with ``PHONE_HASH_SALT`` (plaintext is
-     immediately discarded).
+   * Hashes the normalised e-mail address with ``PHONE_HASH_SALT`` (plaintext
+     is immediately discarded) using the shared ``hash_identifier`` digest, so
+     the ``sub`` matches a later Privy login for the same address.
    * Signs a JWT with the requested role claim.
    * Stores a refresh token in Redis.
 3. Prints the access token and refresh token to stdout so the operator can
    hand them to the new analyst out-of-band.
 4. Writes an audit-log entry for the provisioning event.
+
+Scope
+-----
+This is a **one-time bootstrap** tool: it mints a token pair but does **not**
+write an ``analyst_accounts`` row, so once the 30-day refresh token lapses the
+holder cannot log back in on their own.  Use it only to bootstrap the first
+admin.  For a permanently loginable analyst/responder account, that admin then
+calls ``POST /api/v1/auth/analyst/register`` (which stores the email hash that
+``POST /api/v1/auth/privy/verify`` looks up on every subsequent login).
 
 Security notes
 --------------

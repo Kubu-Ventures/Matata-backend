@@ -1,13 +1,13 @@
 """AnalystAccount ORM model.
 
-Stores provisioned analyst, responder, and admin identities as hashed phone
-numbers.  No plaintext phone numbers are ever persisted — only the SHA-256
-hash salted with PHONE_HASH_SALT, identical to the reporter identity model.
+Stores provisioned analyst, responder, and admin identities as hashed email
+addresses.  No plaintext email is ever persisted — only the SHA-256 hash of
+the normalised address salted with PHONE_HASH_SALT.
 
-When a provisioned user completes the standard OTP flow (POST /auth/otp/send
-+ POST /auth/otp/verify), auth_service looks up their phone hash here and
-issues a JWT with the stored elevated role instead of the default reporter
-role.  No separate login endpoint is required.
+When a provisioned user completes the Privy email OTP login, auth_service
+(``verify_privy_and_issue_tokens``) hashes the email from the Privy identity
+token, looks it up here, and issues a JWT with the stored elevated role
+instead of the default reporter role.  No separate login endpoint is required.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ class AnalystAccount(TimestampMixin, Base):
         default=uuid.uuid4,
     )
 
-    phone_hash: Mapped[str] = mapped_column(
+    email_hash: Mapped[str] = mapped_column(
         sa.Text,
         unique=True,
         nullable=False,
