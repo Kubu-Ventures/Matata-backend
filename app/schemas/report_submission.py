@@ -29,11 +29,13 @@ from app.models.enums import (
     ReportStatus,
 )
 
+
 class PaginatedOwnReports(BaseModel):
     total: int
     page: int
     limit: int
     items: list[ReportDetailResponse]
+
 
 # ---------------------------------------------------------------------------
 # Request schemas

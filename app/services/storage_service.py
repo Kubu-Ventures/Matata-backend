@@ -190,9 +190,7 @@ class MockStorageService:
         data = self.store.get(object_key)
         if data is None:
             raise StorageError(f"No such object: {object_key!r}")
-        logger.debug(
-            "MockStorageService: read %d bytes from %s", len(data), object_key
-        )
+        logger.debug("MockStorageService: read %d bytes from %s", len(data), object_key)
         return data
 
     async def delete_image(self, object_key: str) -> None:
@@ -337,16 +335,10 @@ class S3StorageService:
                     body = await stream.read()
         except Exception as exc:
             exc_name = type(exc).__name__
-            logger.error(
-                "S3 download error for key %s: %s", object_key, exc_name
-            )
-            raise StorageError(
-                f"Object storage download failed: {exc_name}"
-            ) from exc
+            logger.error("S3 download error for key %s: %s", object_key, exc_name)
+            raise StorageError(f"Object storage download failed: {exc_name}") from exc
 
-        logger.debug(
-            "Downloaded %d bytes from storage key: %s", len(body), object_key
-        )
+        logger.debug("Downloaded %d bytes from storage key: %s", len(body), object_key)
         return body
 
     async def delete_image(self, object_key: str) -> None:

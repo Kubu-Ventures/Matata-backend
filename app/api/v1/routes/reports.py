@@ -68,11 +68,11 @@ from app.core.dependencies import get_db, get_redis
 from app.core.i18n import LocalisedHTTPException, get_locale
 from app.schemas.report_submission import (
     NearbyReportItem,
+    PaginatedOwnReports,
     ReportCreateResponse,
     ReportCreateSchema,
     ReportDetailResponse,
     ReportPhotoResponse,
-    PaginatedOwnReports,
 )
 from app.services.queue_service import RedisQueueService
 from app.services.submission_service import (
@@ -284,7 +284,6 @@ async def submit_report(
     )
 
 
-
 @router.get(
     "",
     response_model=PaginatedOwnReports,
@@ -317,6 +316,7 @@ async def list_my_reports(
         limit=limit,
         items=[ReportDetailResponse.model_validate(r) for r in reports],
     )
+
 
 # ---------------------------------------------------------------------------
 # PATCH /reports/{id}/photo — attach photo to existing report (offline sync)
