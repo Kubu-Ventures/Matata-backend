@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import re
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 from redis.asyncio import Redis
@@ -27,6 +27,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db, get_redis
 from app.core.i18n import LocalisedHTTPException, get_locale, get_message
+from app.core.rate_limits import (
+    RATE_PRIVY_VERIFY_LIMIT,
+    RATE_PRIVY_VERIFY_WINDOW_SECONDS,
+)
 from app.services import auth_service
 from app.services.auth_service import (
     AuthError,
@@ -34,6 +38,7 @@ from app.services.auth_service import (
     InvalidTokenError,
     OTPLockedOutError,
     OTPNotFoundError,
+    RateLimitedError,
     Role,
 )
 from app.services.sms import SMSDeliveryError
@@ -89,6 +94,24 @@ class OTPVerifyRequest(BaseModel):
         if not _E164_RE.match(value):
             raise ValueError("Phone number must be in E.164 format.")
         return value
+
+
+class PrivyVerifyRequest(BaseModel):
+    privy_token: str = Field(
+        ...,
+        description=(
+            "Privy access token (ES256 JWT) obtained from the frontend's "
+            "email OTP login via Privy's useLoginWithEmail hook."
+        ),
+    )
+    identity_token: str | None = Field(
+        default=None,
+        description=(
+            "Privy identity token (ES256 JWT). Carries the verified email "
+            "address, which is used to resolve a provisioned elevated role. "
+            "Omit for a plain reporter login."
+        ),
+    )
 
 
 class RefreshRequest(BaseModel):
@@ -226,6 +249,13 @@ def _auth_error_to_http(exc: AuthError, lang: str = "en") -> HTTPException:
             message_key="errors.otp_invalid",
             lang=lang,
         )
+    if isinstance(exc, RateLimitedError):
+        return LocalisedHTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            message_key="errors.rate_limit_exceeded",
+            lang=lang,
+            headers={"Retry-After": str(RATE_PRIVY_VERIFY_WINDOW_SECONDS)},
+        )
     if isinstance(exc, InvalidTokenError):
         return LocalisedHTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -322,6 +352,56 @@ async def verify_otp(
             otp_code=body.otp,
             redis=redis,
             db=db,
+        )
+    except AuthError as exc:
+        raise _auth_error_to_http(exc, lang) from exc
+
+    return TokenResponse(
+        token=access_token,
+        refresh_token=refresh_token,
+        role=role.value if hasattr(role, "value") else str(role),
+    )
+
+
+@router.post(
+    "/privy/verify",
+    response_model=TokenResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Verify Privy tokens and issue JWT",
+    description=(
+        "Exchanges the tokens from a completed Privy email OTP login for our own "
+        "signed JWT + opaque refresh token. Send the Privy access token as "
+        "``privy_token``; include the Privy identity token as ``identity_token`` so "
+        "a provisioned analyst/responder/admin email resolves to its stored elevated "
+        "role (otherwise the caller receives ``role=reporter``). Returns the same "
+        "``{ token, refresh_token, role }`` shape as ``/auth/otp/verify``. An "
+        "expired, tampered, or wrong-audience Privy token returns HTTP 401. The "
+        "endpoint is rate limited per client IP."
+    ),
+)
+async def verify_privy(
+    body: PrivyVerifyRequest,
+    request: Request,
+    redis: Redis = Depends(get_redis),
+    db: AsyncSession = Depends(get_db),
+    lang: str = Depends(get_locale),
+) -> TokenResponse:
+    """Verify Privy access + identity tokens and return an access + refresh pair."""
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        await auth_service.check_rate_limit(
+            redis,
+            bucket=f"privy_verify:{client_ip}",
+            limit=RATE_PRIVY_VERIFY_LIMIT,
+            window_seconds=RATE_PRIVY_VERIFY_WINDOW_SECONDS,
+        )
+        access_token, refresh_token, role = (
+            await auth_service.verify_privy_and_issue_tokens(
+                privy_token=body.privy_token,
+                identity_token=body.identity_token,
+                redis=redis,
+                db=db,
+            )
         )
     except AuthError as exc:
         raise _auth_error_to_http(exc, lang) from exc

@@ -36,6 +36,13 @@ RATE_OTP_REQUEST: str = "5 per minute"
 # OTP verification: prevent brute-force guessing of 6-digit codes.
 RATE_OTP_VERIFY: str = "10 per minute"
 
+# Privy token verification: Privy rate-limits its own sendCode/loginWithCode,
+# but our verify-then-lookup step is still protected against a client hammering
+# it with garbage tokens.  Enforced per client IP via a Redis fixed-window
+# counter (auth_service.check_rate_limit).
+RATE_PRIVY_VERIFY_LIMIT: int = 10
+RATE_PRIVY_VERIFY_WINDOW_SECONDS: int = 60
+
 # Analyst login: prevent credential stuffing.
 RATE_ANALYST_LOGIN: str = "10 per minute"
 
