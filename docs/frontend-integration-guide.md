@@ -37,8 +37,10 @@ The system has three distinct user types. Each has a different authentication pa
 | User type | How they authenticate | What they can do |
 |---|---|---|
 | Anonymous reporter | One API call, no credentials | Submit damage reports |
-| Verified reporter | Phone number + SMS OTP | Submit reports with higher trust tier |
-| Analyst / Responder / Admin | Phone number + SMS OTP (provisioned account) | Review reports, run exports, manage accounts |
+| Verified reporter | Email OTP via Privy | Submit reports with higher trust tier |
+| Analyst / Responder / Admin | Email OTP via Privy (provisioned account) | Review reports, run exports, manage accounts |
+
+Reporters and analysts use the **same** login flow — a provisioned `analyst_accounts` row (created by an admin, keyed by the email address) is the only thing that changes the returned `role`.
 
 ### How Tokens Work
 
@@ -62,7 +64,7 @@ Both headers are equivalent. Use `Authorization: Bearer` as the default. Use `X-
 |---|---|---|
 | Anonymous session token | 60 minutes | Call `POST /auth/anonymous` again |
 | Access token (reporter / analyst) | 60 minutes | Call `POST /auth/refresh` |
-| Refresh token | 30 days | User must log in again with OTP |
+| Refresh token | 30 days | User must log in again via Privy email OTP |
 
 Tokens are single-use for refresh rotation. Every call to `POST /auth/refresh` invalidates the old refresh token and returns a new one. Store the new refresh token immediately.
 
@@ -84,7 +86,7 @@ The `role` value is also returned directly in the login response body so you do 
 
 ### 2.1 Anonymous Reporter Login
 
-Use this when the user has not registered a phone number. No credentials are needed.
+Use this when the user has not signed in. No credentials are needed.
 
 **Request**
 
@@ -106,63 +108,48 @@ Store `session_token` and send it as `Authorization: Bearer <session_token>` on 
 
 ---
 
-### 2.2 Reporter Login (Phone OTP)
+### 2.2 Reporter and Analyst Login (Email OTP via Privy)
 
-This is a two-step process. Step 1 sends the OTP. Step 2 verifies it and returns a token.
+Login is a two-step email OTP flow **run by [Privy](https://docs.privy.io/) on the client**, followed by a single call to our backend to exchange the Privy tokens for our own session tokens. Reporters and analysts use the exact same flow.
 
-#### Step 1 of 2: Send OTP
+#### Step 1 of 2: Privy sends and verifies the email code (client-side)
+
+Using the Privy React SDK (`@privy-io/react-auth`, `useLoginWithEmail` hook):
+
+```ts
+const { sendCode, loginWithCode } = useLoginWithEmail();
+await sendCode({ email });          // Privy emails a 6-digit code
+await loginWithCode({ code });      // Privy verifies it and creates a Privy session
+```
+
+Privy rate-limits `sendCode` / `loginWithCode` itself and surfaces invalid-code, expired-code, and too-many-attempts states through the hook's `state` object — map those to your existing error copy.
+
+`NEXT_PUBLIC_PRIVY_APP_ID` on the client and `PRIVY_APP_ID` on the backend **must be the same Privy app**, and the app must have "Return user data in an identity token" enabled in the Privy dashboard.
+
+#### Step 2 of 2: Exchange Privy tokens for our session
+
+Once `loginWithCode` succeeds, read both Privy tokens and post them to our backend:
+
+```ts
+const privy_token   = await getAccessToken();     // from usePrivy()
+const identity_token = await getIdentityToken();   // from useIdentityToken()
+```
 
 **Request**
 
 ```
-POST /api/v1/auth/otp/send
+POST /api/v1/auth/privy/verify
 Content-Type: application/json
 ```
 
 ```json
 {
-  "phone": "+254700123456"
+  "privy_token": "<Privy access token JWT>",
+  "identity_token": "<Privy identity token JWT>"
 }
 ```
 
-The `phone` field must be E.164 format: a `+` sign, the country code, then the subscriber number, with no spaces or dashes. Example: `+254700123456` for a Kenyan number.
-
-**Response: 200**
-
-```json
-{
-  "message": "OTP sent successfully."
-}
-```
-
-The user receives a 6-digit code via SMS (or a voice call if SMS fails).
-
-**Error cases**
-
-| HTTP status | Meaning |
-|---|---|
-| 400 | Phone number format is invalid |
-| 503 | SMS gateway failed to deliver the message |
-
----
-
-#### Step 2 of 2: Verify OTP
-
-**Request**
-
-```
-POST /api/v1/auth/otp/verify
-Content-Type: application/json
-```
-
-```json
-{
-  "phone": "+254700123456",
-  "otp": "483920"
-}
-```
-
-The `otp` field must be exactly 6 digits, as a string.
+`identity_token` is optional but should always be sent — it carries the verified email address, and without it a provisioned analyst/responder/admin resolves as a plain `reporter`.
 
 **Response: 200**
 
@@ -174,16 +161,22 @@ The `otp` field must be exactly 6 digits, as a string.
 }
 ```
 
-Store both `token` and `refresh_token`. Send `token` as `Authorization: Bearer <token>` on all subsequent requests.
+Identical shape to what the old phone OTP verify returned — `saveAuth()`, `recoverSession()`, refresh rotation, and logout are all unchanged. Store both `token` and `refresh_token`; send `token` as `Authorization: Bearer <token>` on all subsequent requests.
 
-If the phone number belongs to a provisioned analyst, responder, or admin account, the `role` field will be `analyst`, `responder`, or `admin` instead of `reporter`. The OTP flow is identical; only the returned role differs.
+If the email belongs to a provisioned account, `role` is `analyst`, `responder`, or `admin` instead of `reporter`.
 
 **Error cases**
 
 | HTTP status | Meaning | Action |
 |---|---|---|
-| 400 | OTP is wrong or has expired | Show error, let user try again or resend |
-| 429 | Too many failed attempts (5 failures in 15 min) | Show lockout message, wait 15 minutes |
+| 401 | Privy token is expired, tampered, wrong-audience, or missing | Refresh the Privy token (`getAccessToken()` retries) and retry once; if it still fails, restart the Privy login |
+| 429 | Too many verify calls from this IP (10 / minute) | Back off for the `Retry-After` interval |
+
+---
+
+### 2.2b Legacy: Phone OTP (deprecated, not used by the frontend)
+
+`POST /auth/otp/send` and `POST /auth/otp/verify` (phone + SMS 6-digit code) still exist and still work, but the frontend no longer calls them. They are retained only so SMS can be brought back as a fallback without a rebuild. Do not build new flows against them. Request bodies: `{ "phone": "+254700123456" }` and `{ "phone": "+254700123456", "otp": "483920" }`; response shape is the same `{ token, refresh_token, role }`.
 
 ---
 
@@ -221,7 +214,7 @@ The old refresh token is immediately invalidated. Store the new `refresh_token` 
 |---|---|
 | 401 | Refresh token is invalid, expired (30 days), or already used |
 
-When you receive 401 from refresh, the user must log in again with OTP.
+When you receive 401 from refresh, the user must log in again via the Privy email OTP flow (Section 2.2).
 
 ---
 
@@ -601,7 +594,7 @@ Form fields:
 
 ## 6. Analyst and Responder Flow
 
-Analysts and responders log in using the standard OTP flow (Section 2.2). The returned `role` will be `analyst` or `responder`. All analyst endpoints require one of these roles.
+Analysts and responders log in using the same Privy email OTP flow as reporters (Section 2.2). The returned `role` will be `analyst` or `responder` when the email matches a provisioned account. All analyst endpoints require one of these roles.
 
 The difference between analyst and responder:
 
@@ -984,7 +977,7 @@ This endpoint also applies the recommended divergence threshold to the live syst
 
 ## 7. Admin Flow
 
-Admin accounts log in using the same OTP flow. Their `role` is `"admin"`. Admin accounts can do everything analysts can, plus they can provision and deactivate other accounts.
+Admin accounts log in using the same Privy email OTP flow (Section 2.2). Their `role` is `"admin"`. Admin accounts can do everything analysts can, plus they can provision and deactivate other accounts.
 
 ---
 
@@ -1000,11 +993,13 @@ Content-Type: application/json
 
 ```json
 {
-  "phone": "+254700123456",
+  "email": "analyst@example.org",
   "role": "analyst",
   "region_geojson": null
 }
 ```
+
+`email` is the address the analyst will sign in with through Privy. It is normalised (trimmed + lower-cased) and hashed before storage; the plaintext is never persisted.
 
 `role` must be one of: `analyst`, `responder`, `admin`.
 
@@ -1022,26 +1017,26 @@ Note: the entire GeoJSON object must be a string (JSON-encoded string inside the
 
 ```json
 {
-  "message": "Account provisioned. The analyst can now log in via POST /auth/otp/send.",
+  "message": "Account provisioned. The analyst can now log in via POST /auth/privy/verify.",
   "account": {
     "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
     "role": "analyst",
     "region_geojson": null,
     "is_active": true,
-    "created_by_sub": "sha256-hash-of-admin-phone"
+    "created_by_sub": "sha256-hash-of-admin-identifier"
   }
 }
 ```
 
-After provisioning, the analyst uses the standard OTP flow (Section 2.2) to log in. They do not receive any separate invitation; you must communicate their login instructions out of band.
+After provisioning, the analyst signs in with that email through the Privy email OTP flow (Section 2.2). They do not receive any separate invitation; you must communicate their login instructions out of band.
 
 **Error cases**
 
 | HTTP status | Meaning |
 |---|---|
-| 400 | Phone number is already registered as an account |
+| 400 | Email address is already registered as an account |
 | 403 | Caller is not an admin |
-| 422 | Invalid role or invalid phone format |
+| 422 | Invalid role or invalid email format |
 
 ---
 
@@ -1063,7 +1058,7 @@ Authorization: Bearer <admin-token>
     "role": "analyst",
     "region_geojson": null,
     "is_active": true,
-    "created_by_sub": "sha256-hash-of-admin-phone"
+    "created_by_sub": "sha256-hash-of-admin-identifier"
   }
 ]
 ```
@@ -1416,11 +1411,12 @@ The response also includes these headers:
 
 | Endpoint | Limit |
 |---|---|
-| `POST /auth/otp/send` | Per phone number (backend-enforced) |
-| `POST /auth/otp/verify` | 5 failures per 15 minutes per phone number, then locked out |
+| `POST /auth/privy/verify` | 10 per minute per client IP, then 429 with `Retry-After` |
 | `POST /reports` | 10 submissions per hour per session token |
+| `POST /auth/otp/send` (legacy) | Per phone number (backend-enforced) |
+| `POST /auth/otp/verify` (legacy) | 5 failures per 15 minutes per phone number, then locked out |
 
-When the OTP verify endpoint returns 429, show a message telling the user to wait 15 minutes before trying again. Do not offer a "resend" button during the lockout period.
+Privy also rate-limits its own `sendCode` / `loginWithCode` on the client. When `POST /auth/privy/verify` returns 429, back off for the `Retry-After` interval before retrying.
 
 ---
 
@@ -1429,7 +1425,7 @@ When the OTP verify endpoint returns 429, show a message telling the user to wai
 The API supports multiple languages for error messages. Add the `lang` query parameter to any request:
 
 ```
-POST /api/v1/auth/otp/send?lang=sw
+POST /api/v1/auth/privy/verify?lang=sw
 ```
 
 Or set the `Accept-Language` header:
@@ -1531,18 +1527,18 @@ if (reportRes.status === 201) {
 ### Example B: Analyst logs in and works through the review queue
 
 ```javascript
-// Step 1: Send OTP
-await fetch('/api/v1/auth/otp/send', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ phone: '+254700123456' }),
-});
+// Steps 1-2: Privy runs the email OTP flow on the client (useLoginWithEmail):
+//   await sendCode({ email });
+//   await loginWithCode({ code });   // user types the 6-digit code from their inbox
 
-// Step 2: Verify OTP (user types in 6-digit code from SMS)
-const verifyRes = await fetch('/api/v1/auth/otp/verify', {
+// Step 3: Exchange the Privy tokens for our session
+const verifyRes = await fetch('/api/v1/auth/privy/verify', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ phone: '+254700123456', otp: '483920' }),
+  body: JSON.stringify({
+    privy_token: await getAccessToken(),
+    identity_token: await getIdentityToken(),
+  }),
 });
 const { token, refresh_token, role } = await verifyRes.json();
 // role will be "analyst" for a provisioned analyst account
@@ -1595,7 +1591,7 @@ const res = await fetch('/api/v1/auth/analyst/register', {
     'Content-Type': 'application/json',
   },
   body: JSON.stringify({
-    phone: '+254711000000',
+    email: 'new.analyst@example.org',
     role: 'analyst',
     region_geojson: null,
   }),
@@ -1605,7 +1601,7 @@ if (res.status === 201) {
   const { account } = await res.json();
   showSuccess(`Account created. ID: ${account.id}`);
 } else if (res.status === 400) {
-  showError('This phone number is already registered.');
+  showError('This email address is already registered.');
 }
 ```
 
@@ -1673,8 +1669,9 @@ async function apiFetch(url, options = {}) {
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/api/v1/auth/anonymous` | None | Get anonymous token |
-| POST | `/api/v1/auth/otp/send` | None | Send OTP to phone |
-| POST | `/api/v1/auth/otp/verify` | None | Verify OTP, get token |
+| POST | `/api/v1/auth/privy/verify` | None | Exchange Privy email-OTP tokens for a session |
+| POST | `/api/v1/auth/otp/send` | None | *(legacy, unused)* Send phone OTP |
+| POST | `/api/v1/auth/otp/verify` | None | *(legacy, unused)* Verify phone OTP |
 | POST | `/api/v1/auth/refresh` | None | Rotate refresh token |
 | DELETE | `/api/v1/auth/logout` | Token | Revoke token |
 | GET | `/api/v1/reports/nearby` | None | Check for duplicate reports |

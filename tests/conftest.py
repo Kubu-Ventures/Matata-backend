@@ -34,11 +34,12 @@ os.environ.setdefault("VISION_PROVIDER", "mock")
 os.environ.setdefault("OPENAI_API_KEY", "")
 os.environ.setdefault("ANTHROPIC_API_KEY", "")
 os.environ.setdefault("AI_PROCESSING_QUEUE_ALERT_DEPTH", "500")
-# ── Supabase Auth env vars ────────────────────────────────────────────────────
-os.environ.setdefault("SUPABASE_URL", "")
-os.environ.setdefault("SUPABASE_ANON_KEY", "")
-os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "")
-os.environ.setdefault("SUPABASE_JWT_SECRET", "")
+# ── Privy auth env vars ──────────────────────────────────────────────────────
+# Left empty here; tests/test_privy_auth.py generates a real ES256 keypair and
+# monkeypatches settings.PRIVY_APP_ID / PRIVY_VERIFICATION_KEY for the cases
+# that exercise the Privy verify path.
+os.environ.setdefault("PRIVY_APP_ID", "")
+os.environ.setdefault("PRIVY_VERIFICATION_KEY", "")
 from unittest.mock import AsyncMock  # noqa: E402
 
 # ── Standard imports (safe now that env is ready) ────────────────────────────

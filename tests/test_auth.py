@@ -5,7 +5,7 @@ is needed.  External dependencies are mocked at the boundary.
 
 Coverage targets
 ----------------
-* auth_service: hash_phone, OTP send/verify, JWT build/decode/verify,
+* auth_service: hash_identifier, OTP send/verify, JWT build/decode/verify,
   anonymous token, refresh rotation, logout, denylist, issue_analyst_token
 * auth routes: all endpoints, error mapping, role enforcement, get_current_user
 * sms: ConsoleSMSGateway, AfricasTalkingSMSGateway, get_sms_gateway factory
@@ -35,23 +35,23 @@ _OTP_MAX_ATTEMPTS = 5
 # ===========================================================================
 
 
-class TestHashPhone:
+class TestHashIdentifier:
     def test_returns_64_char_hex(self):
-        from app.services.auth_service import hash_phone
+        from app.services.auth_service import hash_identifier
 
-        result = hash_phone(_PHONE)
+        result = hash_identifier(_PHONE)
         assert len(result) == 64
         assert all(c in "0123456789abcdef" for c in result)
 
     def test_same_input_same_output(self):
-        from app.services.auth_service import hash_phone
+        from app.services.auth_service import hash_identifier
 
-        assert hash_phone(_PHONE) == hash_phone(_PHONE)
+        assert hash_identifier(_PHONE) == hash_identifier(_PHONE)
 
     def test_different_inputs_different_outputs(self):
-        from app.services.auth_service import hash_phone
+        from app.services.auth_service import hash_identifier
 
-        assert hash_phone(_PHONE) != hash_phone("+254700000000")
+        assert hash_identifier(_PHONE) != hash_identifier("+254700000000")
 
 
 class TestBuildAccessToken:

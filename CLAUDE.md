@@ -69,11 +69,15 @@ Two session flavours exist (see `app/core/dependencies.py`):
 
 ### Authentication
 
-Three roles: `anonymous_reporter` (zero-friction JWT from `POST /api/v1/auth/anonymous`), `reporter` (OTP-verified via SMS), `analyst` (email + password with JWT + refresh tokens).
+Roles: `anonymous_reporter` (zero-friction JWT from `POST /api/v1/auth/anonymous`), `reporter`, `analyst`, `responder`, `admin`.
 
-Token auth accepts either `Authorization: Bearer <token>` or `X-Session-Token: <token>`. Tokens are added to a Redis denylist on logout. Phone numbers are never stored — only SHA-256 hashes salted with `PHONE_HASH_SALT`.
+Primary login is **email OTP via [Privy](https://docs.privy.io/)**. The frontend runs Privy's email OTP flow and posts the resulting tokens to `POST /api/v1/auth/privy/verify` (`{ privy_token, identity_token }`). The backend verifies both ES256 tokens against `PRIVY_VERIFICATION_KEY` (issuer `privy.io`, audience `PRIVY_APP_ID`), takes the email from the identity token's `linked_accounts` claim, and issues our own `{ token, refresh_token, role }` pair — same shape and same downstream mechanics (refresh rotation, logout, denylist) as before. A provisioned row in `analyst_accounts` (keyed by a salted SHA-256 hash of the email) elevates the JWT `role`; everyone else gets `reporter`.
 
-Use `require_role(Role.analyst)` from `app/api/v1/routes/auth.py` as a FastAPI dependency to gate analyst-only endpoints.
+Legacy phone/SMS OTP (`POST /auth/otp/send` + `/auth/otp/verify`, `app/services/sms.py`, `app/api/v1/routes/voice.py`) is **retained but dormant** — `SMS_GATEWAY=console` by default and the frontend no longer calls it. Kept so SMS can be re-enabled as a fallback without a rebuild.
+
+Token auth accepts either `Authorization: Bearer <token>` or `X-Session-Token: <token>`. Tokens are added to a Redis denylist on logout. Login identifiers (Privy DIDs, emails, phone numbers) are never stored — only SHA-256 hashes salted with `PHONE_HASH_SALT` (`hash_identifier()` in `auth_service.py`).
+
+Use `require_role(Role.analyst)` from `app/api/v1/routes/auth.py` as a FastAPI dependency to gate analyst-only endpoints. Bootstrap the first admin with `python -m app.cli create-admin --email <addr>`.
 
 ### Report submission flow
 
