@@ -696,6 +696,12 @@ def get_vision_provider() -> VisionProvider:
 
     if provider_name == "mock":
         return MockVisionProvider()
+    if provider_name == "sim":
+        # Deterministic model surrogate for pipeline validation — never a
+        # production value. See app/services/sim_providers.py.
+        from app.services.sim_providers import SimVisionProvider
+
+        return SimVisionProvider()
     if provider_name == "ollama":
         return _ollama()
     if provider_name == "openai":

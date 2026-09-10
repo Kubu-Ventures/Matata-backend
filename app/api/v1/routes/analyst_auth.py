@@ -1,14 +1,14 @@
 """Analyst account provisioning routes.
 
-Analyst, responder, and admin accounts are stored as hashed phone numbers in
-the ``analyst_accounts`` table.  Login works through the standard OTP flow:
+Analyst, responder, and admin accounts are stored as hashed email addresses in
+the ``analyst_accounts`` table.  Login works through the Privy email OTP flow:
 
-    POST /api/v1/auth/otp/send   { "phone": "+254700123456" }
-    POST /api/v1/auth/otp/verify { "phone": "...", "otp": "123456" }
+    POST /api/v1/auth/privy/verify { "privy_token": "...", "identity_token": "..." }
 
-The verify endpoint looks up the phone hash; if a provisioned account exists
-the returned JWT carries the stored elevated role (analyst / responder / admin)
-instead of the default reporter role.  No separate login endpoint is required.
+The verify endpoint hashes the email from the Privy identity token; if a
+provisioned account exists the returned JWT carries the stored elevated role
+(analyst / responder / admin) instead of the default reporter role.  No separate
+login endpoint is required.
 
 Admin-only management routes in this module:
 
@@ -38,7 +38,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/analyst", tags=["Analyst Account Management"])
 
 _ELEVATED_ROLES = {Role.analyst.value, Role.responder.value, Role.admin.value}
-_E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+# Deliberately simple — reject obvious garbage, not implement RFC 5322.
+# Same pattern as app/cli/create_analyst.py.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -47,10 +49,10 @@ _E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 
 
 class RegisterRequest(BaseModel):
-    phone: str = Field(
+    email: str = Field(
         ...,
-        description="E.164-formatted phone number of the analyst to provision.",
-        examples=["+254700123456"],
+        description="Email address of the analyst to provision.",
+        examples=["analyst@example.org"],
     )
     role: str = Field(
         default="analyst",
@@ -64,13 +66,11 @@ class RegisterRequest(BaseModel):
         ),
     )
 
-    @field_validator("phone")
+    @field_validator("email")
     @classmethod
-    def validate_e164(cls, value: str) -> str:
-        if not _E164_RE.match(value):
-            raise ValueError(
-                "Phone number must be in E.164 format, e.g. +254700123456."
-            )
+    def validate_email(cls, value: str) -> str:
+        if not _EMAIL_RE.match(value):
+            raise ValueError("A valid email address is required.")
         return value
 
     @field_validator("role")
@@ -110,18 +110,18 @@ class RegisterResponse(BaseModel):
     status_code=status.HTTP_201_CREATED,
     summary="Provision an analyst account (admin only)",
     description=(
-        "Registers a phone number as an analyst, responder, or admin account. "
-        "The phone number is hashed immediately and never stored in plaintext. "
-        "Once registered, the user logs in through the standard OTP flow "
-        "(POST /auth/otp/send + POST /auth/otp/verify) and receives a JWT "
-        "with the provisioned elevated role. "
+        "Registers an email address as an analyst, responder, or admin account. "
+        "The email is normalised and hashed immediately and never stored in "
+        "plaintext. Once registered, the user logs in through the Privy email OTP "
+        "flow (POST /auth/privy/verify) and receives a JWT with the provisioned "
+        "elevated role. "
         "Requires admin role."
     ),
     responses={
         201: {"description": "Account provisioned."},
-        400: {"description": "Phone number already registered."},
+        400: {"description": "Email address already registered."},
         403: {"description": "Caller does not have admin role."},
-        422: {"description": "Invalid role or phone format."},
+        422: {"description": "Invalid role or email format."},
     },
 )
 async def register_analyst(
@@ -129,10 +129,10 @@ async def register_analyst(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_role(Role.admin)),
 ) -> RegisterResponse:
-    """Provision an analyst account from an admin-supplied phone number."""
+    """Provision an analyst account from an admin-supplied email address."""
     try:
         account = await auth_service.register_analyst_account(
-            phone_number=body.phone,
+            email=body.email,
             role=Role(body.role),
             created_by_sub=current_user["sub"],
             db=db,
@@ -152,7 +152,7 @@ async def register_analyst(
     return RegisterResponse(
         message=(
             "Account provisioned. "
-            "The analyst can now log in via POST /auth/otp/send."
+            "The analyst can now log in via POST /auth/privy/verify."
         ),
         account=AccountResponse.model_validate(account),
     )

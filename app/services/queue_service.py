@@ -32,6 +32,7 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from app.workers.celery_app import celery_app
+
 logger = logging.getLogger(__name__)
 
 # Redis Stream key constants — centralised here so all code uses the same names.
@@ -105,6 +106,7 @@ class RedisQueueService:
                 report_id,
                 type(exc).__name__,
             )
+
 
 # ---------------------------------------------------------------------------
 # MockQueueService — unit tests

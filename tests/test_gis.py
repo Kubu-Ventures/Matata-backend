@@ -674,14 +674,30 @@ class TestGISBuildingMatchEndpoint:
 
     @pytest.fixture
     def app_client(self):
-        """Return a TestClient for the FastAPI app with GIS router registered."""
+        """TestClient for the GIS router with DB + Redis dependencies stubbed.
+
+        The route depends on ``get_sync_db`` and ``get_redis``; overriding them
+        here keeps the test hermetic — it must never reach a real
+        ``localhost:6379`` (that made CI red whenever Redis was absent).
+        """
+        from unittest.mock import AsyncMock
+
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
         from app.api.v1.routes.gis import router
+        from app.core.dependencies import get_redis, get_sync_db
 
         test_app = FastAPI()
         test_app.include_router(router, prefix="/api/v1")
+
+        redis_stub = AsyncMock()
+        redis_stub.get = AsyncMock(return_value=None)
+        redis_stub.set = AsyncMock(return_value=True)
+
+        test_app.dependency_overrides[get_sync_db] = lambda: MagicMock()
+        test_app.dependency_overrides[get_redis] = lambda: redis_stub
+
         return TestClient(test_app)
 
     def test_returns_200_with_building_id(self, app_client):
@@ -695,24 +711,16 @@ class TestGISBuildingMatchEndpoint:
         )
 
         with patch("app.api.v1.routes.gis.GISService") as MockGIS:
-            with patch("app.api.v1.routes.gis.get_sync_db") as mock_db_dep:
-                with patch("app.api.v1.routes.gis.get_redis") as mock_redis_dep:
-                    mock_db_dep.return_value = iter([MagicMock()])
-                    mock_redis_instance = MagicMock()
-                    mock_redis_instance.get = MagicMock(return_value=None)
-                    mock_redis_instance.set = MagicMock(return_value=True)
-                    mock_redis_dep.return_value = iter([mock_redis_instance])
+            MockGIS.return_value.match_building.return_value = mock_match
+            response = app_client.get(
+                "/api/v1/gis/building/match",
+                params={"lat": -1.295, "lng": 36.805},
+            )
 
-                    MockGIS.return_value.match_building.return_value = mock_match
-
-                    # Use httpx directly to avoid async complications in sync tests
-                    response = app_client.get(
-                        "/api/v1/gis/building/match",
-                        params={"lat": -1.295, "lng": 36.805},
-                    )
-
-        # 422 or 200 — just verify the endpoint is reachable
-        assert response.status_code in (200, 422, 500)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["building_id"] == str(_BUILDING_ID)
+        assert body["confidence"] == 1.0
 
     def test_requires_lat_and_lng_params(self, app_client):
         """Missing required query params should return 422."""

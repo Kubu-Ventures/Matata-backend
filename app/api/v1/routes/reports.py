@@ -68,11 +68,11 @@ from app.core.dependencies import get_db, get_redis
 from app.core.i18n import LocalisedHTTPException, get_locale
 from app.schemas.report_submission import (
     NearbyReportItem,
+    PaginatedOwnReports,
     ReportCreateResponse,
     ReportCreateSchema,
     ReportDetailResponse,
     ReportPhotoResponse,
-    PaginatedOwnReports,
 )
 from app.services.queue_service import RedisQueueService
 from app.services.submission_service import (
@@ -243,6 +243,15 @@ async def submit_report(
             headers={"Retry-After": "3600"},
         ) from exc
     except ModerationRejectionError:
+        # The service flushed an internal rejection audit row before raising.
+        # Commit it here — spec §8.2.1 requires every rejection to be recorded,
+        # and the request-scoped session would otherwise roll it back on the
+        # way out. No report row was inserted on this path, so this commits
+        # exactly the audit entry.
+        try:
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            await db.rollback()
         # Generic message — do not disclose rejection reason (spec §8.2.1).
         raise LocalisedHTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -284,7 +293,6 @@ async def submit_report(
     )
 
 
-
 @router.get(
     "",
     response_model=PaginatedOwnReports,
@@ -317,6 +325,7 @@ async def list_my_reports(
         limit=limit,
         items=[ReportDetailResponse.model_validate(r) for r in reports],
     )
+
 
 # ---------------------------------------------------------------------------
 # PATCH /reports/{id}/photo — attach photo to existing report (offline sync)
@@ -378,6 +387,12 @@ async def upload_report_photo(
             lang=lang,
         ) from exc
     except ModerationRejectionError:
+        # Persist the flushed photo-rejection audit row before the 422 — see
+        # the matching handler in submit_report and spec §8.2.1.
+        try:
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            await db.rollback()
         raise LocalisedHTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             message_key="errors.image_rejected",

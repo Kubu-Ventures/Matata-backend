@@ -95,3 +95,12 @@ docker-data/
 buildings_raw.json
 footprints.geojson
 app/core/config.py
+
+# =========================
+# Simulation / eval harness runtime artifacts
+# =========================
+celerybeat-schedule
+celerybeat-schedule.*
+simulation/out/
+.env.pre-sim
+.env.pre-sim.*

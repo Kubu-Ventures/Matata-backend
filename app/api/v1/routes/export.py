@@ -70,6 +70,7 @@ def _build_filters(
     time_to: Optional[datetime],
     min_ai_confidence: Optional[float],
     include_footprints: bool = False,
+    location_precision: str = "exact",
 ) -> ExportFilterParams:
     """Parse comma-separated filter strings into an ``ExportFilterParams``."""
 
@@ -87,6 +88,11 @@ def _build_filters(
         time_to=time_to,
         min_ai_confidence=min_ai_confidence,
         include_footprints=include_footprints,
+        location_precision=(
+            location_precision
+            if location_precision in ("exact", "reduced", "coarse")
+            else "exact"
+        ),
     )
 
 
@@ -108,6 +114,7 @@ def _filters_to_dict(filters: ExportFilterParams) -> dict:
     if filters.min_ai_confidence is not None:
         d["min_ai_confidence"] = filters.min_ai_confidence
     d["include_footprints"] = filters.include_footprints
+    d["location_precision"] = filters.location_precision
     return d
 
 
@@ -169,6 +176,15 @@ async def export_geojson(
     time_to: Optional[datetime] = Query(default=None),
     min_ai_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0),
     include_footprints: bool = Query(default=False),
+    location_precision: str = Query(
+        default="exact",
+        pattern="^(exact|reduced|coarse)$",
+        description=(
+            "Coordinate precision: 'exact', 'reduced' (~110 m) or 'coarse' "
+            "(~1.1 km). Use a coarser value for external sharing or sensitive "
+            "crisis types; anything but 'exact' also drops gps_accuracy_m."
+        ),
+    ),
     current_user: dict = Depends(
         require_role(Role.analyst, Role.responder, Role.admin)
     ),
@@ -184,6 +200,7 @@ async def export_geojson(
         time_to,
         min_ai_confidence,
         include_footprints,
+        location_precision,
     )
     svc = ExportService(db=db, analyst_id_hash=_analyst_id_hash(current_user))
     count = await svc.count_records(filters)
@@ -245,6 +262,9 @@ async def export_csv(
     time_from: Optional[datetime] = Query(default=None),
     time_to: Optional[datetime] = Query(default=None),
     min_ai_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0),
+    location_precision: str = Query(
+        default="exact", pattern="^(exact|reduced|coarse)$"
+    ),
     current_user: dict = Depends(
         require_role(Role.analyst, Role.responder, Role.admin)
     ),
@@ -259,6 +279,7 @@ async def export_csv(
         time_from,
         time_to,
         min_ai_confidence,
+        location_precision=location_precision,
     )
     svc = ExportService(db=db, analyst_id_hash=_analyst_id_hash(current_user))
     count = await svc.count_records(filters)
@@ -320,6 +341,9 @@ async def export_shapefile(
     time_from: Optional[datetime] = Query(default=None),
     time_to: Optional[datetime] = Query(default=None),
     min_ai_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0),
+    location_precision: str = Query(
+        default="exact", pattern="^(exact|reduced|coarse)$"
+    ),
     current_user: dict = Depends(
         require_role(Role.analyst, Role.responder, Role.admin)
     ),
@@ -334,6 +358,7 @@ async def export_shapefile(
         time_from,
         time_to,
         min_ai_confidence,
+        location_precision=location_precision,
     )
     svc = ExportService(db=db, analyst_id_hash=_analyst_id_hash(current_user))
     count = await svc.count_records(filters)

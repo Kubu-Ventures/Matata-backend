@@ -1,21 +1,21 @@
-"""Tests for OTP-based analyst account provisioning.
+"""Tests for email-based analyst account provisioning.
 
 Coverage
 --------
 auth_service:
   lookup_analyst_account  — found, not found, inactive ignored
-  register_analyst_account — success, invalid role, duplicate phone
+  register_analyst_account — success, invalid role, duplicate email
   deactivate_analyst_account — success, not found
 
 analyst_auth routes:
   POST   /auth/analyst/register  — admin success, non-admin 403, bad role 422,
-                                   bad phone 422, duplicate 400
+                                   bad email 422, duplicate 400
   DELETE /auth/analyst/accounts/{id} — admin success, not found 404, non-admin 403
   GET    /auth/analyst/accounts  — admin lists accounts
 
-auth_service.verify_otp (analyst elevation):
+auth_service.verify_otp (legacy phone OTP path — retained, dormant):
   — reporter phone returns reporter role
-  — analyst phone returns analyst role
+  — a mocked provisioned account still elevates the role
 
 All tests are pure unit tests — no real database, Redis, or network.
 """
@@ -29,6 +29,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 _PHONE = "+254700000001"
+_EMAIL = "analyst@example.org"
 _OTP = "123456"
 _ACCOUNT_ID = uuid.uuid4()
 
@@ -57,7 +58,7 @@ def _make_account(
 ) -> MagicMock:
     acc = MagicMock()
     acc.id = _ACCOUNT_ID
-    acc.phone_hash = "aabbcc"
+    acc.email_hash = "aabbcc"
     acc.role = role
     acc.region_geojson = region_geojson
     acc.is_active = is_active
@@ -143,7 +144,7 @@ class TestRegisterAnalystAccount:
         db.commit = AsyncMock()
 
         account = await register_analyst_account(
-            phone_number=_PHONE,
+            email=_EMAIL,
             role=Role.analyst,
             created_by_sub="admin-hash",
             db=db,
@@ -160,14 +161,14 @@ class TestRegisterAnalystAccount:
         db = AsyncMock()
         with pytest.raises(ValueError, match="elevated role"):
             await register_analyst_account(
-                phone_number=_PHONE,
+                email=_EMAIL,
                 role=Role.reporter,
                 created_by_sub="admin-hash",
                 db=db,
             )
 
     @pytest.mark.asyncio
-    async def test_raises_for_duplicate_phone(self):
+    async def test_raises_for_duplicate_email(self):
         from app.services.auth_service import Role, register_analyst_account
 
         db = AsyncMock()
@@ -179,7 +180,7 @@ class TestRegisterAnalystAccount:
 
         with pytest.raises(ValueError, match="already registered"):
             await register_analyst_account(
-                phone_number=_PHONE,
+                email=_EMAIL,
                 role=Role.analyst,
                 created_by_sub="admin-hash",
                 db=db,
@@ -286,6 +287,28 @@ class TestVerifyOtpRoleElevation:
         _, _, role = await verify_otp(_PHONE, _OTP, self._make_redis(), db=None)
         assert role == Role.reporter
 
+    @pytest.mark.asyncio
+    async def test_responder_region_geojson_lands_in_jwt(self):
+        """verify_otp carries a provisioned responder's region into the JWT.
+
+        Parallel to the Privy path — without the claim the analyst routes'
+        ST_Within filter never fires (audit H-1).
+        """
+        from app.services.auth_service import decode_access_token, verify_otp
+
+        region = '{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}'
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(
+                scalar_one_or_none=MagicMock(
+                    return_value=_make_account(role="responder", region_geojson=region)
+                )
+            )
+        )
+
+        access, _, _ = await verify_otp(_PHONE, _OTP, self._make_redis(), db=db)
+        assert decode_access_token(access)["region_geojson"] == region
+
 
 # ===========================================================================
 # Analyst register route
@@ -303,7 +326,7 @@ class TestRegisterRoute:
         ):
             resp = client.post(
                 "/api/v1/auth/analyst/register",
-                json={"phone": _PHONE, "role": "analyst"},
+                json={"email": _EMAIL, "role": "analyst"},
                 headers={"Authorization": f"Bearer {_admin_token()}"},
             )
 
@@ -318,7 +341,7 @@ class TestRegisterRoute:
 
         resp = client.post(
             "/api/v1/auth/analyst/register",
-            json={"phone": _PHONE, "role": "analyst"},
+            json={"email": _EMAIL, "role": "analyst"},
             headers={"Authorization": f"Bearer {_analyst_token()}"},
         )
 
@@ -330,7 +353,7 @@ class TestRegisterRoute:
 
         resp = client.post(
             "/api/v1/auth/analyst/register",
-            json={"phone": _PHONE, "role": "analyst"},
+            json={"email": _EMAIL, "role": "analyst"},
         )
 
         assert resp.status_code == 401
@@ -341,25 +364,25 @@ class TestRegisterRoute:
 
         resp = client.post(
             "/api/v1/auth/analyst/register",
-            json={"phone": _PHONE, "role": "superuser"},
+            json={"email": _EMAIL, "role": "superuser"},
             headers={"Authorization": f"Bearer {_admin_token()}"},
         )
 
         assert resp.status_code == 422
 
-    def test_invalid_phone_returns_422(self):
+    def test_invalid_email_returns_422(self):
         app = _make_app()
         client = TestClient(app)
 
         resp = client.post(
             "/api/v1/auth/analyst/register",
-            json={"phone": "not-a-phone", "role": "analyst"},
+            json={"email": "not-an-email", "role": "analyst"},
             headers={"Authorization": f"Bearer {_admin_token()}"},
         )
 
         assert resp.status_code == 422
 
-    def test_duplicate_phone_returns_400(self):
+    def test_duplicate_email_returns_400(self):
         app = _make_app()
         client = TestClient(app)
 
@@ -369,7 +392,7 @@ class TestRegisterRoute:
         ):
             resp = client.post(
                 "/api/v1/auth/analyst/register",
-                json={"phone": _PHONE, "role": "analyst"},
+                json={"email": _EMAIL, "role": "analyst"},
                 headers={"Authorization": f"Bearer {_admin_token()}"},
             )
 
@@ -388,7 +411,7 @@ class TestRegisterRoute:
         ) as mock_reg:
             resp = client.post(
                 "/api/v1/auth/analyst/register",
-                json={"phone": _PHONE, "role": "responder", "region_geojson": region},
+                json={"email": _EMAIL, "role": "responder", "region_geojson": region},
                 headers={"Authorization": f"Bearer {_admin_token()}"},
             )
 

@@ -516,6 +516,52 @@ class TestScoreReportImpl:
         assert result["best_score"] == 0.0
         assert result["primary_id"] is None
 
+    # ── test: idempotency guard (audit M-10) ────────────────────────────
+
+    def test_already_actioned_report_is_a_noop(self) -> None:
+        """A re-dispatch must not re-score a report an analyst already moved."""
+        from app.workers.duplicate_tasks import _score_report_impl
+
+        db = MagicMock()
+        report_res = MagicMock()
+        row = _mock_report_row()
+        row.status = "pending_merge_review"
+        report_res.fetchone.return_value = row
+        db.execute.return_value = report_res
+
+        with self._patch_session(db):
+            result = _score_report_impl(str(_REPORT_UUID))
+
+        assert result["action"] == "already_actioned"
+        # Only the load query ran — no candidate scan, no UPDATE.
+        assert db.execute.call_count == 1
+
+    # ── test: candidate geo-query failure recovers the transaction (L-1) ──
+
+    def test_geo_query_failure_rolls_back_before_fallback(self) -> None:
+        """audit L-1: if the ST_DWithin candidate query raises it aborts the
+        transaction; _load_candidates must roll back so the bounding-box
+        fallback doesn't die with InFailedSqlTransaction (which silently
+        killed score_report for whole batches in the load test)."""
+        from app.workers.duplicate_tasks import _score_report_impl
+
+        db = MagicMock()
+        report_res = MagicMock()
+        # building_id=None so _load_candidates goes straight to the geo path.
+        report_res.fetchone.return_value = _mock_report_row(building_id=None)
+        raised = MagicMock()
+        raised.fetchall.side_effect = Exception("PostGIS ST_DWithin boom")
+        fallback_res = MagicMock()
+        fallback_res.fetchall.return_value = []  # no candidates → independent
+        audit_res = MagicMock()
+        db.execute.side_effect = [report_res, raised, fallback_res, audit_res]
+
+        with self._patch_session(db):
+            result = _score_report_impl(str(_REPORT_UUID))
+
+        db.rollback.assert_called_once()
+        assert result["action"] == "independent"
+
     # ── test: no candidates → independent ────────────────────────────────
 
     def test_no_candidates_returns_independent(self) -> None:
@@ -535,12 +581,21 @@ class TestScoreReportImpl:
         fallback_res = MagicMock()
         fallback_res.fetchall.return_value = []
 
-        db.execute.side_effect = [report_res, candidate_res, fallback_res]
+        audit_res = MagicMock()  # INSERT audit_log (report.duplicate_scored)
+        db.execute.side_effect = [
+            report_res,
+            candidate_res,
+            fallback_res,
+            audit_res,
+        ]
 
         with self._patch_session(db):
             result = _score_report_impl(str(_REPORT_UUID))
 
         assert result["action"] == DuplicateAction.INDEPENDENT
+        # The "dedup ran" marker is persisted so the reconciliation sweep
+        # doesn't keep re-dispatching this report (audit M-9).
+        db.commit.assert_called_once()
 
     # ── test: auto-merge path ─────────────────────────────────────────────
 
@@ -616,8 +671,9 @@ class TestScoreReportImpl:
 
     # ── test: independent path ────────────────────────────────────────────
 
-    def test_independent_no_commit_needed(self) -> None:
-        """Low score → independent; no UPDATE or commit on the report."""
+    def test_independent_writes_scored_marker(self) -> None:
+        """Low score → independent; no report UPDATE, but the durable
+        'dedup ran' audit marker is written and committed (audit M-9)."""
         from app.workers.duplicate_tasks import _score_report_impl
 
         report_row = _mock_report_row(
@@ -640,14 +696,15 @@ class TestScoreReportImpl:
         report_res.fetchone.return_value = report_row
         candidate_res = MagicMock()
         candidate_res.fetchall.return_value = [cand_row]
-        db.execute.side_effect = [report_res, candidate_res]
+        audit_res = MagicMock()  # INSERT audit_log (report.duplicate_scored)
+        db.execute.side_effect = [report_res, candidate_res, audit_res]
 
         with self._patch_session(db):
             result = _score_report_impl(str(_REPORT_UUID))
 
         assert result["action"] == "independent"
-        # commit should NOT have been called for an independent result
-        db.commit.assert_not_called()
+        # No report row was UPDATEd, but the scored marker is committed.
+        db.commit.assert_called_once()
 
     # ── test: atomicity — audit log failure rolls back ────────────────────
 

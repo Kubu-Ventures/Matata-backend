@@ -26,11 +26,29 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
-    # ── Phone hashing ─────────────────────────────────────────────────────────
+    # ── Identifier hashing ───────────────────────────────────────────────────
     # Minimum 32 random bytes, base64-encoded.  Used to salt SHA-256 hashes of
-    # phone numbers and analyst email addresses so that a raw rainbow table
-    # cannot reverse stored hashes even if the database is compromised.
+    # every login identifier (Privy DIDs, email addresses, and legacy phone
+    # numbers) so that a raw rainbow table cannot reverse stored hashes even if
+    # the database is compromised.  The env var keeps its historical name.
     PHONE_HASH_SALT: str = ""
+
+    # ── Privy authentication (email OTP) ─────────────────────────────────────
+    # Privy (https://privy.io) is the primary login provider: the frontend runs
+    # the email OTP flow and posts the resulting tokens to POST /auth/privy/verify.
+    #
+    # PRIVY_APP_ID           — Privy application ID.  Doubles as the JWT ``aud``
+    #                          claim; MUST be identical to the frontend's
+    #                          NEXT_PUBLIC_PRIVY_APP_ID or every token fails the
+    #                          audience check.
+    # PRIVY_VERIFICATION_KEY — ES256 public key (PEM SPKI, "-----BEGIN PUBLIC
+    #                          KEY-----" …), copied from the Privy Dashboard under
+    #                          Configuration > App settings.  Verifies both the
+    #                          access token and the identity token.
+    #
+    # Leave both empty to disable Privy login (POST /auth/privy/verify then 401s).
+    PRIVY_APP_ID: str = ""
+    PRIVY_VERIFICATION_KEY: str = ""
 
     # ── SMS gateway ───────────────────────────────────────────────────────────
     SMS_GATEWAY: str = "console"  # console | africastalking

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Tuple
+from typing import Optional, Tuple
 
 from PIL import Image, ImageOps
 
@@ -112,3 +112,54 @@ def compress_image(
     )
 
     return compressed, "image/jpeg"
+
+
+# ---------------------------------------------------------------------------
+# Perceptual hash — the single implementation used everywhere
+# ---------------------------------------------------------------------------
+#
+# There must be exactly ONE perceptual-hash algorithm in the codebase.  The
+# duplicate-detection image signal (``duplicate_service._image_signal``)
+# compares the Hamming distance between two stored ``report.photo_phash``
+# values; if different reports were hashed with different algorithms the
+# distance is noise and the signal produces both false and missed matches.
+#
+# History (audit finding H-2): submission time computed a hand-rolled 8x8
+# block-average hash (an *average hash*) on the original upload, while the AI
+# worker later overwrote it with a true DCT pHash computed on the compressed
+# stored image.  During any processing backlog candidates and the incoming
+# report held hashes from different algorithms.  The fix: the AI worker is the
+# sole writer, and it calls this function.
+
+
+def compute_phash(image_bytes: bytes) -> Optional[str]:
+    """Compute the 64-bit DCT perceptual hash of *image_bytes*.
+
+    Uses ``imagehash.phash`` (a pinned dependency).  Returns a 16-character
+    lowercase hex string, or ``None`` if the library is unavailable or the
+    bytes cannot be decoded as an image — callers treat ``None`` as "no image
+    signal" rather than failing.
+
+    This is the **only** perceptual-hash implementation.  Do not add another;
+    duplicate detection relies on every ``photo_phash`` being directly
+    Hamming-comparable.
+
+    Args:
+        image_bytes: Raw image binary (whatever bytes are canonically stored
+            for the report — currently the compressed JPEG in object storage).
+
+    Returns:
+        16-character hex string, or ``None``.
+    """
+    try:
+        import imagehash  # type: ignore[import]
+    except ImportError:  # pragma: no cover - imagehash is a pinned dependency
+        logger.warning("imagehash not installed — pHash computation skipped")
+        return None
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            return str(imagehash.phash(img, hash_size=8))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pHash computation failed: %s", type(exc).__name__)
+        return None

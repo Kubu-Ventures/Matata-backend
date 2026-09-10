@@ -11,10 +11,13 @@ Task responsibilities
 2. Query up to 500 candidate reports from the same building or within 100 m.
 3. Delegate scoring to ``DuplicateScorer``.
 4. Apply the recommended action inside an atomic database transaction:
-   - AUTO_MERGE  → mark new report as duplicate; update primary photo if newer.
+   - AUTO_MERGE  → queue for analyst merge review (``pending_merge_review``).
    - ANALYST_FLAG → set ``possible_duplicate_of_id`` and ``duplicate_score``.
-   - INDEPENDENT  → no-op (report already stored normally).
-5. Write an ``AuditLog`` entry for merge events.
+   - INDEPENDENT  → no report change.
+5. Write an ``AuditLog`` entry for every terminal scoring outcome
+   (``report.pending_merge_review`` for the merge-review path,
+   ``report.duplicate_scored`` for flag / independent) — this is the durable
+   "dedup ran" marker the reconciliation sweep checks (audit M-9).
 
 Atomicity guarantee
 -------------------
@@ -228,7 +231,7 @@ def _load_candidates(
                             :radius_m
                         )
                           AND id         != :report_id
-                          AND id         != ALL(:existing_ids)
+                          AND id         <> ALL(CAST(:existing_ids AS uuid[]))
                           AND status     NOT IN ('duplicate')
                           AND created_at >= :time_lower
                           AND created_at <= :time_upper
@@ -249,7 +252,17 @@ def _load_candidates(
             )
             rows.extend(geo_rows)
         except Exception as exc:  # noqa: BLE001
-            # PostGIS may not be available in the test SQLite environment.
+            # Two cases land here:
+            #  * PostGIS genuinely unavailable (the test SQLite environment).
+            #  * The ST_DWithin query itself raised (historically: an untyped
+            #    empty ``existing_ids`` array, or a uuid/text mismatch on it),
+            #    which aborts the transaction — so the fallback query below
+            #    would then fail with InFailedSqlTransaction.  Roll back first
+            #    so the fallback always runs on a clean transaction.
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
             # Fall back to a bounding-box approximation (1° ≈ 111 320 m).
             logger.warning(
                 "PostGIS ST_DWithin unavailable (%s) — using bounding-box " "fallback",
@@ -433,6 +446,42 @@ def _apply_analyst_flag(
     )
 
 
+def _write_dedup_scored_audit(
+    db: Session,
+    report_id: UUID,
+    action: str,
+    best_score: float,
+    primary_id: Optional[UUID],
+) -> None:
+    """Record that duplicate scoring reached a terminal outcome for a report.
+
+    This is the durable "dedup ran" marker (audit M-9): the reconciliation
+    sweep uses ``NOT EXISTS`` against this row to tell a report that was
+    scored-and-found-independent (which leaves no column change) apart from
+    one whose ``score_report`` job was lost when Redis dropped the
+    coordination gate.
+    """
+    db.execute(
+        text("""
+            INSERT INTO audit_log (
+                operation, actor_id_hash, record_id, before_state, after_state
+            ) VALUES (
+                'report.duplicate_scored', 'system', :record_id, NULL, :after
+            )
+            """),
+        {
+            "record_id": str(report_id),
+            "after": json.dumps(
+                {
+                    "action": action,
+                    "best_score": best_score,
+                    "primary_id": str(primary_id) if primary_id else None,
+                }
+            ),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Core implementation — decoupled from Celery for unit testability
 # ---------------------------------------------------------------------------
@@ -451,6 +500,24 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
         if row is None:
             logger.error("Duplicate task: report %s not found — skipping", _report_id)
             return {"action": "skipped", "best_score": 0.0, "primary_id": None}
+
+        # ── 1a. Idempotency guard (audit M-10) ───────────────────────────────
+        # Scoring may only act on a report that is still ``pending``.  A second
+        # invocation — a gate double-decrement, a retry after a partial commit,
+        # or a manual re-dispatch — must not move an analyst-actioned report
+        # back to ``pending_merge_review`` or re-apply a flag.
+        current_status = str(row.status)
+        if current_status != "pending":
+            logger.info(
+                "Duplicate task: report %s already in state '%s' — no-op",
+                _report_id,
+                current_status,
+            )
+            return {
+                "action": "already_actioned",
+                "best_score": 0.0,
+                "primary_id": None,
+            }
 
         building_id_str: Optional[str] = (
             str(row.building_id) if row.building_id else None
@@ -474,6 +541,10 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
                 "Duplicate task: no candidates found for report %s — independent",
                 _report_id,
             )
+            _write_dedup_scored_audit(
+                db, _report_id, DuplicateAction.INDEPENDENT.value, 0.0, None
+            )
+            db.commit()
             return {
                 "action": DuplicateAction.INDEPENDENT,
                 "best_score": 0.0,
@@ -525,6 +596,9 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
                 possible_primary_id=primary_id,
                 composite_score=result.best_score,
             )
+            _write_dedup_scored_audit(
+                db, _report_id, result.action.value, result.best_score, primary_id
+            )
             db.commit()
 
         else:
@@ -533,6 +607,10 @@ def _score_report_impl(report_id: str) -> dict:  # type: ignore[return]
                 _report_id,
                 result.best_score,
             )
+            _write_dedup_scored_audit(
+                db, _report_id, result.action.value, result.best_score, None
+            )
+            db.commit()
 
         return {
             "action": result.action.value,

@@ -114,6 +114,35 @@ _DAMAGE_TO_BUILDING_SEVERITY: Dict[str, str] = {
     "destroyed": "destroyed",
 }
 
+# Canonical AI-feedback type tokens. ``ai_feedback.feedback_type`` and the
+# per-type buckets in get_ai_accuracy() must use exactly these strings.
+FEEDBACK_TYPE_VERIFY = "verify"
+FEEDBACK_TYPE_REJECT = "reject"
+FEEDBACK_TYPE_SEVERITY_OVERRIDE = "severity_override"
+FEEDBACK_TYPES = (
+    FEEDBACK_TYPE_VERIFY,
+    FEEDBACK_TYPE_REJECT,
+    FEEDBACK_TYPE_SEVERITY_OVERRIDE,
+)
+_STATUS_TO_FEEDBACK_TYPE: Dict[ReportStatus, str] = {
+    ReportStatus.verified: FEEDBACK_TYPE_VERIFY,
+    ReportStatus.rejected: FEEDBACK_TYPE_REJECT,
+}
+
+# Valid analyst-driven status transitions (audit M-3). Keyed by target status;
+# value is the set of source statuses it may be reached from.
+#   * A no-op (same status) is rejected — it would walk reporter_trust_tier
+#     up/down on every repeat.
+#   * ``pending_merge_review`` reports must be resolved through
+#     ``confirm_merge`` / ``reject_merge``, never transitioned directly here
+#     (that orphaned ``possible_duplicate_of_id``).
+#   * ``duplicate`` is terminal for this function.
+_VALID_STATUS_TRANSITIONS: Dict[ReportStatus, frozenset] = {
+    ReportStatus.verified: frozenset({ReportStatus.pending, ReportStatus.rejected}),
+    ReportStatus.rejected: frozenset({ReportStatus.pending, ReportStatus.verified}),
+    ReportStatus.duplicate: frozenset({ReportStatus.pending}),
+}
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -528,6 +557,26 @@ async def transition_report_status(
     if report is None:
         raise LookupError(f"Report {report_id} not found.")
 
+    # Enforce the valid-transition matrix (audit M-3).
+    current_status = (
+        report.status
+        if isinstance(report.status, ReportStatus)
+        else ReportStatus(str(report.status))
+    )
+    allowed_sources = _VALID_STATUS_TRANSITIONS[new_status]
+    if current_status not in allowed_sources:
+        raise ValueError(
+            f"Cannot transition a '{current_status.value}' report to "
+            f"'{new_status.value}'. Allowed from: "
+            f"{', '.join(sorted(s.value for s in allowed_sources))}."
+            + (
+                " Use the merge confirm/reject workflow for "
+                "pending_merge_review reports."
+                if current_status == ReportStatus.pending_merge_review
+                else ""
+            )
+        )
+
     before_state = {
         "status": (
             report.status.value
@@ -601,10 +650,14 @@ async def transition_report_status(
                 else str(report.damage_severity)
             )
         )
+        # Use the canonical feedback-type token the accuracy dashboard buckets
+        # by (``verify`` / ``reject`` / ``severity_override``) — NOT the raw
+        # status value (``verified`` / ``rejected``), which left both buckets
+        # permanently empty (audit M-2).
         await _log_ai_feedback(
             db,
             report_id=report_id,
-            feedback_type=new_status.value,  # 'verify' or 'reject'
+            feedback_type=_STATUS_TO_FEEDBACK_TYPE[new_status],
             ai_prediction=ai_pred,
             analyst_decision=analyst_dec,
             ai_confidence=report.ai_confidence,
@@ -844,7 +897,7 @@ async def set_severity_override(
     await _log_ai_feedback(
         db,
         report_id=report_id,
-        feedback_type="severity_override",
+        feedback_type=FEEDBACK_TYPE_SEVERITY_OVERRIDE,
         ai_prediction=ai_pred,
         analyst_decision=override.value,
         ai_confidence=report.ai_confidence,
@@ -1081,7 +1134,7 @@ async def get_ai_accuracy(db: AsyncSession, redis: Redis) -> AIAccuracyResponse:
     avg_conf = sum(conf_vals) / len(conf_vals) if conf_vals else None
 
     by_type: Dict[str, Any] = {}
-    for ft in ("verify", "reject", "severity_override"):
+    for ft in FEEDBACK_TYPES:
         subset = [f for f in all_feedback if f.feedback_type == ft]
         subset_agreements = [f for f in subset if f.is_agreement]
         by_type[ft] = FeedbackTypeBreakdown(

@@ -39,7 +39,11 @@ from app.api.v1.routes.metrics import router as metrics_router
 from app.api.v1.routes.reports import router as reports_router
 from app.api.v1.routes.voice import router as voice_router
 from app.core.config import settings
-from app.core.dependencies import _async_session_factory, _engine  # noqa: WPS436
+from app.core.dependencies import (  # noqa: WPS436
+    _async_session_factory,
+    _engine,
+    close_redis,
+)
 from app.core.logging import configure_logging
 from app.core.middleware import RequestIDMiddleware
 
@@ -57,6 +61,7 @@ async def lifespan(app: FastAPI):  # noqa: ANN001
     )
     await _warn_if_no_building_footprints()
     yield
+    await close_redis()
     await _engine.dispose()
     logger.info("shutdown")
 

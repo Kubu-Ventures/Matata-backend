@@ -287,6 +287,12 @@ def get_moderation_provider() -> ModerationProvider:
 
     if provider_name == "mock":
         return MockModerationProvider()
+    if provider_name == "sim":
+        # Deterministic surrogate for pipeline validation, never a production
+        # value. See app/services/sim_providers.py.
+        from app.services.sim_providers import SimModerationProvider
+
+        return SimModerationProvider()
     if provider_name == "rekognition":
         return RekognitionModerationProvider()
 

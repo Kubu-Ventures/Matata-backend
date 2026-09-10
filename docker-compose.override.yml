@@ -1,0 +1,14 @@
+# Simulation-only override. Auto-loaded by `docker compose`.
+# * Removes uvicorn --reload: the base compose bind-mounts the whole repo at
+#   /app, and WatchFiles then recursively scans .venv/.git/.mypy_cache,
+#   pinning the WSL VM. No hot-reload is needed for a load test.
+# * --workers 1: the dev VM this is exercised on has only ~3.4 GB RAM; a
+#   second uvicorn worker (each loads Pillow + the full app) pushes it into
+#   swap and connections start dropping mid-request. One worker is plenty for
+#   a correctness/accuracy evaluation — throughput is not the metric here and
+#   the API is stateless, so real capacity is a horizontal-scale question.
+services:
+  app:
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"

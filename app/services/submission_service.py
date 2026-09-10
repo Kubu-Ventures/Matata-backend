@@ -2,15 +2,14 @@
 
 This module is the **single orchestrator** for the complete report submission
 flow.  Route handlers in ``app/api/v1/routes/reports.py`` call this service
-and must not contain any database operations, storage calls, moderation
-logic, or perceptual-hash computation directly.
+and must not contain any database operations, storage calls, or moderation
+logic directly.
 
 Responsibilities
 ----------------
 * Input sanitisation (HTML stripping and field truncation).
 * Rate limit enforcement (per-token, via Redis).
 * Stage 2 safety moderation (synchronous — check before store).
-* Perceptual hash (pHash) computation for duplicate detection.
 * Object storage upload (only on moderation pass).
 * Database record creation.
 * Audit log write for moderation rejections.
@@ -167,73 +166,14 @@ def _hash_token(token: str) -> str:
 # ---------------------------------------------------------------------------
 # Perceptual hash
 # ---------------------------------------------------------------------------
-
-
-def _compute_phash(image_bytes: bytes) -> Optional[str]:
-    """Compute a 64-bit perceptual hash (pHash) of *image_bytes*.
-
-    The pHash is used by the duplicate detection system (§10) to identify
-    visually similar images by comparing Hamming distances.
-
-    This implementation requires ``Pillow``.  If Pillow is unavailable (e.g.
-    in a minimal CI environment), the function returns ``None`` and duplicate
-    detection falls back to GPS-only scoring.
-
-    Args:
-        image_bytes: Raw JPEG/PNG binary.
-
-    Returns:
-        64-character hex string encoding the 64-bit pHash, or ``None``.
-    """
-    try:
-        from io import BytesIO
-
-        from PIL import Image  # type: ignore[import]
-    except ImportError:
-        logger.warning("Pillow not installed — pHash computation skipped")
-        return None
-
-    try:
-        with Image.open(BytesIO(image_bytes)) as _src:
-            # DCT-based pHash: resize to 32×32, convert to greyscale, then
-            # apply a simplified DCT by averaging 8×8 blocks from the 32×32
-            # grid.  This is a fast, dependency-free approximation sufficient
-            # for Hamming-distance duplicate detection.
-            #
-            # FIX: open into _src (ImageFile), then assign the converted result
-            # to a new variable typed as Image.Image to avoid the
-            # "Incompatible types in assignment" error (ImageFile vs Image).
-            #
-            # FIX: Image.LANCZOS moved to Image.Resampling.LANCZOS in Pillow
-            # 10.  getattr fallback keeps compatibility with Pillow 9.x.
-            _resample = getattr(Image, "Resampling", Image).LANCZOS
-            img: Image.Image = _src.convert("L").resize((32, 32), _resample)
-            pixels = list(img.getdata())
-
-        # Compute 8×8 block averages (64 values total).
-        block_avgs = []
-        for block_row in range(8):
-            for block_col in range(8):
-                total = 0
-                for r in range(4):
-                    for c in range(4):
-                        idx = (block_row * 4 + r) * 32 + (block_col * 4 + c)
-                        total += pixels[idx]
-                block_avgs.append(total / 16.0)
-
-        mean_val = sum(block_avgs) / len(block_avgs)
-        bits = [1 if avg >= mean_val else 0 for avg in block_avgs]
-
-        # Pack 64 bits into 8 bytes and format as a 16-char hex string.
-        byte_vals = []
-        for i in range(0, 64, 8):
-            byte_val = sum(bits[i + j] << (7 - j) for j in range(8))
-            byte_vals.append(byte_val)
-        return "".join(f"{b:02x}" for b in byte_vals)
-
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("pHash computation failed: %s", type(exc).__name__)
-        return None
+#
+# The submission path deliberately does NOT compute ``photo_phash``.  The AI
+# worker (``ai_tasks.process_report_image``) is the single writer of that
+# column, hashing the compressed image that is canonically stored in object
+# storage with the one shared algorithm in ``image_service.compute_phash``.
+# The duplicate-scoring gate guarantees the AI step finishes before
+# ``score_report`` runs, so the hash is always present when it is needed.
+# See audit finding H-2 for why two writers / two algorithms was a bug.
 
 
 # ---------------------------------------------------------------------------
@@ -402,13 +342,9 @@ async def create_report(
 
     photo_url: Optional[str] = None
     photo_status = PhotoStatus.pending
-    photo_phash: Optional[str] = None
 
     # ── 4. Stage 2 moderation + storage ─────────────────────────────────────
     if image_bytes:
-        # Compute pHash before moderation so we have it regardless of outcome.
-        photo_phash = _compute_phash(image_bytes)
-
         # CRITICAL: check before store — spec §8.2 principle.
         mod_result = await _moderation.moderate(image_bytes)
 
@@ -436,7 +372,9 @@ async def create_report(
             raise ModerationRejectionError("Image could not be accepted")
 
         # Moderation passed — compress before writing to storage.
-        # pHash and moderation ran on the original bytes for maximum fidelity.
+        # Moderation ran on the original bytes for maximum fidelity; the
+        # perceptual hash is computed later by the AI worker on the stored
+        # (compressed) image.
         image_bytes, image_content_type = compress_image(image_bytes)
 
         # We need a report ID for the object key, so generate one now.
@@ -481,7 +419,6 @@ async def create_report(
         most_pressing_needs=most_pressing_needs,
         debris_clearing_needed=debris_clearing_needed,
         photo_url=photo_url,
-        photo_phash=photo_phash,
         photo_status=photo_status,
         status=ReportStatus.pending,
         reporter_token_hash=token_hash,
@@ -543,7 +480,8 @@ async def add_photo_to_report(
     1. Load the Report, verify it belongs to the requesting token.
     2. Run Stage 2 moderation synchronously.
     3. Upload to storage on pass.
-    4. Update ``photo_url``, ``photo_phash``, and ``photo_status``.
+    4. Update ``photo_url`` and ``photo_status`` (``photo_phash`` is written
+       later by the AI worker, the single writer of that column).
     5. Write audit log.
 
     IMPORTANT: this function deliberately does **not** publish the AI
@@ -592,8 +530,9 @@ async def add_photo_to_report(
     _moderation = moderation_provider or get_moderation_provider()
     _storage = storage_service or get_storage_service()
 
-    # ── 2. pHash + Stage 2 moderation ────────────────────────────────────────
-    photo_phash = _compute_phash(image_bytes)
+    # ── 2. Stage 2 moderation ───────────────────────────────────────────────
+    # ``photo_phash`` is not written here — the AI job the caller dispatches
+    # after commit is the single writer, hashing the stored compressed image.
     mod_result = await _moderation.moderate(image_bytes)
 
     if not mod_result.passed:
@@ -612,7 +551,7 @@ async def add_photo_to_report(
         raise ModerationRejectionError("Image could not be accepted")
 
     # ── 3. Compress then upload ───────────────────────────────────────────────
-    # pHash and moderation ran on the original bytes for maximum fidelity.
+    # Moderation ran on the original bytes for maximum fidelity.
     image_bytes, image_content_type = compress_image(image_bytes)
 
     try:
@@ -626,7 +565,6 @@ async def add_photo_to_report(
 
     # ── 4. Update record ─────────────────────────────────────────────────────
     report.photo_url = photo_url
-    report.photo_phash = photo_phash
     report.photo_status = PhotoStatus.processing
 
     # ── 5. Audit log ─────────────────────────────────────────────────────────
