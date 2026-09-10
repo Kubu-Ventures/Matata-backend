@@ -221,6 +221,7 @@ def _build_access_token(
     role: Role,
     tier: int = 0,
     jti: str | None = None,
+    region_geojson: str | None = None,
 ) -> str:
     """Construct and sign a short-lived access token.
 
@@ -229,6 +230,12 @@ def _build_access_token(
         role: Role claim.
         tier: Reporter trust tier (default 0 for non-reporters).
         jti:  Optional explicit JWT ID; a fresh UUID is generated if omitted.
+        region_geojson: Optional responder geographic scope (GeoJSON Polygon
+            string). When present it is carried as a claim so the analyst
+            routes/service can apply the ``ST_Within`` filter — a responder
+            with no region claim would otherwise see every report in the
+            system. Only provisioned responders carry this; it is omitted
+            entirely for reporters, analysts, and admins.
 
     Returns:
         Signed JWT string.
@@ -243,6 +250,8 @@ def _build_access_token(
         "iat": now,
         "exp": expire,
     }
+    if region_geojson:
+        payload["region_geojson"] = region_geojson
     return jwt.encode(
         payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM
     )
@@ -528,15 +537,23 @@ async def verify_otp(
 
     role = Role.reporter
     resolved_tier = tier
+    region_geojson: Optional[str] = None
     if db is not None:
         account = await lookup_analyst_account(id_hash, db)
         if account is not None:
             role = Role(account.role)
             resolved_tier = 0  # tier is a reporter concept; not used for analysts
+            region_geojson = account.region_geojson
 
-    access_token = _build_access_token(sub=id_hash, role=role, tier=resolved_tier)
+    access_token = _build_access_token(
+        sub=id_hash, role=role, tier=resolved_tier, region_geojson=region_geojson
+    )
     refresh_token = await _issue_refresh_token(
-        sub=id_hash, role=role, tier=resolved_tier, redis=redis
+        sub=id_hash,
+        role=role,
+        tier=resolved_tier,
+        redis=redis,
+        region_geojson=region_geojson,
     )
 
     logger.info(
@@ -601,6 +618,7 @@ async def verify_privy_and_issue_tokens(
     role = Role.reporter
     resolved_tier = 1
     sub = hash_identifier(f"privy:{privy_did}")
+    region_geojson: Optional[str] = None
 
     # Provisioned analysts/responders/admins are keyed by their email hash,
     # matching register_analyst_account and the CLI provisioning tool.
@@ -611,10 +629,17 @@ async def verify_privy_and_issue_tokens(
             role = Role(account.role)
             resolved_tier = 0
             sub = email_hash
+            region_geojson = account.region_geojson
 
-    access_token = _build_access_token(sub=sub, role=role, tier=resolved_tier)
+    access_token = _build_access_token(
+        sub=sub, role=role, tier=resolved_tier, region_geojson=region_geojson
+    )
     refresh_token = await _issue_refresh_token(
-        sub=sub, role=role, tier=resolved_tier, redis=redis
+        sub=sub,
+        role=role,
+        tier=resolved_tier,
+        redis=redis,
+        region_geojson=region_geojson,
     )
 
     logger.info(
@@ -766,6 +791,7 @@ async def _issue_refresh_token(
     role: Role,
     tier: int,
     redis: Redis,
+    region_geojson: str | None = None,
 ) -> str:
     """Generate and store a new opaque refresh token in Redis.
 
@@ -778,6 +804,8 @@ async def _issue_refresh_token(
         role:  Role for the new access token.
         tier:  Reporter tier.
         redis: Async Redis client.
+        region_geojson: Optional responder scope, persisted so it survives
+            refresh-token rotation (the DB is not consulted on rotation).
 
     Returns:
         Opaque refresh token string.
@@ -786,21 +814,26 @@ async def _issue_refresh_token(
 
     token_id = secrets.token_hex(_REFRESH_TOKEN_BYTES)
     expire_seconds = settings.REFRESH_TOKEN_EXPIRE_DAYS * 86_400
-    payload = json.dumps({"sub": sub, "role": role.value, "tier": tier})
-    await redis.set(_refresh_key(token_id), payload, ex=expire_seconds)
+    data: dict[str, object] = {"sub": sub, "role": role.value, "tier": tier}
+    if region_geojson:
+        data["region_geojson"] = region_geojson
+    await redis.set(_refresh_key(token_id), json.dumps(data), ex=expire_seconds)
     return token_id
 
 
 async def rotate_refresh_token(refresh_token: str, redis: Redis) -> tuple[str, str]:
     """Invalidate the supplied refresh token and return a new token pair.
 
-    Implements refresh token rotation — each refresh token is single-use.
-    Presenting a token that no longer exists (e.g. after logout or a previous
-    rotation) raises ``InvalidTokenError``.
+    Implements single-use refresh-token rotation.  The read-and-delete is done
+    in one atomic ``GETDEL`` (audit M-6): two concurrent refreshes of the same
+    token can no longer both succeed — exactly one gets the value, the other
+    gets ``None`` and is rejected.  Presenting a token that no longer exists
+    (after logout, a previous rotation, or a replay attempt) raises
+    ``InvalidTokenError`` and logs a security signal.
 
     Args:
-        refresh_token: The opaque token issued during OTP verification or a
-                       previous rotation.
+        refresh_token: The opaque token issued during OTP / Privy verification
+                       or a previous rotation.
         redis:         Async Redis client.
 
     Returns:
@@ -812,20 +845,33 @@ async def rotate_refresh_token(refresh_token: str, redis: Redis) -> tuple[str, s
     import json
 
     key = _refresh_key(refresh_token)
-    raw = await redis.get(key)
+    # Atomic read+delete — the old token is consumed exactly once.
+    try:
+        raw = await redis.getdel(key)
+    except AttributeError:  # pragma: no cover - very old redis-py / test stub
+        raw = await redis.get(key)
+        if raw is not None:
+            await redis.delete(key)
     if raw is None:
+        logger.warning(
+            "Refresh token rejected: not found (logout, prior rotation, or "
+            "replay of an already-used token)."
+        )
         raise InvalidTokenError("Refresh token is invalid or has expired.")
 
     payload = json.loads(raw)
-    # Atomically invalidate the old token.
-    await redis.delete(key)
 
     sub = payload["sub"]
     role = Role(payload["role"])
     tier = int(payload.get("tier", 0))
+    region_geojson = payload.get("region_geojson")
 
-    new_access = _build_access_token(sub=sub, role=role, tier=tier)
-    new_refresh = await _issue_refresh_token(sub=sub, role=role, tier=tier, redis=redis)
+    new_access = _build_access_token(
+        sub=sub, role=role, tier=tier, region_geojson=region_geojson
+    )
+    new_refresh = await _issue_refresh_token(
+        sub=sub, role=role, tier=tier, redis=redis, region_geojson=region_geojson
+    )
 
     logger.info("Refresh token rotated (sub: %s…)", sub[:8])
     return new_access, new_refresh
@@ -903,6 +949,7 @@ async def issue_analyst_token(
     email: str,
     role: Role,
     redis: Redis,
+    region_geojson: str | None = None,
 ) -> tuple[str, str]:
     """Issue an access + refresh token pair for a provisioned analyst account.
 
@@ -928,9 +975,11 @@ async def issue_analyst_token(
     # the same ``sub`` when they later log in via Privy.
     id_hash = hash_identifier(_normalise_email(email))
 
-    access_token = _build_access_token(sub=id_hash, role=role, tier=0)
+    access_token = _build_access_token(
+        sub=id_hash, role=role, tier=0, region_geojson=region_geojson
+    )
     refresh_token = await _issue_refresh_token(
-        sub=id_hash, role=role, tier=0, redis=redis
+        sub=id_hash, role=role, tier=0, redis=redis, region_geojson=region_geojson
     )
 
     logger.info(

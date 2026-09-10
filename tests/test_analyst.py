@@ -581,6 +581,89 @@ class TestTransitionReportStatus:
         assert db.add.call_count >= 2
 
     @pytest.mark.asyncio
+    async def test_pending_merge_review_cannot_be_transitioned_directly(self):
+        """audit M-3: must go through confirm_merge / reject_merge."""
+        from app.services.analyst_service import transition_report_status
+
+        report = _make_report(status="pending_merge_review")
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(report))
+
+        with pytest.raises(ValueError, match="merge confirm/reject workflow"):
+            await transition_report_status(
+                db,
+                report.id,
+                new_status=ReportStatus.verified,
+                reason_code=None,
+                notes=None,
+                analyst_id_hash="x" * 64,
+            )
+
+    @pytest.mark.asyncio
+    async def test_noop_transition_is_rejected(self):
+        """audit M-3: re-verifying a verified report would walk trust tier."""
+        from app.services.analyst_service import transition_report_status
+
+        report = _make_report(status="verified")
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(report))
+
+        with pytest.raises(ValueError, match="Cannot transition"):
+            await transition_report_status(
+                db,
+                report.id,
+                new_status=ReportStatus.verified,
+                reason_code=None,
+                notes=None,
+                analyst_id_hash="x" * 64,
+            )
+
+    @pytest.mark.asyncio
+    async def test_rejected_can_be_corrected_to_verified(self):
+        from app.services.analyst_service import transition_report_status
+
+        report = _make_report(status="rejected", reporter_trust_tier=0)
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(report))
+        db.flush = AsyncMock()
+        db.add = MagicMock()
+
+        result = await transition_report_status(
+            db,
+            report.id,
+            new_status=ReportStatus.verified,
+            reason_code=None,
+            notes=None,
+            analyst_id_hash="x" * 64,
+        )
+        assert result.status == ReportStatus.verified
+
+    @pytest.mark.asyncio
+    async def test_feedback_type_uses_canonical_token(self):
+        """audit M-2: transition must log 'verify'/'reject', not the status."""
+        from app.services import analyst_service
+        from app.services.analyst_service import transition_report_status
+
+        report = _make_report(status="pending")
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(report))
+        db.flush = AsyncMock()
+        db.add = MagicMock()
+
+        with patch.object(
+            analyst_service, "_log_ai_feedback", new=AsyncMock()
+        ) as mock_fb:
+            await transition_report_status(
+                db,
+                report.id,
+                new_status=ReportStatus.rejected,
+                reason_code="inaccurate",
+                notes=None,
+                analyst_id_hash="x" * 64,
+            )
+        assert mock_fb.await_args.kwargs["feedback_type"] == "reject"
+
+    @pytest.mark.asyncio
     async def test_rejected_with_all_reason_codes(self):
         from app.services.analyst_service import transition_report_status
 

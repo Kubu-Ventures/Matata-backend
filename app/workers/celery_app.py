@@ -44,6 +44,8 @@ celery_app = Celery(
         # runs, and send_task("app.workers.duplicate_tasks.score_report", …)
         # fails with "Received unregistered task of type ...".
         "app.workers.duplicate_tasks",
+        # Periodic pipeline reconciliation sweep (audit M-8 / M-9).
+        "app.workers.reconciliation_tasks",
     ],
 )
 
@@ -73,9 +75,25 @@ celery_app.conf.update(
         "app.workers.ai_tasks.*": {"queue": "ai"},
         "app.workers.notification_tasks.*": {"queue": "notifications"},
         "app.workers.duplicate_tasks.*": {"queue": "duplicate"},
+        # The reconciliation sweep is light and infrequent — it rides the
+        # duplicate queue's worker rather than needing its own.
+        "app.workers.reconciliation_tasks.*": {"queue": "duplicate"},
     },
     # Default queue (for tasks without explicit routing)
     task_default_queue="default",
+    # ── Periodic tasks (run by `celery -A app.workers.celery_app beat`) ──────
+    # Pipeline reconciliation sweep every 5 minutes — re-drives reports whose
+    # GIS / AI / duplicate-scoring job was lost after the report committed
+    # (audit M-8 / M-9). Safe to run with no beat process at all; it just
+    # means stuck reports are only recovered by a manual
+    # `python -m app.cli reconcile`.
+    beat_schedule={
+        "reconcile-stuck-reports": {
+            "task": "app.workers.reconciliation_tasks.reconcile_stuck_reports",
+            "schedule": 300.0,
+            "options": {"queue": "duplicate", "expires": 240},
+        },
+    },
     # Result TTL — keep task results for 1 hour
     result_expires=3600,
     # Critical: prevents Celery from eagerly connecting to the broker

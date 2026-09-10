@@ -68,7 +68,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from io import BytesIO
 from typing import Optional
 from uuid import UUID
 
@@ -361,31 +360,21 @@ def _download_image(object_key: str) -> bytes:
 
 
 def _compute_phash(image_bytes: bytes) -> Optional[str]:
-    """Compute a 64-bit DCT perceptual hash using the ``imagehash`` library.
+    """Compute the report's perceptual hash — the AI worker is the sole writer.
 
-    Imports are deferred so that a missing ``imagehash`` package degrades
-    gracefully (returns ``None``) rather than breaking the module import.
+    Thin wrapper over ``image_service.compute_phash`` (the one perceptual-hash
+    implementation in the codebase — see the note there and audit finding
+    H-2). Kept as a module-level name so it can be patched in worker tests.
 
     Args:
-        image_bytes: Raw image binary.
+        image_bytes: Bytes of the stored (compressed) report image.
 
     Returns:
-        Hex string representation of the pHash, or ``None`` on failure.
+        16-character hex string, or ``None`` on failure.
     """
-    try:
-        import imagehash  # type: ignore[import]
-        from PIL import Image as PILImage  # type: ignore[import]
+    from app.services.image_service import compute_phash
 
-        img = PILImage.open(BytesIO(image_bytes))
-        ph = imagehash.phash(img)
-        # imagehash returns a custom ImageHash object; str() gives the hex form.
-        return str(ph)
-    except ImportError:
-        logger.warning("imagehash/Pillow not installed — pHash computation skipped")
-        return None
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("pHash computation failed: %s", type(exc).__name__)
-        return None
+    return compute_phash(image_bytes)
 
 
 # ---------------------------------------------------------------------------

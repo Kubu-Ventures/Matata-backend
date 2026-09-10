@@ -8,10 +8,25 @@ Privacy guarantees (enforced unconditionally at this layer)
 * Plaintext phone number — NEVER present.
 * ``reporter_token_hash`` — truncated to first 12 characters only.
 * ``AnalystNote.body`` — NEVER present.
+* Reporter free text (``landmark_description``, ``most_pressing_needs``) is
+  PII-scrubbed: email addresses, phone numbers, other long digit runs and
+  URLs are replaced with ``[redacted-*]`` markers before the value leaves
+  this layer (audit finding M-5 — reporters routinely type third-party
+  names and phone numbers into "most pressing needs").
+* Only a boolean ``has_photo`` is exported, never the internal object key.
 * Only fields listed in spec §12.1 are exported.
 
 These restrictions are enforced inside ``Anonymiser`` and cannot be
 bypassed by any caller, JWT level, URL parameter, or request header.
+
+Location precision
+------------------
+``ExportFilterParams.location_precision`` (``exact`` | ``reduced`` |
+``coarse``) lets an analyst coarsen coordinates for external sharing or for
+sensitive crisis types (e.g. ``conflict``).  ``reduced`` rounds to 3 decimal
+places (~110 m); ``coarse`` to 2 dp (~1.1 km).  Anything other than
+``exact`` also drops ``gps_accuracy_m`` (which would otherwise leak the
+original precision).  Default is ``exact`` — backwards compatible.
 
 Schema follows HDX disaster damage dataset standards; field mapping is
 documented in ``docs/hdx_schema.md``.
@@ -23,6 +38,7 @@ import csv
 import io
 import json
 import logging
+import re
 import tempfile
 import uuid
 import zipfile
@@ -63,13 +79,54 @@ DBF_FIELD_MAP: Dict[str, str] = {
     "health_services_status": "health_st",
     "most_pressing_needs": "needs",
     "debris_clearing_needed": "debris",
-    "photo_url": "photo_url",
+    "has_photo": "has_photo",
     "created_at": "created_at",
     "updated_at": "updated_at",
 }
 
 # Async threshold — exports above this size are processed asynchronously.
 ASYNC_THRESHOLD = 10_000
+
+# ---------------------------------------------------------------------------
+# Free-text PII scrubbing (audit M-5)
+# ---------------------------------------------------------------------------
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_URL_RE = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
+# Candidate numeric run: a leading digit or +, then digits and phone-style
+# separators.  A candidate is only redacted if it contains >= 7 digits, so
+# short quantities ("6 families", "2024", "12 injured") are left alone while
+# phone numbers and long ID numbers are removed.
+_NUM_CANDIDATE_RE = re.compile(r"\+?\d[\d\s().\-]{5,}\d")
+
+# Coordinate rounding (decimal places) per precision level.
+_PRECISION_DP: Dict[str, Optional[int]] = {
+    "exact": None,
+    "reduced": 3,  # ~110 m
+    "coarse": 2,  # ~1.1 km
+}
+
+
+def _redact_numeric(match: "re.Match[str]") -> str:
+    token = match.group(0)
+    if sum(ch.isdigit() for ch in token) >= 7:
+        return "[redacted-number]"
+    return token
+
+
+def scrub_free_text(value: Optional[str]) -> Optional[str]:
+    """Redact emails, phone/ID numbers and URLs from reporter free text.
+
+    Deterministic and conservative: only clearly-structured identifiers are
+    replaced, so operationally useful phrases ("water for 6 families", "road
+    blocked") survive intact.  Returns ``None``/empty unchanged.
+    """
+    if not value:
+        return value
+    out = _EMAIL_RE.sub("[redacted-email]", value)
+    out = _URL_RE.sub("[redacted-url]", out)
+    out = _NUM_CANDIDATE_RE.sub(_redact_numeric, out)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +161,8 @@ class ExportRecord:
     health_services_status: Optional[str]
     most_pressing_needs: Optional[str]
     debris_clearing_needed: Optional[bool]
-    photo_url: Optional[str]
+    # Boolean only — the internal object key is never exported (audit M-5).
+    has_photo: bool
     created_at: str  # ISO 8601 UTC
     updated_at: str  # ISO 8601 UTC
 
@@ -130,6 +188,7 @@ class Anonymiser:
         {
             "reporter_token_hash",  # full hash — use truncated version only
             "photo_phash",  # internal dedup field
+            "photo_url",  # internal object key — export `has_photo` bool only
             "duplicate_of_id",  # internal reference
             "possible_duplicate_of_id",
             "duplicate_score",
@@ -140,6 +199,19 @@ class Anonymiser:
         }
     )
 
+    def __init__(self, location_precision: str = "exact") -> None:
+        """Args:
+        location_precision: ``exact`` | ``reduced`` (3 dp, ~110 m) |
+            ``coarse`` (2 dp, ~1.1 km).  Unknown values fall back to
+            ``exact``.
+        """
+        self._coord_dp = _PRECISION_DP.get(location_precision)
+
+    def _coord(self, value: Optional[float]) -> Optional[float]:
+        if value is None or self._coord_dp is None:
+            return value
+        return round(value, self._coord_dp)
+
     def anonymise(self, report: Report) -> ExportRecord:
         """Convert a ``Report`` ORM instance to an anonymised ``ExportRecord``.
 
@@ -147,7 +219,9 @@ class Anonymiser:
             report: SQLAlchemy ``Report`` instance (all scalar columns loaded).
 
         Returns:
-            ``ExportRecord`` with all redaction rules applied.
+            ``ExportRecord`` with all redaction rules applied: identifier
+            truncation, free-text PII scrubbing, ``has_photo`` in place of the
+            object key, and coordinate coarsening when configured.
         """
 
         def _enum_val(v: Any) -> Optional[str]:
@@ -179,15 +253,16 @@ class Anonymiser:
             status=_enum_val(report.status) or "",
             reporter_token_hash_truncated=truncated_hash,
             reporter_trust_tier=report.reporter_trust_tier,
-            lat=report.lat,
-            lng=report.lng,
-            gps_accuracy_m=report.gps_accuracy_m,
-            landmark_description=report.landmark_description,
+            lat=self._coord(report.lat),
+            lng=self._coord(report.lng),
+            # Coarsened coordinates must not ship with their original accuracy.
+            gps_accuracy_m=(report.gps_accuracy_m if self._coord_dp is None else None),
+            landmark_description=scrub_free_text(report.landmark_description),
             electricity_status=_enum_val(report.electricity_status),
             health_services_status=_enum_val(report.health_services_status),
-            most_pressing_needs=report.most_pressing_needs,
+            most_pressing_needs=scrub_free_text(report.most_pressing_needs),
             debris_clearing_needed=report.debris_clearing_needed,
-            photo_url=report.photo_url,
+            has_photo=bool(report.photo_url),
             created_at=_iso(report.created_at),
             updated_at=_iso(report.updated_at),
         )
@@ -210,6 +285,8 @@ class ExportFilterParams:
     time_to: Optional[datetime] = field(default=None)
     min_ai_confidence: Optional[float] = field(default=None)
     include_footprints: bool = field(default=False)
+    # exact | reduced (3 dp, ~110 m) | coarse (2 dp, ~1.1 km)
+    location_precision: str = field(default="exact")
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +309,6 @@ class ExportService:
     def __init__(self, db: AsyncSession, analyst_id_hash: str) -> None:
         self._db = db
         self._analyst_id_hash = analyst_id_hash
-        self._anonymiser = Anonymiser()
 
     # ------------------------------------------------------------------
     # Public format methods
@@ -386,7 +462,8 @@ class ExportService:
         query = self._build_query(filters)
         result = await self._db.execute(query)
         reports: Sequence[Report] = result.scalars().all()
-        return [self._anonymiser.anonymise(r) for r in reports]
+        anonymiser = Anonymiser(location_precision=filters.location_precision)
+        return [anonymiser.anonymise(r) for r in reports]
 
     def _build_query(self, filters: ExportFilterParams) -> sa.Select:
         """Build a SQLAlchemy SELECT applying all active filter predicates."""
@@ -546,7 +623,7 @@ def _build_shapefile_zip(records: List[ExportRecord]) -> bytes:
             "health_st": (ogr.OFTString, 20),
             "needs": (ogr.OFTString, 1000),
             "debris": (ogr.OFTString, 5),
-            "photo_url": (ogr.OFTString, 500),
+            "has_photo": (ogr.OFTString, 5),
             "created_at": (ogr.OFTString, 30),
             "updated_at": (ogr.OFTString, 30),
         }

@@ -471,18 +471,40 @@ class TestHashToken:
 
 
 class TestComputePhash:
-    def test_returns_none_without_pillow(self):
-        from app.services.submission_service import _compute_phash
+    """The submission path no longer computes a perceptual hash (audit H-2).
 
-        with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
-            result = _compute_phash(b"not-an-image")
-        assert result is None
+    The one implementation now lives in ``image_service.compute_phash`` and the
+    AI worker is its sole caller / the sole writer of ``report.photo_phash``.
+    """
 
-    def test_returns_none_on_invalid_bytes(self):
-        from app.services.submission_service import _compute_phash
+    def test_submission_service_has_no_phash_function(self):
+        import app.services.submission_service as ss
 
-        result = _compute_phash(b"not-a-valid-image-file")
-        assert result is None
+        assert not hasattr(ss, "_compute_phash")
+
+    def test_canonical_phash_returns_none_on_invalid_bytes(self):
+        from app.services.image_service import compute_phash
+
+        assert compute_phash(b"not-a-valid-image-file") is None
+
+    def test_canonical_phash_is_stable_and_dct_based(self):
+        """Same bytes → same 16-char hex hash, and it matches imagehash.phash."""
+        import io
+
+        import imagehash
+        from PIL import Image
+
+        from app.services.image_service import compute_phash
+
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), (123, 200, 50)).save(buf, "JPEG")
+        raw = buf.getvalue()
+
+        h1 = compute_phash(raw)
+        h2 = compute_phash(raw)
+        assert h1 == h2
+        assert h1 is not None and len(h1) == 16
+        assert h1 == str(imagehash.phash(Image.open(io.BytesIO(raw)), hash_size=8))
 
 
 class TestRateLimitHelper:
@@ -824,6 +846,8 @@ class TestAddPhotoToReport:
         )
 
         assert existing_report.photo_url is not None
+        # photo_phash is written by the AI worker, not this path (audit H-2).
+        assert existing_report.photo_phash is None
 
     @pytest.mark.asyncio
     async def test_raises_not_found_when_missing(self):
@@ -1289,6 +1313,57 @@ class TestSubmitReportEndpoint:
             )
         assert resp.status_code == 422
         assert "could not be accepted" in resp.json().get("detail", "").lower()
+
+    def test_moderation_rejection_commits_the_audit_row(self):
+        """The service flushes an internal rejection audit row before raising;
+        the route must commit it (spec §8.2.1) rather than let the request
+        session roll it back — the crisis simulation found it was being lost.
+        """
+        from fastapi import FastAPI
+
+        from app.api.v1.routes.auth import get_current_user
+        from app.api.v1.routes.auth import router as auth_router
+        from app.api.v1.routes.reports import router as reports_router
+        from app.core.dependencies import get_db, get_redis
+        from app.services.submission_service import ModerationRejectionError
+
+        captured_db = AsyncMock()
+        captured_db.add = MagicMock()
+        captured_db.flush = AsyncMock()
+        captured_db.commit = AsyncMock()
+        captured_db.rollback = AsyncMock()
+
+        app = FastAPI()
+
+        async def _db():
+            yield captured_db
+
+        async def _redis():
+            r = AsyncMock()
+            r.get = AsyncMock(return_value=None)
+            r.set = AsyncMock(return_value=True)
+            return r
+
+        app.dependency_overrides[get_db] = _db
+        app.dependency_overrides[get_redis] = _redis
+        app.dependency_overrides[get_current_user] = lambda: {
+            "sub": "hash",
+            "tier": 0,
+            "role": "anonymous_reporter",
+        }
+        app.include_router(auth_router, prefix="/api/v1")
+        app.include_router(reports_router, prefix="/api/v1")
+
+        with patch(
+            "app.api.v1.routes.reports.create_report",
+            new=AsyncMock(side_effect=ModerationRejectionError("bad")),
+        ):
+            resp = TestClient(app).post(
+                "/api/v1/reports", data={"metadata": _VALID_REPORT_METADATA}
+            )
+
+        assert resp.status_code == 422
+        captured_db.commit.assert_awaited()
 
     def test_successful_submission_returns_201(self):
         mock_report = MagicMock()

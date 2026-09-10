@@ -14,6 +14,12 @@ Deactivate an account by its UUID:
 
     python -m app.cli deactivate-account --id <uuid>
 
+Re-drive reports whose GIS / AI / duplicate-scoring job was lost after the
+report committed (audit M-8 / M-9) — the same sweep Celery beat runs every
+5 minutes, on demand:
+
+    python -m app.cli reconcile [--grace-minutes 15] [--limit 500]
+
 All commands connect to the database defined by DATABASE_URL in the
 environment (or .env file).  No running server is required.
 """
@@ -176,6 +182,21 @@ async def _deactivate_account(account_id: str) -> None:
     print("  Existing tokens will expire naturally.")
 
 
+def _reconcile(grace_minutes: int, limit: int) -> None:
+    """Run the pipeline reconciliation sweep synchronously (no Celery needed)."""
+    from app.workers.reconciliation_tasks import _reconcile_impl
+
+    summary = _reconcile_impl(grace_minutes=grace_minutes, limit=limit)
+    print("Reconciliation sweep complete:")
+    print(f"  stuck reports scanned : {summary['scanned']}")
+    print(f"  GIS jobs re-dispatched : {summary['gis']}")
+    print(f"  AI jobs re-dispatched  : {summary['ai']}")
+    print(f"  score_report re-dispatched (dedup only) : {summary['dedup_direct']}")
+    if summary.get("error"):
+        print("  NOTE: the sweep hit an error — see logs.")
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -219,6 +240,24 @@ def main() -> None:
         help="Account UUID shown by list-accounts.",
     )
 
+    # reconcile
+    p_recon = sub.add_parser(
+        "reconcile",
+        help="Re-drive reports whose async pipeline job was lost (M-8 / M-9).",
+    )
+    p_recon.add_argument(
+        "--grace-minutes",
+        type=int,
+        default=15,
+        help="Only touch reports older than this (default 15).",
+    )
+    p_recon.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Maximum reports to re-drive in one sweep (default 500).",
+    )
+
     args = parser.parse_args()
 
     if args.command == "create-admin":
@@ -227,6 +266,8 @@ def main() -> None:
         asyncio.run(_list_accounts())
     elif args.command == "deactivate-account":
         asyncio.run(_deactivate_account(args.account_id))
+    elif args.command == "reconcile":
+        _reconcile(args.grace_minutes, args.limit)
     else:
         parser.print_help()
         sys.exit(1)

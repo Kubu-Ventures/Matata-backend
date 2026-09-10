@@ -268,7 +268,7 @@ class TestVerifyPrivyAndIssueTokens:
         from app.services.auth_service import Role, verify_privy_and_issue_tokens
 
         priv, _ = _es256_keys
-        account = MagicMock(role="analyst", is_active=True)
+        account = MagicMock(role="analyst", is_active=True, region_geojson=None)
         _, _, role = await verify_privy_and_issue_tokens(
             privy_token=_access_token(priv),
             identity_token=_identity_token(priv, email=_EMAIL),
@@ -276,6 +276,60 @@ class TestVerifyPrivyAndIssueTokens:
             db=_db_returning(account),
         )
         assert role == Role.analyst
+
+    @pytest.mark.asyncio
+    async def test_provisioned_responder_region_lands_in_jwt(
+        self, privy_settings, _es256_keys
+    ):
+        """A provisioned responder's region_geojson is carried as a JWT claim.
+
+        Without this the analyst routes' ST_Within filter never fires and a
+        regional responder can read every report in the system (audit H-1).
+        """
+        from unittest.mock import MagicMock
+
+        from app.services.auth_service import (
+            Role,
+            decode_access_token,
+            rotate_refresh_token,
+            verify_privy_and_issue_tokens,
+        )
+
+        region = (
+            '{"type":"Polygon","coordinates":'
+            "[[[36.79,-1.33],[36.87,-1.33],[36.87,-1.25],[36.79,-1.25],"
+            "[36.79,-1.33]]]}"
+        )
+        priv, _ = _es256_keys
+        account = MagicMock(role="responder", is_active=True, region_geojson=region)
+        redis = _FakeRedis()
+        access, refresh, role = await verify_privy_and_issue_tokens(
+            privy_token=_access_token(priv),
+            identity_token=_identity_token(priv, email=_EMAIL),
+            redis=redis,
+            db=_db_returning(account),
+        )
+        assert role == Role.responder
+        assert decode_access_token(access)["region_geojson"] == region
+
+        # ...and it survives refresh-token rotation (DB is not re-consulted).
+        new_access, _ = await rotate_refresh_token(refresh, redis)
+        assert decode_access_token(new_access)["region_geojson"] == region
+
+    @pytest.mark.asyncio
+    async def test_reporter_token_has_no_region_claim(
+        self, privy_settings, _es256_keys
+    ):
+        from app.services.auth_service import (
+            decode_access_token,
+            verify_privy_and_issue_tokens,
+        )
+
+        priv, _ = _es256_keys
+        access, _, _ = await verify_privy_and_issue_tokens(
+            privy_token=_access_token(priv), redis=_FakeRedis()
+        )
+        assert "region_geojson" not in decode_access_token(access)
 
     @pytest.mark.asyncio
     async def test_unprovisioned_email_is_reporter(self, privy_settings, _es256_keys):
@@ -340,7 +394,7 @@ class TestVerifyPrivyAndIssueTokens:
         )
 
         priv, _ = _es256_keys
-        account = MagicMock(role="analyst", is_active=True)
+        account = MagicMock(role="analyst", is_active=True, region_geojson=None)
         privy_access, _, _ = await verify_privy_and_issue_tokens(
             privy_token=_access_token(priv),
             identity_token=_identity_token(priv, email=_EMAIL),

@@ -243,6 +243,15 @@ async def submit_report(
             headers={"Retry-After": "3600"},
         ) from exc
     except ModerationRejectionError:
+        # The service flushed an internal rejection audit row before raising.
+        # Commit it here — spec §8.2.1 requires every rejection to be recorded,
+        # and the request-scoped session would otherwise roll it back on the
+        # way out. No report row was inserted on this path, so this commits
+        # exactly the audit entry.
+        try:
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            await db.rollback()
         # Generic message — do not disclose rejection reason (spec §8.2.1).
         raise LocalisedHTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -378,6 +387,12 @@ async def upload_report_photo(
             lang=lang,
         ) from exc
     except ModerationRejectionError:
+        # Persist the flushed photo-rejection audit row before the 422 — see
+        # the matching handler in submit_report and spec §8.2.1.
+        try:
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            await db.rollback()
         raise LocalisedHTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             message_key="errors.image_rejected",

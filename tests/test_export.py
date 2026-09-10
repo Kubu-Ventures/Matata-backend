@@ -11,6 +11,9 @@ Anonymisation acceptance criteria (spec §12.2 / issue #16)
 * Plaintext phone number never appears.
 * ``reporter_token_hash`` truncated to first 12 characters only.
 * ``AnalystNote.body`` never appears.
+* Reporter free text is PII-scrubbed (email / phone / URL) — audit M-5.
+* Only ``has_photo`` (bool) is exported, never the internal object key.
+* ``location_precision`` can coarsen coordinates for external sharing.
 * Only fields listed in spec §12.1 are exported.
 * Restriction enforced in ExportService — not bypassable via any parameter.
 
@@ -292,6 +295,63 @@ class TestAnonymiser:
         rec = a.anonymise(report)
         assert rec.reporter_token_hash_truncated == ""
 
+    def test_photo_url_reduced_to_has_photo_bool(self):
+        """The internal object key must never be exported — only has_photo."""
+        a = Anonymiser()
+        with_photo = a.anonymise(_make_report(photo_url="reports/abc/xyz.jpg"))
+        without = a.anonymise(_make_report(photo_url=None))
+        assert with_photo.has_photo is True
+        assert without.has_photo is False
+        assert not hasattr(with_photo, "photo_url")
+        for val in with_photo.to_dict().values():
+            if isinstance(val, str):
+                assert "reports/abc/xyz.jpg" not in val
+
+    def test_free_text_pii_is_scrubbed(self):
+        """Audit M-5: phone / email / URL in reporter free text are redacted."""
+        a = Anonymiser()
+        report = _make_report(
+            most_pressing_needs=(
+                "call John Otieno on +254712345678 or john@example.com, "
+                "see http://evil.example/x — water for 6 families"
+            ),
+            landmark_description="next to shop, tel 0712 345 678",
+        )
+        rec = a.anonymise(report)
+        assert "+254712345678" not in rec.most_pressing_needs
+        assert "john@example.com" not in rec.most_pressing_needs
+        assert "evil.example" not in rec.most_pressing_needs
+        assert "[redacted-number]" in rec.most_pressing_needs
+        assert "[redacted-email]" in rec.most_pressing_needs
+        assert "[redacted-url]" in rec.most_pressing_needs
+        # Operationally useful text and small quantities survive.
+        assert "water for 6 families" in rec.most_pressing_needs
+        assert "0712 345 678" not in rec.landmark_description
+
+    def test_scrub_keeps_plain_text_and_small_numbers(self):
+        a = Anonymiser()
+        rec = a.anonymise(
+            _make_report(most_pressing_needs="12 injured, 3 shelters, road blocked")
+        )
+        assert rec.most_pressing_needs == "12 injured, 3 shelters, road blocked"
+
+    def test_location_precision_reduced_and_coarse(self):
+        report = _make_report(lat=-1.29213456, lng=36.82197891, gps_accuracy_m=8.0)
+        exact = Anonymiser("exact").anonymise(report)
+        reduced = Anonymiser("reduced").anonymise(report)
+        coarse = Anonymiser("coarse").anonymise(report)
+        assert (exact.lat, exact.lng) == (-1.29213456, 36.82197891)
+        assert exact.gps_accuracy_m == 8.0
+        assert (reduced.lat, reduced.lng) == (-1.292, 36.822)
+        assert reduced.gps_accuracy_m is None  # precision must not leak back
+        assert (coarse.lat, coarse.lng) == (-1.29, 36.82)
+        assert coarse.gps_accuracy_m is None
+
+    def test_location_precision_unknown_falls_back_to_exact(self):
+        report = _make_report(lat=-1.29213456, lng=36.82197891)
+        rec = Anonymiser("garbage").anonymise(report)
+        assert (rec.lat, rec.lng) == (-1.29213456, 36.82197891)
+
 
 # ===========================================================================
 # 2. ExportRecord
@@ -319,7 +379,7 @@ class TestExportRecord:
             health_services_status="accessible",
             most_pressing_needs="Water",
             debris_clearing_needed=False,
-            photo_url="reports/x/p.jpg",
+            has_photo=True,
             created_at="2024-06-01T12:00:00+00:00",
             updated_at="2024-06-01T13:00:00+00:00",
         )
@@ -327,6 +387,8 @@ class TestExportRecord:
         assert d["report_id"] == "r1"
         assert d["crisis_type"] == "flood"
         assert d["reporter_trust_tier"] == 1
+        assert d["has_photo"] is True
+        assert "photo_url" not in d
 
 
 # ===========================================================================

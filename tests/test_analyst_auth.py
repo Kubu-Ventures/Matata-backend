@@ -287,6 +287,28 @@ class TestVerifyOtpRoleElevation:
         _, _, role = await verify_otp(_PHONE, _OTP, self._make_redis(), db=None)
         assert role == Role.reporter
 
+    @pytest.mark.asyncio
+    async def test_responder_region_geojson_lands_in_jwt(self):
+        """verify_otp carries a provisioned responder's region into the JWT.
+
+        Parallel to the Privy path — without the claim the analyst routes'
+        ST_Within filter never fires (audit H-1).
+        """
+        from app.services.auth_service import decode_access_token, verify_otp
+
+        region = '{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}'
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(
+                scalar_one_or_none=MagicMock(
+                    return_value=_make_account(role="responder", region_geojson=region)
+                )
+            )
+        )
+
+        access, _, _ = await verify_otp(_PHONE, _OTP, self._make_redis(), db=db)
+        assert decode_access_token(access)["region_geojson"] == region
+
 
 # ===========================================================================
 # Analyst register route

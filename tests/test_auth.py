@@ -261,8 +261,7 @@ class TestRotateRefreshToken:
 
         payload = json.dumps({"sub": "abc", "role": "reporter", "tier": 1})
         redis = AsyncMock()
-        redis.get = AsyncMock(return_value=payload)
-        redis.delete = AsyncMock()
+        redis.getdel = AsyncMock(return_value=payload)
         redis.set = AsyncMock()
 
         access, refresh = await rotate_refresh_token("old-token", redis)
@@ -274,23 +273,28 @@ class TestRotateRefreshToken:
         from app.services.auth_service import InvalidTokenError, rotate_refresh_token
 
         redis = AsyncMock()
-        redis.get = AsyncMock(return_value=None)
+        redis.getdel = AsyncMock(return_value=None)
 
         with pytest.raises(InvalidTokenError):
             await rotate_refresh_token("bad-token", redis)
 
     @pytest.mark.asyncio
-    async def test_old_token_deleted(self):
+    async def test_old_token_consumed_atomically_with_getdel(self):
+        """audit M-6: rotation must read+delete in one atomic GETDEL so two
+        concurrent refreshes of the same token cannot both succeed."""
         from app.services.auth_service import rotate_refresh_token
 
         payload = json.dumps({"sub": "abc", "role": "reporter", "tier": 1})
         redis = AsyncMock()
-        redis.get = AsyncMock(return_value=payload)
+        redis.getdel = AsyncMock(return_value=payload)
+        redis.get = AsyncMock()
         redis.delete = AsyncMock()
         redis.set = AsyncMock()
 
         await rotate_refresh_token("old-token", redis)
-        redis.delete.assert_awaited_once()
+        redis.getdel.assert_awaited_once()
+        redis.get.assert_not_awaited()
+        redis.delete.assert_not_awaited()
 
 
 class TestLogout:

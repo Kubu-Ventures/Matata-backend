@@ -142,8 +142,29 @@ def get_sync_db() -> Generator[Session, None, None]:
 # ---------------------------------------------------------------------------
 
 
+# One shared client + connection pool for the whole process.  Building a
+# fresh ``Redis.from_url`` (and therefore a fresh pool + TCP connection) on
+# every request caused connection storms under load — the pool could not hand
+# out a connection inside the default timeout and route handlers 500'd with
+# "Timeout connecting to server".  ``redis.asyncio.Redis`` is safe to share
+# across concurrent tasks; the pool serialises access.
+_redis_client: Redis = Redis.from_url(
+    settings.REDIS_URL,
+    decode_responses=True,
+    max_connections=50,
+    socket_connect_timeout=5,
+    socket_timeout=5,
+    retry_on_timeout=True,
+    health_check_interval=30,
+)
+
+
 async def get_redis() -> AsyncGenerator[Redis, None]:
-    """Yield an async Redis client and ensure it is closed after the request.
+    """Yield the shared process-wide async Redis client.
+
+    The client is **not** closed per request — it lives for the lifetime of
+    the process and is disposed once in the app's lifespan shutdown
+    (``close_redis``).
 
     Usage::
 
@@ -151,8 +172,9 @@ async def get_redis() -> AsyncGenerator[Redis, None]:
         async def example(redis: Redis = Depends(get_redis)):
             ...
     """
-    redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-    try:
-        yield redis
-    finally:
-        await redis.aclose()
+    yield _redis_client
+
+
+async def close_redis() -> None:
+    """Close the shared Redis client — called from the app lifespan shutdown."""
+    await _redis_client.aclose()
