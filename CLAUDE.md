@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+`Makefile` wraps the common ones: `make install | dev | test | lint | format | migrate`.
+
 ```bash
 # Install dependencies
 pip install -r requirements.txt -r requirements-dev.txt
@@ -11,16 +13,14 @@ pip install -r requirements.txt -r requirements-dev.txt
 # Run dev server (hot-reload)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
-# Run all tests with coverage
+# Run all tests with coverage (CI gate: 80%)
 pytest tests/ --cov=app --cov-report=term-missing --cov-fail-under=80 -v
 
-# Run a single test file
+# Run a single test file / single test
 pytest tests/test_auth.py -v
+pytest tests/test_submission.py::test_create_report_happy_path -v
 
-# Run a single test by name
-pytest tests/test_reports.py::test_submit_report -v
-
-# Lint
+# Lint (both must pass clean)
 flake8 app/ tests/
 mypy app/
 
@@ -32,12 +32,29 @@ isort app/ tests/
 alembic upgrade head
 alembic revision --autogenerate -m "description"
 
-# Full stack (app + Postgres + Redis + Celery workers + Mailpit)
+# Full stack (app + Postgres + Redis + 4 Celery workers + MinIO + Mailpit)
 docker-compose up
 
-# Celery worker (manually, outside Docker)
+# Celery workers (manually, outside Docker) — one process per queue
 celery -A app.workers.celery_app worker -Q gis --concurrency 2 --loglevel info
+celery -A app.workers.celery_app worker -Q ai --concurrency 2 --loglevel info
+celery -A app.workers.celery_app worker -Q duplicate --concurrency 2 --loglevel info
+celery -A app.workers.celery_app worker -Q notifications --concurrency 2 --loglevel info
+
+# Management CLI (no server needed; talks straight to DATABASE_URL)
+python -m app.cli create-admin --email admin@example.org
+python -m app.cli list-accounts
+python -m app.cli deactivate-account --id <uuid>
+python -m app.cli.import_footprints --source path/to/footprints.geojson
 ```
+
+### Testing notes
+
+`tests/conftest.py` injects all required env vars before any app import (pydantic-settings
+reads the environment at class-definition time) and forces Celery into eager mode. Tests run
+against **SQLite (`sqlite+aiosqlite`)** with an **in-memory Celery broker** — no Postgres,
+Redis, or PostGIS required, and PostGIS-specific SQL paths in `GISService` are therefore not
+exercised by unit tests. Use the `mock_redis` fixture for anything touching Redis.
 
 ## Architecture
 
@@ -56,7 +73,7 @@ All errors are shaped to `{"error": "<detail>"}` by exception handlers in `main.
 
 - **`app/api/v1/routes/`** — thin route handlers: validate shape, call a service, map service exceptions to HTTP codes. No DB/Redis imports here.
 - **`app/services/`** — all business logic. Each service module owns one domain (auth, submission, GIS, etc.). Services import from `app/models` and `app/core`, never from `app/api`.
-- **`app/workers/`** — Celery tasks. Four dedicated queues: `gis`, `ai`, `notifications`, `default`. Workers share the same service layer as the API process.
+- **`app/workers/`** — Celery tasks. Routing is defined in `celery_app.py`: dedicated queues `gis`, `ai`, `notifications`, `duplicate`, `export`, plus `default` for unrouted tasks. `docker-compose.yml` runs four worker processes (gis, ai, duplicate, notifications). Workers share the same service layer as the API process. `task_acks_late=True` + `worker_prefetch_multiplier=1`; 3 retries, 30 s default delay.
 - **`app/models/`** — SQLAlchemy ORM models. All enums live in `app/models/enums.py` (single source of truth for both ORM and Pydantic).
 - **`app/schemas/`** — Pydantic request/response schemas.
 - **`app/core/`** — config, dependencies (DB sessions, Redis), middleware, security, rate limits, logging, i18n.
@@ -89,6 +106,18 @@ Use `require_role(Role.analyst)` from `app/api/v1/routes/auth.py` as a FastAPI d
 5. pHash computation + S3/MinIO upload
 6. DB insert + audit log
 7. Publish to `gis` and `ai` Celery queues
+
+### Duplicate-scoring gate
+
+`duplicate_tasks.score_report` (queue `duplicate`) must run **exactly once per report**, after
+every async step that feeds it has finished. `app/workers/duplicate_dispatch.py` coordinates
+this via a Redis counter (`crisismap:report:{id}:pending_dup_steps`): the submission service
+(and the `PATCH /reports/{id}/photo` route) seeds it — `1` if the report has no photo (GIS
+only), `2` if it has one (GIS + AI). Each of `gis_tasks.match_building` and
+`ai_tasks.process_report_image` calls `mark_step_done_and_maybe_dispatch()` on **every terminal
+return path** (success, not-found, no-photo, permanent failure) — but **never** from a
+`try/finally` or before a Celery retry, since retries re-invoke the task body and would
+over-decrement the counter.
 
 ### Pluggable backends (all configured via env vars)
 
@@ -131,3 +160,9 @@ REDIS_URL=redis://localhost:6379
 ```
 
 Copy `.env.example` to `.env` and fill in these five values at minimum.
+
+### Reference docs
+
+- `docs/frontend-integration-guide.md` — full endpoint reference, auth patterns, request/response examples.
+- `docs/deployment.md` — production compose overrides, MinIO bucket setup, footprint import.
+- `docs/hdx_schema.md` — export column schema (GeoJSON/CSV/Shapefile).
