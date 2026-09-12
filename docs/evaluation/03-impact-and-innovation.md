@@ -1,7 +1,6 @@
 # CrisisMap: impact and innovation brief
 
-For Engineering for Change (E4C) and ASME, toward partnership, adoption, and
-a Solutions Library assessment.
+Toward partnership, adoption, and field validation.
 
 Subject: CrisisMap, the backend for the Matata community crisis-damage
 reporting platform.
@@ -204,10 +203,9 @@ report. The one-page summary carries the top-line figures.
   Cross or Red Crescent society, taking the system from TRL 6 to a
   field-demonstrated TRL 7. That is the evidence step that most changes an
   adoption decision.
-* A Solutions Library entry and an E4C sector-report contribution on
-  community-sourced damage assessment, with CrisisMap as a documented
-  reference implementation.
-* Standards review. An ASME and E4C read of the export schema and the
+* A published case study on community-sourced damage assessment, with
+  CrisisMap as a documented reference implementation.
+* Standards review. An independent read of the export schema and the
   responsible-AI constraints against emerging norms, feeding back into both
   this system and the guidance.
 * Sustainability model. CrisisMap is open by construction. A partnership

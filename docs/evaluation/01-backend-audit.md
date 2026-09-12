@@ -243,8 +243,8 @@ hard-coded `{"status": "pending"}` regardless of the real prior state.
 
 1. **H-1** -- wire `region_geojson` into the JWT (access-control hole).
 2. **H-2** -- unify the perceptual hash (dedup correctness).
-3. **M-5** -- free-text / coordinate handling in exports (do-no-harm; E4C will
-   look here first).
+3. **M-5** -- free-text / coordinate handling in exports (do-no-harm;
+   reviewers will look here first).
 4. **M-4** -- authenticate or coarsen `/reports/nearby`.
 5. **M-1** -- load footprints in every evaluation run and document the
    dependency.

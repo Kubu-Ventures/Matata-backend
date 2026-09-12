@@ -1,6 +1,6 @@
 # CrisisMap: executive summary
 
-One page for a first conversation with Engineering for Change and ASME.
+One-page overview for early partnership conversations.
 
 ---
 
@@ -68,8 +68,8 @@ event, which is the TRL 7 threshold.
 
 A piloting partnership with a municipal disaster-management office or a Red
 Cross or Red Crescent society to take CrisisMap from simulated to
-field-demonstrated, plus an E4C Solutions Library entry and a standards
-review of the export schema and responsible-AI constraints.
+field-demonstrated, plus an independent standards review of the export
+schema and responsible-AI constraints.
 
 ## Honest limitations
 
