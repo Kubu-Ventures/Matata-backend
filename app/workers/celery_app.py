@@ -46,6 +46,11 @@ celery_app = Celery(
         "app.workers.duplicate_tasks",
         # Periodic pipeline reconciliation sweep (audit M-8 / M-9).
         "app.workers.reconciliation_tasks",
+        # Registers run_export_job — without this the celery-export worker
+        # never imports the module, so the @celery_app.task decorator never
+        # runs and every export.delay() lands as "Received unregistered
+        # task of type 'app.workers.export_tasks.run_export_job'".
+        "app.workers.export_tasks",
     ],
 )
 

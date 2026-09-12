@@ -43,10 +43,14 @@ RUN chmod +x /entrypoint.sh
 
 EXPOSE 8000
 
+# Gunicorn reads WEB_CONCURRENCY itself as its worker-count default whenever
+# --workers isn't passed on the CLI, so it must NOT be hardcoded in CMD below
+# or this env var becomes a no-op. Default of 4 preserves prior behaviour;
+# override via docker-compose's WEB_CONCURRENCY env var to tune per-host.
+ENV WEB_CONCURRENCY=4
+
 ENTRYPOINT ["/entrypoint.sh"]
-# Worker count is configurable via WEB_CONCURRENCY (default 4)
 CMD ["gunicorn", "app.main:app", \
-     "--workers", "4", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--bind", "0.0.0.0:8000", \
      "--forwarded-allow-ips", "*", \
