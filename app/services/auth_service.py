@@ -613,6 +613,14 @@ async def verify_privy_and_issue_tokens(
                 "Privy identity token does not match the access token."
             )
         email = _extract_email_from_identity_claims(identity_claims)
+        logger.info(  # TEMP DEBUG — remove after diagnosis
+            "privy_verify_debug: identity_token_present=True "
+            "linked_accounts_present=%s email_extracted=%s",
+            bool(identity_claims.get("linked_accounts")),
+            bool(email),
+        )
+    else:
+        logger.info("privy_verify_debug: identity_token_present=False")  # TEMP DEBUG
 
     # Default: a plain reporter, keyed by a hash of the stable Privy DID.
     role = Role.reporter
@@ -625,6 +633,11 @@ async def verify_privy_and_issue_tokens(
     if email and db is not None:
         email_hash = hash_identifier(email)
         account = await lookup_analyst_account(email_hash, db)
+        logger.info(  # TEMP DEBUG — remove after diagnosis
+            "privy_verify_debug: email_hash=%s… account_found=%s",
+            email_hash[:8],
+            account is not None,
+        )
         if account is not None:
             role = Role(account.role)
             resolved_tier = 0
