@@ -4,7 +4,11 @@ Usage
 -----
 Bootstrap the very first admin account (run once on the server):
 
-    python -m app.cli create-admin --email admin@example.org
+    python -m app.cli create-admin --email admin@example.org [--label ops-lead]
+
+`--label` is an optional, operator-chosen display name (never the email —
+that's never stored) so `list-accounts` shows something recognisable besides
+a bare UUID.
 
 List all provisioned analyst/responder/admin accounts:
 
@@ -40,7 +44,7 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # ---------------------------------------------------------------------------
 
 
-async def _create_admin(email: str) -> None:
+async def _create_admin(email: str, label: str | None = None) -> None:
     import sqlalchemy as sa
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -82,6 +86,7 @@ async def _create_admin(email: str) -> None:
         account = AnalystAccount(
             id=uuid.uuid4(),
             email_hash=email_hash,
+            label=label,
             role=Role.admin.value,
             region_geojson=None,
             created_by_sub="cli-bootstrap",
@@ -94,6 +99,7 @@ async def _create_admin(email: str) -> None:
 
     print("SUCCESS: Admin account created.")
     print(f"  Account ID : {account.id}")
+    print(f"  Label      : {label or '—'}")
     print("  Role       : admin")
     print()
     print("The admin can now log in through the frontend's Privy email OTP flow,")
@@ -127,13 +133,14 @@ async def _list_accounts() -> None:
         print("No analyst accounts found.")
         return
 
-    fmt = "{:<36}  {:<12}  {:<8}  {}"
-    print(fmt.format("ID", "ROLE", "ACTIVE", "CREATED AT"))
-    print("-" * 75)
+    fmt = "{:<36}  {:<20}  {:<12}  {:<8}  {}"
+    print(fmt.format("ID", "LABEL", "ROLE", "ACTIVE", "CREATED AT"))
+    print("-" * 96)
     for row in rows:
         print(
             fmt.format(
                 str(row.id),
+                row.label or "—",
                 row.role,
                 "yes" if row.is_active else "no",
                 str(row.created_at)[:19] if row.created_at else "—",
@@ -220,6 +227,16 @@ def main() -> None:
         metavar="EMAIL",
         help="Email address, e.g. admin@example.org",
     )
+    p_create.add_argument(
+        "--label",
+        default=None,
+        metavar="LABEL",
+        help=(
+            "Optional display name shown in list-accounts (e.g. "
+            "'ops-lead-nairobi'). Never store the email here — it is never "
+            "persisted, by design."
+        ),
+    )
 
     # list-accounts
     sub.add_parser(
@@ -261,7 +278,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "create-admin":
-        asyncio.run(_create_admin(args.email))
+        asyncio.run(_create_admin(args.email, args.label))
     elif args.command == "list-accounts":
         asyncio.run(_list_accounts())
     elif args.command == "deactivate-account":

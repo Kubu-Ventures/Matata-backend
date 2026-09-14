@@ -4,12 +4,14 @@ Coverage
 --------
 auth_service:
   lookup_analyst_account  — found, not found, inactive ignored
-  register_analyst_account — success, invalid role, duplicate email
+  register_analyst_account — success, invalid role, duplicate email, label
+  update_analyst_account_label — success, clear, not found
   deactivate_analyst_account — success, not found
 
 analyst_auth routes:
   POST   /auth/analyst/register  — admin success, non-admin 403, bad role 422,
-                                   bad email 422, duplicate 400
+                                   bad email 422, duplicate 400, label
+  PATCH  /auth/analyst/accounts/{id} — admin success, not found 404, non-admin 403
   DELETE /auth/analyst/accounts/{id} — admin success, not found 404, non-admin 403
   GET    /auth/analyst/accounts  — admin lists accounts
 
@@ -55,10 +57,12 @@ def _make_account(
     role: str = "analyst",
     is_active: bool = True,
     region_geojson: str | None = None,
+    label: str | None = None,
 ) -> MagicMock:
     acc = MagicMock()
     acc.id = _ACCOUNT_ID
     acc.email_hash = "aabbcc"
+    acc.label = label
     acc.role = role
     acc.region_geojson = region_geojson
     acc.is_active = is_active
@@ -153,6 +157,29 @@ class TestRegisterAnalystAccount:
         db.add.assert_called_once()
         db.commit.assert_awaited_once()
         assert account.role == "analyst"
+        assert account.label is None
+
+    @pytest.mark.asyncio
+    async def test_registers_analyst_with_label(self):
+        from app.services.auth_service import Role, register_analyst_account
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
+        db.add = MagicMock()
+        db.flush = AsyncMock()
+        db.commit = AsyncMock()
+
+        account = await register_analyst_account(
+            email=_EMAIL,
+            role=Role.analyst,
+            created_by_sub="admin-hash",
+            db=db,
+            label="ops-lead-nairobi",
+        )
+
+        assert account.label == "ops-lead-nairobi"
 
     @pytest.mark.asyncio
     async def test_raises_for_reporter_role(self):
@@ -419,6 +446,140 @@ class TestRegisterRoute:
         mock_reg.assert_awaited_once()
         _, kwargs = mock_reg.call_args
         assert kwargs["region_geojson"] == region
+
+    def test_label_is_passed_through_and_returned(self):
+        app = _make_app()
+        client = TestClient(app)
+
+        with patch(
+            "app.api.v1.routes.analyst_auth.auth_service.register_analyst_account",
+            new=AsyncMock(return_value=_make_account(label="ops-lead-nairobi")),
+        ) as mock_reg:
+            resp = client.post(
+                "/api/v1/auth/analyst/register",
+                json={
+                    "email": _EMAIL,
+                    "role": "analyst",
+                    "label": "ops-lead-nairobi",
+                },
+                headers={"Authorization": f"Bearer {_admin_token()}"},
+            )
+
+        assert resp.status_code == 201
+        mock_reg.assert_awaited_once()
+        _, kwargs = mock_reg.call_args
+        assert kwargs["label"] == "ops-lead-nairobi"
+        assert resp.json()["account"]["label"] == "ops-lead-nairobi"
+
+
+# ===========================================================================
+# auth_service — update_analyst_account_label
+# ===========================================================================
+
+
+class TestUpdateAnalystAccountLabel:
+    @pytest.mark.asyncio
+    async def test_updates_existing_account(self):
+        from app.services.auth_service import update_analyst_account_label
+
+        account = _make_account(label="old-label")
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=account))
+        )
+        db.flush = AsyncMock()
+        db.commit = AsyncMock()
+
+        result = await update_analyst_account_label(
+            str(_ACCOUNT_ID), "new-label", db
+        )
+
+        assert result is account
+        assert account.label == "new-label"
+
+    @pytest.mark.asyncio
+    async def test_can_clear_label(self):
+        from app.services.auth_service import update_analyst_account_label
+
+        account = _make_account(label="old-label")
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=account))
+        )
+        db.flush = AsyncMock()
+        db.commit = AsyncMock()
+
+        result = await update_analyst_account_label(str(_ACCOUNT_ID), None, db)
+
+        assert result is account
+        assert account.label is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_not_found(self):
+        from app.services.auth_service import update_analyst_account_label
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
+
+        result = await update_analyst_account_label(str(_ACCOUNT_ID), "x", db)
+        assert result is None
+
+
+# ===========================================================================
+# Update label route
+# ===========================================================================
+
+
+class TestUpdateLabelRoute:
+    def test_admin_can_update_label(self):
+        app = _make_app()
+        client = TestClient(app)
+
+        with patch(
+            "app.api.v1.routes.analyst_auth.auth_service.update_analyst_account_label",
+            new=AsyncMock(return_value=_make_account(label="new-label")),
+        ) as mock_update:
+            resp = client.patch(
+                f"/api/v1/auth/analyst/accounts/{_ACCOUNT_ID}",
+                json={"label": "new-label"},
+                headers={"Authorization": f"Bearer {_admin_token()}"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["label"] == "new-label"
+        mock_update.assert_awaited_once()
+        _, kwargs = mock_update.call_args
+        assert kwargs["label"] == "new-label"
+
+    def test_not_found_returns_404(self):
+        app = _make_app()
+        client = TestClient(app)
+
+        with patch(
+            "app.api.v1.routes.analyst_auth.auth_service.update_analyst_account_label",
+            new=AsyncMock(return_value=None),
+        ):
+            resp = client.patch(
+                f"/api/v1/auth/analyst/accounts/{_ACCOUNT_ID}",
+                json={"label": "new-label"},
+                headers={"Authorization": f"Bearer {_admin_token()}"},
+            )
+
+        assert resp.status_code == 404
+
+    def test_non_admin_returns_403(self):
+        app = _make_app()
+        client = TestClient(app)
+
+        resp = client.patch(
+            f"/api/v1/auth/analyst/accounts/{_ACCOUNT_ID}",
+            json={"label": "new-label"},
+            headers={"Authorization": f"Bearer {_analyst_token()}"},
+        )
+
+        assert resp.status_code == 403
 
 
 # ===========================================================================
