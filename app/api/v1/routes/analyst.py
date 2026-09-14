@@ -14,6 +14,7 @@ Role enforcement
 ----------------
 * ``GET  /analyst/reports``              — analyst | responder
 * ``GET  /analyst/reports/{id}``         — analyst | responder
+* ``GET  /analyst/reports/{id}/photo``   — analyst | responder (proxied photo bytes)
 * ``PATCH /analyst/reports/{id}/status`` — analyst only (responders cannot modify)
 * ``POST /analyst/reports/merge``        — analyst only
 * ``POST /analyst/reports/{id}/notes``   — analyst | responder
@@ -59,7 +60,7 @@ from typing import AsyncGenerator, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,6 +84,7 @@ from app.schemas.analyst_schemas import (
 )
 from app.services import analyst_service
 from app.services.auth_service import Role
+from app.services.storage_service import StorageError, get_storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +300,71 @@ async def get_report_detail(
             detail=f"Report {report_id} not found.",
         )
     return detail
+
+
+# ---------------------------------------------------------------------------
+# GET /analyst/reports/{id}/photo — proxied photo bytes
+# ---------------------------------------------------------------------------
+
+
+@analyst_router.get(
+    "/reports/{report_id}/photo",
+    status_code=status.HTTP_200_OK,
+    summary="Get report photo",
+    description=(
+        "Streams the report's uploaded photo as JPEG bytes. ``photo_url`` on "
+        "the report detail is an object storage *key*, not a browser-fetchable "
+        "URL (no HTTP scheme, and no public bucket access for S3) — the "
+        "frontend must fetch this endpoint (with its own auth header) rather "
+        "than using ``photo_url`` directly as an <img> src. "
+        "Requires ``analyst``, ``responder``, or ``admin`` role; responders "
+        "are subject to the same regional scoping as report detail."
+    ),
+    responses={
+        200: {"content": {"image/jpeg": {}}, "description": "JPEG image bytes."},
+        404: {"description": "Report not found, or has no photo."},
+        403: {"description": "Caller does not have analyst/responder/admin role."},
+    },
+)
+async def get_report_photo(
+    report_id: UUID,
+    current_user: dict = Depends(
+        require_role(Role.analyst, Role.responder, Role.admin)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Return the raw JPEG bytes for a report's uploaded photo."""
+    detail = await analyst_service.get_report_detail(
+        db,
+        report_id,
+        region_geojson=_region_geojson(current_user),
+    )
+    if detail is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Report {report_id} not found.",
+        )
+    if not detail.photo_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="This report has no photo.",
+        )
+
+    storage = get_storage_service()
+    try:
+        image_bytes = await storage.download_image(detail.photo_url)
+    except StorageError as exc:
+        logger.error("Failed to load photo for report %s: %s", report_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Photo could not be retrieved from storage.",
+        ) from exc
+
+    return Response(
+        content=image_bytes,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 # ---------------------------------------------------------------------------

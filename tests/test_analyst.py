@@ -1172,6 +1172,143 @@ class TestGetReportDetailRoute:
         assert resp.json()["id"] == str(report_id)
 
 
+class TestGetReportPhotoRoute:
+    """Tests for GET /analyst/reports/{id}/photo."""
+
+    def _detail(self, report_id, photo_url=None):
+        from app.models.enums import (
+            CrisisType,
+            InfrastructureType,
+            PhotoStatus,
+            ReportDamageSeverity,
+            ReportStatus,
+        )
+        from app.schemas.analyst_schemas import ReportDetailSchema
+
+        return ReportDetailSchema(
+            id=report_id,
+            crisis_type=CrisisType.flood,
+            infrastructure_type=InfrastructureType.residential,
+            damage_severity=ReportDamageSeverity.partial,
+            photo_status=PhotoStatus.accepted,
+            photo_url=photo_url,
+            status=ReportStatus.pending,
+            reporter_trust_tier=1,
+            created_at=datetime.now(tz=timezone.utc),
+            updated_at=datetime.now(tz=timezone.utc),
+        )
+
+    def test_returns_404_when_report_not_found(self, mock_redis):
+        from fastapi.testclient import TestClient
+
+        from app.services import analyst_service
+
+        analyst_user = {"sub": "a" * 64, "role": "analyst", "tier": 0}
+        app = _make_app(analyst_user, mock_redis)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with patch.object(
+            analyst_service, "get_report_detail", new=AsyncMock(return_value=None)
+        ):
+            resp = client.get(f"/api/v1/analyst/reports/{uuid4()}/photo")
+
+        assert resp.status_code == 404
+
+    def test_returns_404_when_report_has_no_photo(self, mock_redis):
+        from fastapi.testclient import TestClient
+
+        from app.services import analyst_service
+
+        analyst_user = {"sub": "a" * 64, "role": "analyst", "tier": 0}
+        app = _make_app(analyst_user, mock_redis)
+        client = TestClient(app, raise_server_exceptions=False)
+        report_id = uuid4()
+
+        with patch.object(
+            analyst_service,
+            "get_report_detail",
+            new=AsyncMock(return_value=self._detail(report_id, photo_url=None)),
+        ):
+            resp = client.get(f"/api/v1/analyst/reports/{report_id}/photo")
+
+        assert resp.status_code == 404
+
+    def test_returns_jpeg_bytes_when_photo_present(self, mock_redis):
+        from fastapi.testclient import TestClient
+
+        from app.api.v1.routes import analyst as analyst_routes
+        from app.services import analyst_service
+
+        analyst_user = {"sub": "a" * 64, "role": "analyst", "tier": 0}
+        app = _make_app(analyst_user, mock_redis)
+        client = TestClient(app)
+        report_id = uuid4()
+        key = f"reports/{report_id}/photo.jpg"
+
+        fake_storage = MagicMock()
+        fake_storage.download_image = AsyncMock(
+            return_value=b"\xff\xd8\xff\xe0fakejpeg"
+        )
+
+        with (
+            patch.object(
+                analyst_service,
+                "get_report_detail",
+                new=AsyncMock(return_value=self._detail(report_id, photo_url=key)),
+            ),
+            patch.object(
+                analyst_routes, "get_storage_service", return_value=fake_storage
+            ),
+        ):
+            resp = client.get(f"/api/v1/analyst/reports/{report_id}/photo")
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+        assert resp.content == b"\xff\xd8\xff\xe0fakejpeg"
+        fake_storage.download_image.assert_awaited_once_with(key)
+
+    def test_returns_404_when_storage_raises(self, mock_redis):
+        from fastapi.testclient import TestClient
+
+        from app.api.v1.routes import analyst as analyst_routes
+        from app.services import analyst_service
+        from app.services.storage_service import StorageError
+
+        analyst_user = {"sub": "a" * 64, "role": "analyst", "tier": 0}
+        app = _make_app(analyst_user, mock_redis)
+        client = TestClient(app, raise_server_exceptions=False)
+        report_id = uuid4()
+        key = f"reports/{report_id}/photo.jpg"
+
+        fake_storage = MagicMock()
+        fake_storage.download_image = AsyncMock(side_effect=StorageError("missing"))
+
+        with (
+            patch.object(
+                analyst_service,
+                "get_report_detail",
+                new=AsyncMock(return_value=self._detail(report_id, photo_url=key)),
+            ),
+            patch.object(
+                analyst_routes, "get_storage_service", return_value=fake_storage
+            ),
+        ):
+            resp = client.get(f"/api/v1/analyst/reports/{report_id}/photo")
+
+        assert resp.status_code == 404
+
+    def test_non_analyst_role_returns_403(self, mock_redis):
+        from fastapi.testclient import TestClient
+
+        reporter_user = {"sub": "a" * 64, "role": "reporter", "tier": 0}
+        app = _make_app(reporter_user, mock_redis)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        resp = client.get(f"/api/v1/analyst/reports/{uuid4()}/photo")
+
+        assert resp.status_code == 403
+
+
 class TestTransitionStatusRoute:
     """Tests for PATCH /analyst/reports/{id}/status (lines 375-448)."""
 
