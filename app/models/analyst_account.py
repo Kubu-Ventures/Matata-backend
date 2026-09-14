@@ -39,6 +39,14 @@ class AnalystAccount(TimestampMixin, Base):
         index=True,
     )
 
+    label: Mapped[Optional[str]] = mapped_column(
+        sa.Text,
+        nullable=True,
+    )
+    """Operator-supplied display name (e.g. "ops-lead-nairobi"), never the
+    email itself — lets an admin recognise an account in `list-accounts`
+    without the system ever storing the plaintext login identifier."""
+
     role: Mapped[str] = mapped_column(
         sa.Text,
         nullable=False,

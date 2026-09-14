@@ -13,6 +13,7 @@ login endpoint is required.
 Admin-only management routes in this module:
 
     POST   /auth/analyst/register           — provision a new account
+    PATCH  /auth/analyst/accounts/{id}      — update an account's label
     DELETE /auth/analyst/accounts/{id}      — deactivate an account
     GET    /auth/analyst/accounts           — list all accounts (active only)
 """
@@ -65,6 +66,15 @@ class RegisterRequest(BaseModel):
             "Required for role=responder; ignored for analyst and admin."
         ),
     )
+    label: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Optional operator-supplied display name (e.g. 'ops-lead-nairobi') "
+            "so admins can recognise the account later. Never store the email "
+            "here — it is never persisted, by design."
+        ),
+    )
 
     @field_validator("email")
     @classmethod
@@ -84,8 +94,20 @@ class RegisterRequest(BaseModel):
         return value
 
 
+class UpdateLabelRequest(BaseModel):
+    label: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "New operator-facing display name, or omit/null to clear it. "
+            "Never the email — that is never persisted."
+        ),
+    )
+
+
 class AccountResponse(BaseModel):
     id: uuid.UUID
+    label: Optional[str]
     role: str
     region_geojson: Optional[str]
     is_active: bool
@@ -137,6 +159,7 @@ async def register_analyst(
             created_by_sub=current_user["sub"],
             db=db,
             region_geojson=body.region_geojson,
+            label=body.label,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -156,6 +179,52 @@ async def register_analyst(
         ),
         account=AccountResponse.model_validate(account),
     )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /auth/analyst/accounts/{account_id}
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/accounts/{account_id}",
+    response_model=AccountResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update an analyst account's label (admin only)",
+    description=(
+        "Sets or clears the operator-facing display label on a provisioned "
+        "account. Purely a recognition aid for admins — never the email, "
+        "and never used in login/role resolution."
+    ),
+    responses={
+        200: {"description": "Label updated."},
+        404: {"description": "Account not found or inactive."},
+        403: {"description": "Caller does not have admin role."},
+    },
+)
+async def update_analyst_label(
+    account_id: uuid.UUID,
+    body: UpdateLabelRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role(Role.admin)),
+) -> AccountResponse:
+    """Update a provisioned account's label."""
+    account = await auth_service.update_analyst_account_label(
+        account_id=str(account_id),
+        label=body.label,
+        db=db,
+    )
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active analyst account found with that ID.",
+        )
+    logger.info(
+        "analyst_account_label_updated id=%s by admin=%s…",
+        account_id,
+        current_user["sub"][:8],
+    )
+    return AccountResponse.model_validate(account)
 
 
 # ---------------------------------------------------------------------------

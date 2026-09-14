@@ -700,6 +700,7 @@ async def register_analyst_account(
     created_by_sub: str,
     db: "AsyncSession",
     region_geojson: Optional[str] = None,
+    label: Optional[str] = None,
 ) -> "AnalystAccount":
     """Provision an analyst/responder/admin account by email address.
 
@@ -713,6 +714,8 @@ async def register_analyst_account(
         created_by_sub: JWT ``sub`` claim of the provisioning admin.
         db:             Async SQLAlchemy session.
         region_geojson: GeoJSON string for responder geographic scope.
+        label:          Optional operator-supplied display name (never the
+                        email) so admins can recognise the account later.
 
     Returns:
         The created ``AnalystAccount`` instance.
@@ -745,6 +748,7 @@ async def register_analyst_account(
     account = AnalystAccount(
         id=uuid.uuid4(),
         email_hash=email_hash,
+        label=label,
         role=role.value,
         region_geojson=region_geojson,
         created_by_sub=created_by_sub,
@@ -759,6 +763,43 @@ async def register_analyst_account(
         role.value,
         email_hash[:8],
     )
+    return account
+
+
+async def update_analyst_account_label(
+    account_id: str,
+    label: Optional[str],
+    db: "AsyncSession",
+) -> Optional["AnalystAccount"]:
+    """Update the operator-facing label on an active analyst account.
+
+    Args:
+        account_id: UUID of the account to update.
+        label:      New label (or ``None`` to clear it). Never the email.
+        db:         Async SQLAlchemy session.
+
+    Returns:
+        The updated ``AnalystAccount``, or ``None`` if no active account with
+        that ID exists.
+    """
+    import sqlalchemy as sa
+
+    from app.models.analyst_account import AnalystAccount
+
+    result = await db.execute(
+        sa.select(AnalystAccount).where(
+            AnalystAccount.id == account_id,
+            AnalystAccount.is_active.is_(True),
+        )
+    )
+    account = result.scalar_one_or_none()
+    if account is None:
+        return None
+
+    account.label = label
+    await db.flush()
+    await db.commit()
+    logger.info("Analyst account label updated (id: %s…)", str(account_id)[:8])
     return account
 
 
