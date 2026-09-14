@@ -490,9 +490,7 @@ class TestUpdateAnalystAccountLabel:
         db.flush = AsyncMock()
         db.commit = AsyncMock()
 
-        result = await update_analyst_account_label(
-            str(_ACCOUNT_ID), "new-label", db
-        )
+        result = await update_analyst_account_label(str(_ACCOUNT_ID), "new-label", db)
 
         assert result is account
         assert account.label == "new-label"
