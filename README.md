@@ -5,7 +5,7 @@
 [![CI](https://github.com/Kubu-Ventures/Matata-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Kubu-Ventures/Matata-backend/actions)
 [![Coverage](https://img.shields.io/badge/coverage-80%25-brightgreen)](#testing)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 CrisisMap is a FastAPI backend that lets community members report infrastructure damage after a crisis (flood, earthquake, conflict, wildfire) with GPS coordinates and photos. Field analysts and responders triage reports, merge duplicates, and export structured datasets for field operational planning.
 
@@ -416,4 +416,4 @@ To report a vulnerability, email **collins.kubu@gmail.com** directly. Do not ope
 
 ## License
 
-[MIT](LICENSE) -- Copyright (c) 2024 Kubu Ventures
+[Apache 2.0](LICENSE) -- Copyright 2026 Kubu Ventures
