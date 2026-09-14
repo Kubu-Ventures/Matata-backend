@@ -7,6 +7,8 @@
 [![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
+Built and maintained by Origin Africa Software Limited.
+
 CrisisMap is a FastAPI backend that lets community members report infrastructure damage after a crisis (flood, earthquake, conflict, wildfire) with GPS coordinates and photos. Field analysts and responders triage reports, merge duplicates, and export structured datasets for field operational planning.
 
 ---
