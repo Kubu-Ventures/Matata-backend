@@ -22,6 +22,21 @@ Method (pilot phase A):
 Everything runs in one transaction that is always rolled back: the held-out
 buildings are never really deleted and nothing is written. Point it at a
 local copy of the database anyway.
+
+Reference areas
+---------------
+``--area`` names a preset bounding box (``AREAS`` below) so a run can be
+repeated exactly. To reproduce one from scratch::
+
+    python -m simulation.osm_replay --area kibera --overpass-query > q.txt
+    curl -sS --data-urlencode data@q.txt \
+        https://overpass-api.de/api/interpreter -o kibera.json
+    python -m app.cli.import_footprints --source-type osm --source kibera.json
+    python -m simulation.osm_replay --area kibera --sample 1000 --trials 2
+
+OSM data is ODbL: credit "© OpenStreetMap contributors" wherever results
+derived from it are shown. OSM changes over time, so record the Overpass
+``timestamp_osm_base`` alongside any published numbers.
 """
 
 from __future__ import annotations
@@ -64,6 +79,45 @@ _ACCURACY_TO_AXIS_SIGMA = 1.515
 _FALSE_MATCH_CONFIDENCE = 0.8
 _DENSITY_BUCKETS = [(0, 0, "0"), (1, 2, "1-2"), (3, 5, "3-5"), (6, 10**9, "6+")]
 _CALIBRATION_BINS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+
+Bbox = tuple[float, float, float, float]  # min_lng, min_lat, max_lng, max_lat
+
+
+@dataclass(frozen=True)
+class Area:
+    bbox: Bbox
+    description: str
+
+
+# Reference areas, each about 1 km x 1 km. First run 7 Oct 2026 against OSM
+# as of 2026-10-07T08:31Z (Kibera 4,896 buildings, Kilimani 1,249).
+AREAS: dict[str, Area] = {
+    "kibera": Area(
+        (36.7850, -1.3165, 36.7950, -1.3075),
+        "Kibera, Nairobi: dense informal settlement, extensively mapped "
+        "(median 19 buildings within 20 m)",
+    ),
+    "kilimani": Area(
+        (36.7800, -1.2930, 36.7900, -1.2840),
+        "Kilimani, Nairobi: formal residential and commercial, less dense "
+        "(median 5 buildings within 20 m)",
+    ),
+}
+
+
+def overpass_query(bbox: Bbox) -> str:
+    """Overpass QL for every building way in ``bbox`` (``out geom`` JSON).
+
+    Overpass takes the box as south,west,north,east, the reverse of ours.
+    Relations (multipolygon buildings) are left out because the importer
+    does not assemble them from Overpass JSON.
+    """
+    min_lng, min_lat, max_lng, max_lat = bbox
+    return (
+        "[out:json][timeout:120];"
+        f'way["building"]({min_lat},{min_lng},{max_lat},{max_lng});'
+        "out geom;"
+    )
 
 
 @dataclass
@@ -201,7 +255,7 @@ def sample_targets(
     db: Session,
     *,
     source: Optional[str],
-    bbox: Optional[tuple[float, float, float, float]],
+    bbox: Optional[Bbox],
     sample: int,
     density_m: float,
     seed: int,
@@ -350,7 +404,8 @@ def write_outputs(out_dir: str, trials: list[Trial], summary: dict, meta: dict) 
     md = [
         "# OSM footprint-matching replay",
         "",
-        f"_generated {meta['generated']}_ · source `{meta['source']}` · "
+        f"_generated {meta['generated']}_ · area `{meta['area'] or 'custom'}` · "
+        f"source `{meta['source']}` · "
         f"{meta['buildings']} buildings ({meta['held_out']} held out) · "
         f"{meta['trials_per_level']} trial(s) per accuracy level · seed {meta['seed']}",
         "",
@@ -388,7 +443,7 @@ def write_outputs(out_dir: str, trials: list[Trial], summary: dict, meta: dict) 
         fh.write("\n".join(md))
 
 
-def _bbox(value: str) -> tuple[float, float, float, float]:
+def _bbox(value: str) -> Bbox:
     parts = [float(v) for v in value.split(",")]
     if len(parts) != 4:
         raise argparse.ArgumentTypeError("bbox is min_lng,min_lat,max_lng,max_lat")
@@ -403,11 +458,22 @@ def main() -> None:
         default="osm",
         help="building.source to sample; 'any' for all sources",
     )
-    ap.add_argument(
+    where = ap.add_mutually_exclusive_group()
+    where.add_argument(
+        "--area",
+        choices=sorted(AREAS),
+        help="a reference area (see AREAS); sets the bounding box",
+    )
+    where.add_argument(
         "--bbox",
         type=_bbox,
         default=None,
         help="limit the sample: min_lng,min_lat,max_lng,max_lat",
+    )
+    ap.add_argument(
+        "--overpass-query",
+        action="store_true",
+        help="print the Overpass query for --area/--bbox and exit",
     )
     ap.add_argument("--sample", type=int, default=500)
     ap.add_argument(
@@ -426,6 +492,13 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--out", default="simulation/out")
     args = ap.parse_args()
+    bbox: Optional[Bbox] = AREAS[args.area].bbox if args.area else args.bbox
+
+    if args.overpass_query:
+        if bbox is None:
+            ap.error("--overpass-query needs --area or --bbox")
+        print(overpass_query(bbox))
+        return
 
     accuracies = [float(a) for a in args.accuracies.split(",")]
     source = None if args.source == "any" else args.source
@@ -438,7 +511,7 @@ def main() -> None:
             targets = sample_targets(
                 db,
                 source=source,
-                bbox=args.bbox,
+                bbox=bbox,
                 sample=args.sample,
                 density_m=args.density_m,
                 seed=args.seed,
@@ -456,8 +529,10 @@ def main() -> None:
 
     meta = {
         "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "area": args.area,
+        "area_description": AREAS[args.area].description if args.area else None,
         "source": args.source,
-        "bbox": args.bbox,
+        "bbox": bbox,
         "buildings": len(targets),
         "held_out": sum(1 for t in targets if t.held_out),
         "accuracies_m": accuracies,
@@ -467,7 +542,8 @@ def main() -> None:
     }
     summary = summarise(trials)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out_dir = os.path.join(args.out, f"osm_replay_{stamp}")
+    label = f"_{args.area}" if args.area else ""
+    out_dir = os.path.join(args.out, f"osm_replay{label}_{stamp}")
     write_outputs(out_dir, trials, summary, meta)
     print(f"Wrote {len(trials)} trials to {out_dir}")
     print(json.dumps(summary["by_accuracy_m"], indent=2))
