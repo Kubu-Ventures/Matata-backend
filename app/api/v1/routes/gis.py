@@ -45,6 +45,8 @@ class BuildingCandidateResponse(BaseModel):
     external_id: str
     distance_m: float
     footprint_geojson: str
+    # Probability this is the reporter's building, given the GPS accuracy.
+    probability: float = 0.0
 
 
 class BuildingMatchResponse(BaseModel):

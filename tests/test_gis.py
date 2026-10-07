@@ -1336,6 +1336,7 @@ class TestGISBuildingMatchEndpoint:
         ]
         assert candidates[1]["external_id"] == "osm:way/2"
         assert candidates[1]["distance_m"] == 7.5
+        assert "probability" in candidates[1]
 
     def test_requires_lat_and_lng_params(self, app_client):
         """Missing required query params should return 422."""
