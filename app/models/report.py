@@ -153,6 +153,22 @@ class Report(TimestampMixin, Base):
         nullable=True,
     )
 
+    # ── Reporter building confirmation ───────────────────────────────────────
+    # Building the reporter picked from the match candidates on the report
+    # form. Deliberately not a foreign key: it is an unverified client claim.
+    # The GIS worker adopts it as ``building_id`` only if that building
+    # exists and lies within the search radius of the reporter's GPS fix.
+    reporter_confirmed_building_id: Mapped[Optional[UUID]] = mapped_column(
+        sa.UUID(as_uuid=True), nullable=True
+    )
+
+    # The reporter said their building is not on the map. The GIS worker then
+    # leaves building_id empty instead of snapping to a neighbour, and the
+    # report becomes a "mapping gap" signal for OSM mappers.
+    reporter_building_missing: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, default=False, server_default=sa.false()
+    )
+
     # ── GIS worker results ────────────────────────────────────────────────────
     footprint_match_confidence: Mapped[Optional[float]] = mapped_column(
         sa.Float, nullable=True

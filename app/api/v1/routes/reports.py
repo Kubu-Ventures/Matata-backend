@@ -216,6 +216,8 @@ async def submit_report(
             lng=meta.lng,
             gps_accuracy_m=meta.gps_accuracy_m,
             landmark_description=meta.landmark_description,
+            confirmed_building_id=meta.confirmed_building_id,
+            building_not_on_map=meta.building_not_on_map,
             electricity_status=(
                 meta.electricity_status.value if meta.electricity_status else None
             ),

@@ -629,8 +629,44 @@ class TestCreateReport:
         )
         assert report is not None
         assert report.crisis_type == "flood"
+        assert report.reporter_confirmed_building_id is None
         db.add.assert_called()
         db.flush.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stores_reporter_confirmed_building(self):
+        from app.services.moderation_service import MockModerationProvider
+        from app.services.storage_service import MockStorageService
+        from app.services.submission_service import create_report
+
+        building_id = uuid.uuid4()
+        report = await create_report(
+            **self._BASE_KWARGS,
+            confirmed_building_id=building_id,
+            db=_make_db_mock(),
+            redis=_make_redis_mock(),
+            moderation_provider=MockModerationProvider(),
+            storage_service=MockStorageService(),
+        )
+        # Stored as a claim only; building_id stays for the GIS worker to set.
+        assert report.reporter_confirmed_building_id == building_id
+        assert report.building_id is None
+
+    @pytest.mark.asyncio
+    async def test_stores_building_not_on_map_flag(self):
+        from app.services.moderation_service import MockModerationProvider
+        from app.services.storage_service import MockStorageService
+        from app.services.submission_service import create_report
+
+        report = await create_report(
+            **self._BASE_KWARGS,
+            building_not_on_map=True,
+            db=_make_db_mock(),
+            redis=_make_redis_mock(),
+            moderation_provider=MockModerationProvider(),
+            storage_service=MockStorageService(),
+        )
+        assert report.reporter_building_missing is True
 
     @pytest.mark.asyncio
     async def test_does_not_dispatch_jobs_itself(self):
@@ -1089,6 +1125,34 @@ class TestGetNearbyReports:
 
 
 class TestReportCreateSchema:
+    def test_accepts_confirmed_building_id(self):
+        from app.schemas.report_submission import ReportCreateSchema
+
+        building_id = uuid.uuid4()
+        schema = ReportCreateSchema(
+            crisis_type="flood",
+            infrastructure_type="residential",
+            damage_severity="partial",
+            lat=1.0,
+            lng=36.0,
+            confirmed_building_id=str(building_id),
+        )
+        assert schema.confirmed_building_id == building_id
+        assert schema.building_not_on_map is False
+
+    def test_accepts_building_not_on_map(self):
+        from app.schemas.report_submission import ReportCreateSchema
+
+        schema = ReportCreateSchema(
+            crisis_type="flood",
+            infrastructure_type="residential",
+            damage_severity="partial",
+            lat=1.0,
+            lng=36.0,
+            building_not_on_map=True,
+        )
+        assert schema.building_not_on_map is True
+
     def test_valid_with_coords(self):
         from app.schemas.report_submission import ReportCreateSchema
 

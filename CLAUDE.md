@@ -46,6 +46,7 @@ python -m app.cli create-admin --email admin@example.org
 python -m app.cli list-accounts
 python -m app.cli deactivate-account --id <uuid>
 python -m app.cli.import_footprints --source path/to/footprints.geojson
+python -m app.cli.import_footprints --source-type osm --source path/to/osm-buildings.geojson
 ```
 
 ### Testing notes

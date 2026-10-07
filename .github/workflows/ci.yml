@@ -99,7 +99,21 @@ jobs:
         # exposure doesn't apply to this app's own token issuance. If ES256
         # signing (not just verification of externally-issued tokens) is
         # ever added, revisit this ignore.
-        run: pip-audit -r requirements.txt --ignore-vuln PYSEC-2026-1325
+        #
+        # GHSA-3qf3-8w2g-rqmx / CVE-2026-85394 (python-jose, all versions
+        # through 3.5.0 — no fixed release): HMAC key setup accepts
+        # DER-encoded public keys, so an attacker holding a public key can
+        # forge HS256 tokens *where the accepted algorithms are not
+        # restricted*. Both jwt.decode calls pin them: our own tokens to
+        # [JWT_ALGORITHM] (HS256 with JWT_SECRET_KEY, no public key involved)
+        # and Privy tokens to ["ES256"]. A regression test
+        # (test_privy_auth::test_hs256_forgery_with_public_key_raises) proves
+        # a token forged with the Privy public key as an HMAC secret is
+        # rejected. Long-term: migrate from python-jose to PyJWT.
+        run: >-
+          pip-audit -r requirements.txt
+          --ignore-vuln PYSEC-2026-1325
+          --ignore-vuln GHSA-3qf3-8w2g-rqmx
 
       - name: Safety dependency check
         run: safety check -r requirements.txt --full-report --ignore-unpinned-requirements

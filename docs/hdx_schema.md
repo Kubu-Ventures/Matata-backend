@@ -83,6 +83,7 @@ identically across GeoJSON, CSV and Shapefile.
 | `most_pressing_needs` | `most_pressing_needs` | `#needs` | string or `null` | Free text. **PII-scrubbed** (see below). |
 | `debris_clearing_needed` | `debris_clearing_needed` | `#needs+debris` | bool or `null` | |
 | `photo_url` | `has_photo` | `#meta+has_photo` | bool | **Boolean only.** The internal object key is never exported. Imagery is shared out-of-band under a separate data-sharing agreement. |
+| `reporter_building_missing` | `reported_not_on_map` | `#meta+not_on_map` | bool | The reporter said their building is not on the map. Shapefile field `not_on_map`. Filter with `not_on_map_only=true` to export a layer of possible mapping gaps for OSM mappers. |
 | `created_at` | `created_at` | `#date+created` | string | ISO 8601 UTC. |
 | `updated_at` | `updated_at` | `#date+updated` | string | ISO 8601 UTC. Last pipeline or analyst state change. |
 

@@ -110,6 +110,7 @@ def _make_report(
     photo_url: Optional[str] = "reports/abc/photo.jpg",
     gps_accuracy_m: Optional[float] = 10.5,
     landmark_description: Optional[str] = None,
+    reporter_building_missing: bool = False,
 ) -> MagicMock:
     """Build a mock Report ORM instance."""
     r = MagicMock()
@@ -138,6 +139,7 @@ def _make_report(
     r.most_pressing_needs = most_pressing_needs
     r.debris_clearing_needed = debris_clearing_needed
     r.photo_url = photo_url
+    r.reporter_building_missing = reporter_building_missing
     r.created_at = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
     r.updated_at = datetime(2024, 6, 1, 13, 0, 0, tzinfo=timezone.utc)
     # Fields that must never appear in exports
@@ -380,6 +382,7 @@ class TestExportRecord:
             most_pressing_needs="Water",
             debris_clearing_needed=False,
             has_photo=True,
+            reported_not_on_map=False,
             created_at="2024-06-01T12:00:00+00:00",
             updated_at="2024-06-01T13:00:00+00:00",
         )
@@ -388,6 +391,7 @@ class TestExportRecord:
         assert d["crisis_type"] == "flood"
         assert d["reporter_trust_tier"] == 1
         assert d["has_photo"] is True
+        assert d["reported_not_on_map"] is False
         assert "photo_url" not in d
 
 
@@ -751,6 +755,22 @@ class TestExportServiceFilters:
         )
         await svc.export_geojson(filters, "2024-06-01")
         db.execute.assert_called()
+
+    def test_not_on_map_only_filters_on_reporter_flag(self):
+        svc = ExportService(db=_make_db_mock([]), analyst_id_hash="x")
+        plain = str(svc._build_query(ExportFilterParams()))
+        gaps = str(svc._build_query(ExportFilterParams(not_on_map_only=True)))
+        assert "WHERE" not in plain
+        assert "WHERE report.reporter_building_missing IS true" in gaps
+
+    def test_reported_not_on_map_is_exported(self):
+        from app.services.export_service import Anonymiser
+
+        a = Anonymiser()
+        assert a.anonymise(
+            _make_report(reporter_building_missing=True)
+        ).reported_not_on_map
+        assert not a.anonymise(_make_report()).reported_not_on_map
 
     @pytest.mark.asyncio
     async def test_audit_log_includes_filter_params(self):

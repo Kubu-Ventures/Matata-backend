@@ -51,7 +51,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
 from app.services.geocoding_service import get_geocoding_provider
-from app.services.gis_service import GISService
+from app.services.gis_service import BuildingMatch, GISService
 from app.workers.celery_app import celery_app
 from app.workers.duplicate_dispatch import mark_step_done_and_maybe_dispatch
 
@@ -153,7 +153,8 @@ def _match_building_impl(report_id: str) -> dict:
         # ── 1. Load report ────────────────────────────────────────────────────
         row = db.execute(
             text("""
-                SELECT id, lat, lng, gps_accuracy_m, landmark_description
+                SELECT id, lat, lng, gps_accuracy_m, landmark_description,
+                       reporter_confirmed_building_id, reporter_building_missing
                 FROM report
                 WHERE id = :report_id
                 """),
@@ -169,17 +170,48 @@ def _match_building_impl(report_id: str) -> dict:
         lng: Optional[float] = row.lng
         accuracy_m: Optional[float] = row.gps_accuracy_m
         landmark: Optional[str] = row.landmark_description
+        confirmed_id = row.reporter_confirmed_building_id
 
         # ── 2. Run matching ───────────────────────────────────────────────────
-        geocoding_provider = get_geocoding_provider()
         gis = GISService(db)
-        match = gis.match_building(
-            lat=lat,
-            lng=lng,
-            accuracy_m=accuracy_m,
-            landmark_description=landmark,
-            geocoding_provider=geocoding_provider,
-        )
+        match = None
+
+        # The reporter said their building isn't on the map: don't snap the
+        # report to a neighbour (the replay showed that almost always
+        # happens otherwise). It stays unmatched as a mapping-gap signal.
+        if row.reporter_building_missing:
+            logger.info("Report %s: reporter says building not on map", _report_id)
+            match = BuildingMatch(
+                building_id=None,
+                confidence=0.0,
+                distance_m=None,
+                footprint_geojson=None,
+            )
+
+        # The reporter's own pick wins if it is within range of their fix.
+        if (
+            match is None
+            and confirmed_id is not None
+            and lat is not None
+            and lng is not None
+        ):
+            match = gis.confirm_building(UUID(str(confirmed_id)), lat, lng, accuracy_m)
+            if match is None:
+                logger.warning(
+                    "Report %s: reporter-confirmed building %s rejected "
+                    "(missing or out of range) — falling back to matching",
+                    _report_id,
+                    confirmed_id,
+                )
+
+        if match is None:
+            match = gis.match_building(
+                lat=lat,
+                lng=lng,
+                accuracy_m=accuracy_m,
+                landmark_description=landmark,
+                geocoding_provider=get_geocoding_provider(),
+            )
 
         # ── 3. Write match result to report ───────────────────────────────────
         if match.building_id is not None:

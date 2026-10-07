@@ -3,7 +3,7 @@ aiosqlite==0.22.1
 alembic==1.18.4
 annotated-doc==0.0.4
 annotated-types==0.7.0
-anyio==4.13.0
+anyio==4.14.2
 asyncpg==0.31.0
 bcrypt==5.0.0
 bleach==6.4.0
@@ -71,7 +71,7 @@ tomlkit==0.15.0
 typer==0.25.1
 typing-inspection==0.4.2
 typing_extensions==4.15.0
-urllib3==2.7.0
+urllib3==2.8.0
 uvicorn==0.47.0
 watchfiles==1.1.1
 websockets==16.0

@@ -65,6 +65,13 @@ class Building(TimestampMixin, Base):
     __table_args__ = (
         sa.Index("ix_building_footprint", "footprint", postgresql_using="gist"),
         sa.Index("ix_building_centroid", "centroid", postgresql_using="gist"),
+        # Matching filters on ST_DWithin(footprint::geography, ...); the cast
+        # bypasses ix_building_footprint, so index the expression itself.
+        sa.Index(
+            "ix_building_footprint_geog",
+            sa.text("(footprint::geography)"),
+            postgresql_using="gist",
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

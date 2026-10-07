@@ -80,6 +80,7 @@ DBF_FIELD_MAP: Dict[str, str] = {
     "most_pressing_needs": "needs",
     "debris_clearing_needed": "debris",
     "has_photo": "has_photo",
+    "reported_not_on_map": "not_on_map",
     "created_at": "created_at",
     "updated_at": "updated_at",
 }
@@ -163,6 +164,8 @@ class ExportRecord:
     debris_clearing_needed: Optional[bool]
     # Boolean only — the internal object key is never exported (audit M-5).
     has_photo: bool
+    # The reporter said the building is not on the map (a mapping-gap signal).
+    reported_not_on_map: bool
     created_at: str  # ISO 8601 UTC
     updated_at: str  # ISO 8601 UTC
 
@@ -263,6 +266,7 @@ class Anonymiser:
             most_pressing_needs=scrub_free_text(report.most_pressing_needs),
             debris_clearing_needed=report.debris_clearing_needed,
             has_photo=bool(report.photo_url),
+            reported_not_on_map=bool(report.reporter_building_missing),
             created_at=_iso(report.created_at),
             updated_at=_iso(report.updated_at),
         )
@@ -287,6 +291,8 @@ class ExportFilterParams:
     include_footprints: bool = field(default=False)
     # exact | reduced (3 dp, ~110 m) | coarse (2 dp, ~1.1 km)
     location_precision: str = field(default="exact")
+    # Only reports whose reporter said the building is not on the map.
+    not_on_map_only: bool = field(default=False)
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +489,8 @@ class ExportService:
             q = q.where(Report.created_at <= filters.time_to)
         if filters.min_ai_confidence is not None:
             q = q.where(Report.ai_confidence >= filters.min_ai_confidence)
+        if filters.not_on_map_only:
+            q = q.where(Report.reporter_building_missing.is_(True))
 
         return q.order_by(Report.created_at.desc())
 
@@ -624,6 +632,7 @@ def _build_shapefile_zip(records: List[ExportRecord]) -> bytes:
             "needs": (ogr.OFTString, 1000),
             "debris": (ogr.OFTString, 5),
             "has_photo": (ogr.OFTString, 5),
+            "not_on_map": (ogr.OFTString, 5),
             "created_at": (ogr.OFTString, 30),
             "updated_at": (ogr.OFTString, 30),
         }

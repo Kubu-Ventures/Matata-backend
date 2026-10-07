@@ -71,6 +71,7 @@ def _build_filters(
     min_ai_confidence: Optional[float],
     include_footprints: bool = False,
     location_precision: str = "exact",
+    not_on_map_only: bool = False,
 ) -> ExportFilterParams:
     """Parse comma-separated filter strings into an ``ExportFilterParams``."""
 
@@ -93,6 +94,7 @@ def _build_filters(
             if location_precision in ("exact", "reduced", "coarse")
             else "exact"
         ),
+        not_on_map_only=not_on_map_only,
     )
 
 
@@ -115,6 +117,7 @@ def _filters_to_dict(filters: ExportFilterParams) -> dict:
         d["min_ai_confidence"] = filters.min_ai_confidence
     d["include_footprints"] = filters.include_footprints
     d["location_precision"] = filters.location_precision
+    d["not_on_map_only"] = filters.not_on_map_only
     return d
 
 
@@ -185,6 +188,13 @@ async def export_geojson(
             "crisis types; anything but 'exact' also drops gps_accuracy_m."
         ),
     ),
+    not_on_map_only: bool = Query(
+        default=False,
+        description=(
+            "Only reports whose reporter said the building is not on the "
+            "map: a layer of possible mapping gaps for OSM mappers."
+        ),
+    ),
     current_user: dict = Depends(
         require_role(Role.analyst, Role.responder, Role.admin)
     ),
@@ -201,6 +211,7 @@ async def export_geojson(
         min_ai_confidence,
         include_footprints,
         location_precision,
+        not_on_map_only,
     )
     svc = ExportService(db=db, analyst_id_hash=_analyst_id_hash(current_user))
     count = await svc.count_records(filters)
@@ -265,6 +276,13 @@ async def export_csv(
     location_precision: str = Query(
         default="exact", pattern="^(exact|reduced|coarse)$"
     ),
+    not_on_map_only: bool = Query(
+        default=False,
+        description=(
+            "Only reports whose reporter said the building is not on the "
+            "map: a layer of possible mapping gaps for OSM mappers."
+        ),
+    ),
     current_user: dict = Depends(
         require_role(Role.analyst, Role.responder, Role.admin)
     ),
@@ -280,6 +298,7 @@ async def export_csv(
         time_to,
         min_ai_confidence,
         location_precision=location_precision,
+        not_on_map_only=not_on_map_only,
     )
     svc = ExportService(db=db, analyst_id_hash=_analyst_id_hash(current_user))
     count = await svc.count_records(filters)
@@ -344,6 +363,13 @@ async def export_shapefile(
     location_precision: str = Query(
         default="exact", pattern="^(exact|reduced|coarse)$"
     ),
+    not_on_map_only: bool = Query(
+        default=False,
+        description=(
+            "Only reports whose reporter said the building is not on the "
+            "map: a layer of possible mapping gaps for OSM mappers."
+        ),
+    ),
     current_user: dict = Depends(
         require_role(Role.analyst, Role.responder, Role.admin)
     ),
@@ -359,6 +385,7 @@ async def export_shapefile(
         time_to,
         min_ai_confidence,
         location_precision=location_precision,
+        not_on_map_only=not_on_map_only,
     )
     svc = ExportService(db=db, analyst_id_hash=_analyst_id_hash(current_user))
     count = await svc.count_records(filters)
