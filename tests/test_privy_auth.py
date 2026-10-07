@@ -179,6 +179,45 @@ class TestVerifyPrivyToken:
         with pytest.raises(InvalidTokenError):
             verify_privy_token(_access_token(priv, iss="evil.example"))
 
+    def test_hs256_forgery_with_public_key_raises(self, privy_settings, _es256_keys):
+        """Algorithm confusion (GHSA-3qf3-8w2g-rqmx): an HS256 token whose HMAC
+        secret is Privy's public key (DER, as in the advisory) must be
+        rejected, because verification only accepts ES256."""
+        import base64
+        import hashlib
+        import hmac
+
+        from app.services.auth_service import InvalidTokenError, verify_privy_token
+
+        _, public_pem = _es256_keys
+        der = serialization.load_pem_public_key(public_pem.encode()).public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+
+        def b64(data: bytes) -> str:
+            return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+        header = b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+        now = int(time.time())
+        payload = b64(
+            json.dumps(
+                {
+                    "iss": _PRIVY_ISS,
+                    "aud": _APP_ID,
+                    "iat": now,
+                    "exp": now + 3600,
+                    "sub": _DID,
+                }
+            ).encode()
+        )
+        signing_input = f"{header}.{payload}".encode()
+        signature = b64(hmac.new(der, signing_input, hashlib.sha256).digest())
+        forged = f"{header}.{payload}.{signature}"
+
+        with pytest.raises(InvalidTokenError):
+            verify_privy_token(forged)
+
     def test_foreign_key_raises(self, privy_settings):
         from app.services.auth_service import InvalidTokenError, verify_privy_token
 
