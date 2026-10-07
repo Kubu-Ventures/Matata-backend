@@ -85,6 +85,14 @@ class ReportCreateSchema(BaseModel):
         max_length=500,
         description=("Textual landmark when GPS is unavailable. Max 500 characters."),
     )
+    confirmed_building_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Building the reporter picked from the candidates returned by "
+            "GET /gis/building/match. Used only if it lies within the search "
+            "radius of lat/lng; otherwise normal matching applies."
+        ),
+    )
 
     # ── Optional operational fields ─────────────────────────────────────────
     electricity_status: Optional[ElectricityStatus] = Field(

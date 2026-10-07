@@ -1,10 +1,12 @@
-"""Management command — import Microsoft Africa Building Footprints.
+"""Management command — import building footprints (Microsoft or OpenStreetMap).
 
 Usage
 -----
     python -m app.cli.import_footprints --source /path/to/footprints.geojson
     python -m app.cli.import_footprints --source https://example.com/ke.geojson
     python -m app.cli.import_footprints --source /path/to/footprints.ndjson
+    python -m app.cli.import_footprints --source-type osm --source buildings.geojson
+    python -m app.cli.import_footprints --source-type osm --source overpass.json
 
 What it does
 ------------
@@ -25,6 +27,16 @@ The Microsoft Africa Building Footprints dataset is distributed as NDJSON
 * ``properties`` — any additional metadata (stored as-is, not parsed)
 * ``id`` (optional) — used as ``external_id``; if absent, a hash of the
   geometry is used instead.
+
+OpenStreetMap (``--source-type osm``)
+-------------------------------------
+Accepts GeoJSON from the HOT Export Tool, ``osmtogeojson`` or ``ogr2ogr`` /
+``osmium export``, and raw Overpass API JSON (``out geom;``, closed ways only).
+Rows are stored with ``source = 'osm'`` and ``external_id = 'osm:<type>/<id>'``
+(e.g. ``osm:way/123456789``) so every match links back to the OSM object.
+Features without a ``building`` tag (or tagged ``building=no``) are skipped.
+OSM data is ODbL-licensed: exports that include these footprints must carry
+"© OpenStreetMap contributors" attribution.
 
 Security notes
 --------------
@@ -50,6 +62,13 @@ from sqlalchemy.orm import Session, sessionmaker
 logger = logging.getLogger(__name__)
 
 
+# CLI --source-type value → building_source_enum value.
+_SOURCE_TYPES = {
+    "microsoft": "microsoft_africa",
+    "osm": "osm",
+    "manual": "manual",
+}
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -58,7 +77,13 @@ logger = logging.getLogger(__name__)
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli.import_footprints",
-        description="Import Microsoft Africa Building Footprints into PostGIS.",
+        description="Import building footprints (Microsoft or OSM) into PostGIS.",
+    )
+    parser.add_argument(
+        "--source-type",
+        choices=sorted(_SOURCE_TYPES),
+        default="microsoft",
+        help="Dataset the footprints come from (default microsoft).",
     )
     parser.add_argument(
         "--source",
@@ -113,6 +138,9 @@ def _iter_features(source: str) -> Iterator[dict]:
         if obj.get("type") == "Feature":
             yield obj
             return
+        if isinstance(obj.get("elements"), list):
+            yield from _iter_overpass_elements(obj["elements"])
+            return
     except json.JSONDecodeError:
         pass  # Fall through to NDJSON parsing.
 
@@ -127,6 +155,75 @@ def _iter_features(source: str) -> Iterator[dict]:
                 yield feature
         except json.JSONDecodeError as exc:
             logger.warning("Skipping invalid JSON line: %s", exc)
+
+
+def _iter_overpass_elements(elements: list) -> Iterator[dict]:
+    """Yield GeoJSON Features for closed ways in an Overpass ``out geom`` result.
+
+    Relations (multipolygon buildings) are not assembled here; export them
+    through the HOT Export Tool or ``osmtogeojson`` instead.
+    """
+    skipped_relations = 0
+    for el in elements:
+        if el.get("type") == "relation":
+            skipped_relations += 1
+            continue
+        if el.get("type") != "way":
+            continue
+        ring = [[pt["lon"], pt["lat"]] for pt in el.get("geometry") or []]
+        if len(ring) < 4 or ring[0] != ring[-1]:
+            continue  # open way — not a polygon
+        yield {
+            "type": "Feature",
+            "id": f"way/{el['id']}",
+            "geometry": {"type": "Polygon", "coordinates": [ring]},
+            "properties": el.get("tags") or {},
+        }
+    if skipped_relations:
+        logger.warning(
+            "Skipped %d Overpass relation(s); use a GeoJSON export to import "
+            "multipolygon buildings.",
+            skipped_relations,
+        )
+
+
+def _is_osm_building(properties: dict) -> bool:
+    """True if the feature carries a ``building`` tag other than ``no``."""
+    value = properties.get("building")
+    tags = properties.get("tags")
+    if value is None and isinstance(tags, dict):
+        value = tags.get("building")
+    return value not in (None, "", "no")
+
+
+def _osm_external_id(feature: dict, geometry: dict) -> str:
+    """Return ``osm:<type>/<id>`` for an OSM feature.
+
+    Recognises the id conventions of osmtogeojson / Overpass (``way/123``,
+    ``@id``), ogr2ogr (``osm_way_id`` for closed ways, ``osm_id`` for
+    relations on the multipolygons layer) and the HOT Export Tool
+    (``osm_id`` + ``osm_type``). Falls back to a geometry hash.
+    """
+    props = feature.get("properties") or {}
+
+    for candidate in (feature.get("id"), props.get("@id"), props.get("id")):
+        if isinstance(candidate, str) and "/" in candidate:
+            return f"osm:{candidate}"
+
+    if props.get("osm_way_id"):
+        return f"osm:way/{props['osm_way_id']}"
+
+    osm_id = props.get("osm_id")
+    if osm_id:
+        osm_type = str(props.get("osm_type") or "").lower()
+        for kind in ("way", "relation", "node"):
+            if kind in osm_type:
+                return f"osm:{kind}/{osm_id}"
+        if "osm_way_id" in props:  # ogr2ogr multipolygons layer: a relation
+            return f"osm:relation/{osm_id}"
+        return f"osm:{osm_id}"
+
+    return f"osm:geom-{_geometry_hash(geometry)}"
 
 
 def _geometry_hash(geometry: dict) -> str:
@@ -150,7 +247,7 @@ _UPSERT_SQL = text("""
     VALUES (
         ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326)),
         ST_Centroid(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326))),
-        'microsoft_africa'::building_source_enum,
+        CAST(:source AS building_source_enum),
         :external_id,
         'none'::damage_severity_enum
     )
@@ -213,7 +310,12 @@ def _verify_indexes(db: Session) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _run(source: str, batch_size: int, dry_run: bool) -> int:
+def _run(
+    source: str,
+    batch_size: int,
+    dry_run: bool,
+    source_type: str = "microsoft",
+) -> int:
     """Core import logic.
 
     Returns:
@@ -230,14 +332,27 @@ def _run(source: str, batch_size: int, dry_run: bool) -> int:
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     db: Session = SessionLocal()
 
-    counters: dict[str, int] = {"parsed": 0, "inserted": 0, "updated": 0, "skipped": 0}
+    building_source = _SOURCE_TYPES[source_type]
+    is_osm = source_type == "osm"
+
+    counters: dict[str, int] = {
+        "parsed": 0,
+        "inserted": 0,
+        "updated": 0,
+        "skipped": 0,
+        "not_building": 0,
+    }
     batch: list[dict] = []
     errors = 0
 
     try:
-        logger.info("Reading features from: %s", source)
+        logger.info("Reading %s features from: %s", building_source, source)
 
         for feature in _iter_features(source):
+            if is_osm and not _is_osm_building(feature.get("properties") or {}):
+                counters["not_building"] += 1
+                continue
+
             geometry = feature.get("geometry") or {}
             geom_type = geometry.get("type")
 
@@ -259,14 +374,23 @@ def _run(source: str, batch_size: int, dry_run: bool) -> int:
                 continue
 
             geojson_str = json.dumps(geometry)
-            # Derive external_id from feature id → property id → geometry hash.
-            external_id = str(
-                feature.get("id")
-                or (feature.get("properties") or {}).get("id")
-                or _geometry_hash(geometry)
-            )
+            if is_osm:
+                external_id = _osm_external_id(feature, geometry)
+            else:
+                # Derive external_id from feature id → property id → geometry hash.
+                external_id = str(
+                    feature.get("id")
+                    or (feature.get("properties") or {}).get("id")
+                    or _geometry_hash(geometry)
+                )
 
-            batch.append({"geojson": geojson_str, "external_id": external_id})
+            batch.append(
+                {
+                    "geojson": geojson_str,
+                    "external_id": external_id,
+                    "source": building_source,
+                }
+            )
 
             if len(batch) >= batch_size:
                 _upsert_batch(db, batch, counters, dry_run)
@@ -303,16 +427,20 @@ def _run(source: str, batch_size: int, dry_run: bool) -> int:
     # ── Summary ───────────────────────────────────────────────────────────────
     if dry_run:
         logger.info(
-            "[DRY RUN] Parsed %d features (%d skipped non-polygon).",
+            "[DRY RUN] Parsed %d features (%d skipped non-polygon, "
+            "%d skipped without a building tag).",
             counters["parsed"],
             counters["skipped"],
+            counters["not_building"],
         )
     else:
         logger.info(
-            "Import complete — inserted: %d, updated: %d, skipped: %d.",
+            "Import complete — inserted: %d, updated: %d, skipped: %d, "
+            "not a building: %d.",
             counters["inserted"],
             counters["updated"],
             counters["skipped"],
+            counters["not_building"],
         )
 
     return 0 if errors == 0 else 1
@@ -330,6 +458,7 @@ def main(argv: list[str] | None = None) -> None:
         source=args.source,
         batch_size=args.batch_size,
         dry_run=args.dry_run,
+        source_type=args.source_type,
     )
     sys.exit(exit_code)
 

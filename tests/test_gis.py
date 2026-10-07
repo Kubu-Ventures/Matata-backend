@@ -272,6 +272,170 @@ class TestGISServiceMatchBuilding:
         assert result.building_id is None
 
 
+def _candidate_row(building_id, distance_m, external_id):
+    row = _make_row(building_id=building_id, distance_m=distance_m)
+    row.external_id = external_id
+    return row
+
+
+def _result(fetchone=None, fetchall=None):
+    result = MagicMock()
+    result.fetchone.return_value = fetchone
+    result.fetchall.return_value = fetchall or []
+    return result
+
+
+class TestGISServiceCandidates:
+    """Top-3 nearest buildings returned alongside the match."""
+
+    def test_candidates_map_rows_nearest_first(self):
+        from app.services.gis_service import MAX_CANDIDATES, GISService
+
+        ids = [uuid4(), uuid4()]
+        db = MagicMock()
+        db.execute.return_value = _result(
+            fetchall=[
+                _candidate_row(ids[0], 0.0, "osm:way/1"),
+                _candidate_row(ids[1], 3.5, "osm:way/2"),
+            ]
+        )
+
+        candidates = GISService(db)._candidates(-1.295, 36.805, 30.0)
+
+        assert [c.building_id for c in candidates] == ids
+        assert [c.external_id for c in candidates] == ["osm:way/1", "osm:way/2"]
+        assert candidates[1].distance_m == pytest.approx(3.5)
+        params = db.execute.call_args[0][1]
+        assert params == {
+            "lat": -1.295,
+            "lng": 36.805,
+            "radius_m": 30.0,
+            "limit": MAX_CANDIDATES,
+        }
+
+    def test_not_queried_unless_requested(self):
+        from app.services.gis_service import GISService
+
+        db = _make_db(fetchone_return=_make_row())
+        result = GISService(db).match_building(lat=-1.295, lng=36.805)
+
+        assert result.candidates == []
+        assert db.execute.call_count == 1
+
+    def test_polygon_match_carries_candidates(self):
+        from app.services.gis_service import GISService
+
+        neighbour = uuid4()
+        db = MagicMock()
+        db.execute.side_effect = [
+            _result(fetchone=_make_row()),
+            _result(
+                fetchall=[
+                    _candidate_row(_BUILDING_ID, 0.0, "osm:way/1"),
+                    _candidate_row(neighbour, 2.0, "osm:way/2"),
+                ]
+            ),
+        ]
+
+        result = GISService(db).match_building(
+            lat=-1.295, lng=36.805, accuracy_m=60.0, with_candidates=True
+        )
+
+        assert result.confidence == 1.0
+        assert [c.building_id for c in result.candidates] == [_BUILDING_ID, neighbour]
+        # Candidates use the same accuracy-expanded radius as step 2.
+        assert db.execute.call_args[0][1]["radius_m"] == pytest.approx(90.0)
+
+    def test_nearest_neighbour_match_carries_candidates(self):
+        from app.services.gis_service import GISService
+
+        db = MagicMock()
+        db.execute.side_effect = [
+            _result(fetchone=None),
+            _result(fetchone=_make_row(distance_m=4.0)),
+            _result(fetchall=[_candidate_row(_BUILDING_ID, 4.0, "osm:way/1")]),
+        ]
+
+        result = GISService(db).match_building(
+            lat=-1.295, lng=36.805, with_candidates=True
+        )
+
+        assert result.building_id == _BUILDING_ID
+        assert result.candidates[0].building_id == result.building_id
+
+    def test_unmapped_has_no_candidates(self):
+        from app.services.gis_service import GISService
+
+        db = MagicMock()
+        db.execute.side_effect = [_result(fetchone=None), _result(fetchone=None)]
+
+        result = GISService(db).match_building(
+            lat=-1.295, lng=36.805, with_candidates=True
+        )
+
+        assert result.building_id is None
+        assert result.candidates == []
+        assert db.execute.call_count == 2
+
+    def test_landmark_candidates_use_geocoded_point(self):
+        from app.services.geocoding_service import MockGeocodingProvider
+        from app.services.gis_service import GISService
+
+        db = MagicMock()
+        db.execute.side_effect = [
+            _result(fetchone=_make_row(distance_m=1.0)),
+            _result(fetchall=[_candidate_row(_BUILDING_ID, 1.0, "osm:way/1")]),
+        ]
+
+        result = GISService(db).match_building(
+            lat=None,
+            lng=None,
+            landmark_description="near central market",
+            geocoding_provider=MockGeocodingProvider(result=(-1.28, 36.82)),
+            with_candidates=True,
+        )
+
+        assert result.confidence <= 0.5
+        assert len(result.candidates) == 1
+        params = db.execute.call_args[0][1]
+        assert (params["lat"], params["lng"], params["radius_m"]) == (
+            -1.28,
+            36.82,
+            100.0,
+        )
+
+
+class TestGISServiceConfirmBuilding:
+    """Validation of the building a reporter picked on the form."""
+
+    def test_accepts_building_within_radius(self):
+        from app.services.gis_service import GISService
+
+        db = _make_db(fetchone_return=_make_row(distance_m=3.0))
+        match = GISService(db).confirm_building(_BUILDING_ID, -1.295, 36.805)
+
+        assert match is not None
+        assert match.building_id == _BUILDING_ID
+        assert match.confidence == 1.0
+        assert match.distance_m == pytest.approx(3.0)
+        params = db.execute.call_args[0][1]
+        assert params["building_id"] == _BUILDING_ID_STR
+        assert params["radius_m"] == pytest.approx(30.0)
+
+    def test_rejects_missing_or_distant_building(self):
+        from app.services.gis_service import GISService
+
+        db = _make_db(fetchone_return=None)
+        assert GISService(db).confirm_building(_BUILDING_ID, -1.295, 36.805) is None
+
+    def test_uses_accuracy_expanded_radius(self):
+        from app.services.gis_service import GISService
+
+        db = _make_db(fetchone_return=None)
+        GISService(db).confirm_building(_BUILDING_ID, -1.295, 36.805, accuracy_m=60.0)
+        assert db.execute.call_args[0][1]["radius_m"] == pytest.approx(90.0)
+
+
 # ===========================================================================
 # GeocodingService
 # ===========================================================================
@@ -359,12 +523,14 @@ class TestMatchBuildingTask:
         lng=36.805,
         accuracy_m=None,
         landmark=None,
+        confirmed=None,
     ):
         row = MagicMock()
         row.lat = lat
         row.lng = lng
         row.gps_accuracy_m = accuracy_m
         row.landmark_description = landmark
+        row.reporter_confirmed_building_id = confirmed
         return row
 
     @patch("app.workers.gis_tasks._SyncSessionLocal")
@@ -404,6 +570,79 @@ class TestMatchBuildingTask:
         assert result["confidence"] == 1.0
         assert UUID(result["building_id"]) == _BUILDING_ID
         mock_update.assert_called_once_with(_BUILDING_ID)
+
+    def _run_with_confirmed(self, mock_redis_cls, mock_session_cls, confirm_result):
+        from app.services.gis_service import BuildingMatch
+        from app.workers.gis_tasks import _match_building_impl
+
+        db = MagicMock()
+        fetch_result = MagicMock()
+        fetch_result.fetchone.return_value = self._make_report_row(
+            confirmed=_BUILDING_ID
+        )
+        db.execute.return_value = fetch_result
+        mock_session_cls.return_value = db
+        redis_instance = MagicMock()
+        redis_instance.scan.return_value = (0, [])
+        mock_redis_cls.return_value = redis_instance
+
+        fallback = BuildingMatch(
+            building_id=uuid4(),
+            confidence=0.4,
+            distance_m=12.0,
+            footprint_geojson=None,
+        )
+        with (
+            patch(
+                "app.workers.gis_tasks.GISService.confirm_building",
+                return_value=confirm_result,
+            ) as mock_confirm,
+            patch(
+                "app.workers.gis_tasks.GISService.match_building",
+                return_value=fallback,
+            ) as mock_match,
+            patch("app.workers.gis_tasks.GISService.update_building_severity"),
+        ):
+            result = _match_building_impl(str(uuid4()))
+        return result, mock_confirm, mock_match, fallback
+
+    @patch("app.workers.gis_tasks._SyncSessionLocal")
+    @patch("app.workers.gis_tasks.sync_redis.Redis.from_url")
+    @patch("app.workers.gis_tasks.get_geocoding_provider")
+    def test_reporter_confirmed_building_is_adopted(
+        self, mock_geocoding, mock_redis_cls, mock_session_cls
+    ):
+        from app.services.gis_service import BuildingMatch
+
+        confirmed = BuildingMatch(
+            building_id=_BUILDING_ID,
+            confidence=1.0,
+            distance_m=2.0,
+            footprint_geojson=_FOOTPRINT_GEOJSON,
+        )
+        result, mock_confirm, mock_match, _ = self._run_with_confirmed(
+            mock_redis_cls, mock_session_cls, confirmed
+        )
+
+        mock_confirm.assert_called_once_with(_BUILDING_ID, -1.295, 36.805, None)
+        mock_match.assert_not_called()
+        assert UUID(result["building_id"]) == _BUILDING_ID
+        assert result["confidence"] == 1.0
+
+    @patch("app.workers.gis_tasks._SyncSessionLocal")
+    @patch("app.workers.gis_tasks.sync_redis.Redis.from_url")
+    @patch("app.workers.gis_tasks.get_geocoding_provider")
+    def test_rejected_confirmation_falls_back_to_matching(
+        self, mock_geocoding, mock_redis_cls, mock_session_cls
+    ):
+        result, mock_confirm, mock_match, fallback = self._run_with_confirmed(
+            mock_redis_cls, mock_session_cls, None
+        )
+
+        mock_confirm.assert_called_once()
+        mock_match.assert_called_once()
+        assert UUID(result["building_id"]) == fallback.building_id
+        assert result["confidence"] == pytest.approx(0.4)
 
     @patch("app.workers.gis_tasks._SyncSessionLocal")
     @patch("app.workers.gis_tasks.sync_redis.Redis.from_url")
@@ -506,6 +745,7 @@ class TestMatchBuildingTask:
         report_row.lng = lng
         report_row.gps_accuracy_m = None
         report_row.landmark_description = None
+        report_row.reporter_confirmed_building_id = None
         fetch_result = MagicMock()
         fetch_result.fetchone.return_value = report_row
         db.execute.return_value = fetch_result
@@ -663,6 +903,124 @@ class TestImportFootprintsCLI:
         mock_db.commit.assert_not_called()
         assert exit_code == 0
 
+    def test_iter_features_from_overpass_json(self, tmp_path):
+        from app.cli.import_footprints import _iter_features
+
+        ring = [
+            {"lat": -1.3, "lon": 36.8},
+            {"lat": -1.3, "lon": 36.81},
+            {"lat": -1.29, "lon": 36.81},
+            {"lat": -1.3, "lon": 36.8},
+        ]
+        overpass = {
+            "elements": [
+                {
+                    "type": "way",
+                    "id": 42,
+                    "geometry": ring,
+                    "tags": {"building": "yes"},
+                },
+                {"type": "way", "id": 43, "geometry": ring[:3], "tags": {}},  # open
+                {"type": "relation", "id": 7, "members": []},
+            ]
+        }
+        source_file = tmp_path / "overpass.json"
+        source_file.write_text(json.dumps(overpass))
+
+        features = list(_iter_features(str(source_file)))
+        assert len(features) == 1
+        assert features[0]["id"] == "way/42"
+        assert features[0]["geometry"]["coordinates"][0][0] == [36.8, -1.3]
+        assert features[0]["properties"] == {"building": "yes"}
+
+    @pytest.mark.parametrize(
+        "feature_id, props, expected",
+        [
+            ("way/123", {}, "osm:way/123"),
+            (None, {"@id": "relation/9"}, "osm:relation/9"),
+            (None, {"osm_way_id": "55", "osm_id": None}, "osm:way/55"),
+            (None, {"osm_way_id": None, "osm_id": "66"}, "osm:relation/66"),
+            (None, {"osm_id": 77, "osm_type": "ways_poly"}, "osm:way/77"),
+            (None, {"osm_id": 88}, "osm:88"),
+        ],
+    )
+    def test_osm_external_id_conventions(self, feature_id, props, expected):
+        from app.cli.import_footprints import _osm_external_id
+
+        feature = self._make_geojson_feature(feature_id)
+        feature["properties"] = props
+        assert _osm_external_id(feature, feature["geometry"]) == expected
+
+    def test_osm_external_id_falls_back_to_geometry_hash(self):
+        from app.cli.import_footprints import _geometry_hash, _osm_external_id
+
+        feature = self._make_geojson_feature(None)
+        expected = f"osm:geom-{_geometry_hash(feature['geometry'])}"
+        assert _osm_external_id(feature, feature["geometry"]) == expected
+
+    @pytest.mark.parametrize(
+        "props, expected",
+        [
+            ({"building": "yes"}, True),
+            ({"tags": {"building": "house"}}, True),
+            ({"building": "no"}, False),
+            ({"highway": "residential"}, False),
+            ({}, False),
+        ],
+    )
+    def test_is_osm_building(self, props, expected):
+        from app.cli.import_footprints import _is_osm_building
+
+        assert _is_osm_building(props) is expected
+
+    @pytest.mark.parametrize(
+        "source_type, feature_id, expected_source, expected_ext_id",
+        [
+            ("microsoft", "ms-1", "microsoft_africa", "ms-1"),
+            ("osm", "way/123", "osm", "osm:way/123"),
+        ],
+    )
+    @patch("app.cli.import_footprints.create_engine")
+    def test_run_writes_source_and_external_id(
+        self,
+        mock_create_engine,
+        source_type,
+        feature_id,
+        expected_source,
+        expected_ext_id,
+        tmp_path,
+    ):
+        from app.cli.import_footprints import _run
+
+        building = self._make_geojson_feature(feature_id)
+        building["properties"] = {"building": "yes"}
+        not_building = self._make_geojson_feature("way/999")
+        not_building["properties"] = {"landuse": "residential"}
+        fc = {"type": "FeatureCollection", "features": [building, not_building]}
+        source_file = tmp_path / "fp.geojson"
+        source_file.write_text(json.dumps(fc))
+
+        with patch("app.cli.import_footprints.sessionmaker") as mock_sm:
+            mock_db = MagicMock()
+            mock_sm.return_value = MagicMock(return_value=mock_db)
+            exit_code = _run(
+                source=str(source_file),
+                batch_size=100,
+                dry_run=False,
+                source_type=source_type,
+            )
+
+        assert exit_code == 0
+        upserts = [
+            c.args[1]
+            for c in mock_db.execute.call_args_list
+            if len(c.args) > 1 and "external_id" in c.args[1]
+        ]
+        # The OSM path drops the untagged landuse polygon; Microsoft keeps both.
+        assert len(upserts) == (1 if source_type == "osm" else 2)
+        assert upserts[0]["source"] == expected_source
+        assert upserts[0]["external_id"] == expected_ext_id
+
 
 # ===========================================================================
 # GIS endpoint
@@ -721,6 +1079,41 @@ class TestGISBuildingMatchEndpoint:
         body = response.json()
         assert body["building_id"] == str(_BUILDING_ID)
         assert body["confidence"] == 1.0
+        assert body["candidates"] == []
+
+    def test_returns_candidates(self, app_client):
+        from app.services.gis_service import BuildingCandidate, BuildingMatch
+
+        neighbour = uuid4()
+        mock_match = BuildingMatch(
+            building_id=_BUILDING_ID,
+            confidence=0.8,
+            distance_m=6.0,
+            footprint_geojson=_FOOTPRINT_GEOJSON,
+            candidates=[
+                BuildingCandidate(_BUILDING_ID, "osm:way/1", 6.0, _FOOTPRINT_GEOJSON),
+                BuildingCandidate(neighbour, "osm:way/2", 7.5, _FOOTPRINT_GEOJSON),
+            ],
+        )
+
+        with patch("app.api.v1.routes.gis.GISService") as MockGIS:
+            MockGIS.return_value.match_building.return_value = mock_match
+            response = app_client.get(
+                "/api/v1/gis/building/match",
+                params={"lat": -1.295, "lng": 36.805},
+            )
+            assert MockGIS.return_value.match_building.call_args.kwargs[
+                "with_candidates"
+            ]
+
+        assert response.status_code == 200
+        candidates = response.json()["candidates"]
+        assert [c["building_id"] for c in candidates] == [
+            str(_BUILDING_ID),
+            str(neighbour),
+        ]
+        assert candidates[1]["external_id"] == "osm:way/2"
+        assert candidates[1]["distance_m"] == 7.5
 
     def test_requires_lat_and_lng_params(self, app_client):
         """Missing required query params should return 422."""

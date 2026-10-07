@@ -365,6 +365,8 @@ docker exec -e PYTHONPATH=/app <app-container> \
     python -m app.cli.import_footprints --source /path/to/footprints.geojson
 ```
 
+To load OpenStreetMap buildings instead of Microsoft footprints, add `--source-type osm`. It accepts GeoJSON from the [HOT Export Tool](https://export.hotosm.org), `osmtogeojson` or `ogr2ogr`, and raw Overpass `out geom;` JSON. Buildings are stored with `source = 'osm'` and `external_id = 'osm:way/<id>'`; features without a `building` tag are skipped. OSM data is ODbL-licensed, so credit "© OpenStreetMap contributors" wherever it is shown or exported.
+
 ### Rate limits
 
 All rate limits are declared in `app/core/rate_limits.py`. Clients receive `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `Retry-After` headers on every response.

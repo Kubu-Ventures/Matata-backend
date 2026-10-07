@@ -9,7 +9,9 @@ Spec §13.5 — ``GET /gis/building/match``
 ----------------------------------------
 Synchronous endpoint used by the frontend location step.
 * Accepts ``lat``, ``lng``, ``accuracy_m`` query parameters.
-* Returns ``{ building_id, footprint_geojson, confidence, distance_m }``.
+* Returns ``{ building_id, footprint_geojson, confidence, distance_m,
+  candidates }`` — ``candidates`` lists up to three nearest buildings so the
+  client can let the reporter confirm which one they meant.
 * Response is cached per ``(lat, lng)`` rounded to 5 decimal places, TTL 30 s.
 """
 
@@ -17,7 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
+from dataclasses import asdict
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -37,11 +40,19 @@ router = APIRouter(prefix="/gis", tags=["GIS"])
 # ---------------------------------------------------------------------------
 
 
+class BuildingCandidateResponse(BaseModel):
+    building_id: UUID
+    external_id: str
+    distance_m: float
+    footprint_geojson: str
+
+
 class BuildingMatchResponse(BaseModel):
     building_id: Optional[UUID]
     footprint_geojson: Optional[str]
     confidence: float
     distance_m: Optional[float]
+    candidates: List[BuildingCandidateResponse] = []
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +78,8 @@ def _cache_key(lat: float, lng: float) -> str:
     description=(
         "Returns the best-matching building footprint for the supplied GPS "
         "coordinates, using point-in-polygon → nearest-neighbour matching "
-        "against the Microsoft Africa Building Footprints dataset.  "
+        "against the loaded building footprints (Microsoft or OSM), plus up "
+        "to three nearest candidate buildings.  "
         "Results are cached per ``(lat, lng)`` rounded to 5 decimal places "
         "for 30 seconds."
     ),
@@ -101,13 +113,16 @@ async def match_building(
         lng=lng,
         accuracy_m=accuracy_m,
         geocoding_provider=get_geocoding_provider(),
+        with_candidates=True,
     )
 
+    candidates = [BuildingCandidateResponse(**asdict(c)) for c in match.candidates]
     response = BuildingMatchResponse(
         building_id=match.building_id,
         footprint_geojson=match.footprint_geojson,
         confidence=match.confidence,
         distance_m=match.distance_m,
+        candidates=candidates,
     )
 
     # ── Cache result ─────────────────────────────────────────────────────────
@@ -119,6 +134,7 @@ async def match_building(
                 "footprint_geojson": match.footprint_geojson,
                 "confidence": match.confidence,
                 "distance_m": match.distance_m,
+                "candidates": [c.model_dump(mode="json") for c in candidates],
             }
         ),
         ex=_CACHE_TTL_S,

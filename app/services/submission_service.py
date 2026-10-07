@@ -270,6 +270,7 @@ async def create_report(
     # Auth
     reporter_token: str,
     reporter_trust_tier: int = 0,
+    confirmed_building_id: Optional[UUID] = None,
     # Infrastructure
     db: AsyncSession,
     redis: Redis,
@@ -312,6 +313,9 @@ async def create_report(
         image_content_type:    MIME type of the photo.
         reporter_token:        Raw JWT/session token — hashed on receipt, never stored.
         reporter_trust_tier:   Tier from JWT payload (0 for anonymous).
+        confirmed_building_id: Building the reporter picked on the form, if
+                               any. Stored as a claim; the GIS worker decides
+                               whether to adopt it.
         db:                    Async database session.
         redis:                 Async Redis client.
         moderation_provider:   Injected for testing; defaults to factory instance.
@@ -414,6 +418,7 @@ async def create_report(
         lng=lng,
         gps_accuracy_m=gps_accuracy_m,
         landmark_description=landmark_description,
+        reporter_confirmed_building_id=confirmed_building_id,
         electricity_status=electricity_status,
         health_services_status=health_services_status,
         most_pressing_needs=most_pressing_needs,

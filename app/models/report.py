@@ -153,6 +153,15 @@ class Report(TimestampMixin, Base):
         nullable=True,
     )
 
+    # ── Reporter building confirmation ───────────────────────────────────────
+    # Building the reporter picked from the match candidates on the report
+    # form. Deliberately not a foreign key: it is an unverified client claim.
+    # The GIS worker adopts it as ``building_id`` only if that building
+    # exists and lies within the search radius of the reporter's GPS fix.
+    reporter_confirmed_building_id: Mapped[Optional[UUID]] = mapped_column(
+        sa.UUID(as_uuid=True), nullable=True
+    )
+
     # ── GIS worker results ────────────────────────────────────────────────────
     footprint_match_confidence: Mapped[Optional[float]] = mapped_column(
         sa.Float, nullable=True

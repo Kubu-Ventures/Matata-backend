@@ -15,13 +15,20 @@ Matching sequence (spec §9.2):
   2. Nearest-neighbour ``ST_DWithin``            → confidence ∝ 1 − dist/radius
   3. Landmark geocoding (when GPS absent)        → confidence ≤ 0.5
   4. Unmapped structure                          → building_id = None
+
+With ``with_candidates=True`` the result also lists up to three buildings
+nearest the query point (within the same search radius), so a client can let
+the reporter confirm which one they meant. In dense settlements GPS error is
+often larger than the gap between buildings, and the nearest building is
+then frequently the wrong one. ``confirm_building`` validates the building
+the reporter picked from that list.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional
 from uuid import UUID
 
 from sqlalchemy import text
@@ -37,6 +44,24 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class BuildingCandidate:
+    """One of the buildings nearest a query point.
+
+    Attributes:
+        building_id:       UUID of the building.
+        external_id:       Source dataset id (e.g. ``osm:way/123``).
+        distance_m:        Metres from the query point to the footprint edge;
+                           0.0 when the point lies inside the footprint.
+        footprint_geojson: GeoJSON string of the footprint polygon.
+    """
+
+    building_id: UUID
+    external_id: str
+    distance_m: float
+    footprint_geojson: str
+
+
+@dataclass
 class BuildingMatch:
     """Result returned by every matching path.
 
@@ -47,17 +72,25 @@ class BuildingMatch:
                           or ``None`` for an exact polygon match.
         footprint_geojson: GeoJSON string of the building footprint polygon,
                            or ``None`` when no match is found.
+        candidates:        Up to ``MAX_CANDIDATES`` nearest buildings, nearest
+                           first. Empty unless requested with
+                           ``with_candidates=True``.
     """
 
     building_id: Optional[UUID]
     confidence: float
     distance_m: Optional[float]
     footprint_geojson: Optional[str]
+    candidates: List[BuildingCandidate] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
 # GISService
 # ---------------------------------------------------------------------------
+
+
+MAX_CANDIDATES = 3
+_LANDMARK_RADIUS_M = 100.0
 
 
 class GISService:
@@ -86,6 +119,7 @@ class GISService:
         accuracy_m: Optional[float] = None,
         landmark_description: Optional[str] = None,
         geocoding_provider=None,
+        with_candidates: bool = False,
     ) -> BuildingMatch:
         """Run the four-step matching sequence and return the best result.
 
@@ -97,26 +131,33 @@ class GISService:
             geocoding_provider:    ``GeocodingProvider`` instance; required for the
                                    landmark path.  Defaults to ``None``
                                    (skip geocoding).
+            with_candidates:       Also fill ``candidates`` with the nearest
+                                   buildings (one extra query per match).
 
         Returns:
             ``BuildingMatch`` with the best available result.
         """
         # Step 1 & 2 — GPS-based matching
         if lat is not None and lng is not None:
+            search_radius_m = self._compute_search_radius(accuracy_m)
+
             # Step 1: point-in-polygon
             match = self._point_in_polygon(lat, lng)
-            if match:
-                return match
 
             # Step 2: nearest-neighbour with dynamic radius
-            search_radius_m = self._compute_search_radius(accuracy_m)
-            match = self._nearest_neighbour(lat, lng, search_radius_m)
+            if match is None:
+                match = self._nearest_neighbour(lat, lng, search_radius_m)
+
             if match:
+                if with_candidates:
+                    match.candidates = self._candidates(lat, lng, search_radius_m)
                 return match
 
         # Step 3: landmark geocoding fallback
         if landmark_description and geocoding_provider is not None:
-            match = self._landmark_geocoding(landmark_description, geocoding_provider)
+            match = self._landmark_geocoding(
+                landmark_description, geocoding_provider, with_candidates
+            )
             if match:
                 return match
 
@@ -132,6 +173,62 @@ class GISService:
             confidence=0.0,
             distance_m=None,
             footprint_geojson=None,
+        )
+
+    def confirm_building(
+        self,
+        building_id: UUID,
+        lat: float,
+        lng: float,
+        accuracy_m: Optional[float] = None,
+    ) -> Optional[BuildingMatch]:
+        """Accept the building a reporter picked, if it is plausibly theirs.
+
+        The pick is adopted only when the building exists and its footprint
+        lies within the same search radius ``match_building`` would use for
+        this fix — the same set the candidates were drawn from. A pick from
+        anywhere else (stale form, tampered request) returns ``None`` and the
+        caller falls back to normal matching.
+
+        Returns:
+            ``BuildingMatch`` with confidence 1.0, or ``None`` if rejected.
+        """
+        search_radius_m = self._compute_search_radius(accuracy_m)
+        row = self._db.execute(
+            text("""
+                SELECT
+                    id,
+                    ST_AsGeoJSON(footprint)        AS footprint_geojson,
+                    ST_Distance(
+                        footprint::geography,
+                        ST_SetSRID(
+                            ST_Point(:lng, :lat), 4326
+                        )::geography
+                    )                              AS distance_m
+                FROM building
+                WHERE id = :building_id
+                  AND ST_DWithin(
+                    footprint::geography,
+                    ST_SetSRID(ST_Point(:lng, :lat), 4326)::geography,
+                    :radius_m
+                  )
+                """),
+            {
+                "building_id": str(building_id),
+                "lat": lat,
+                "lng": lng,
+                "radius_m": search_radius_m,
+            },
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        return BuildingMatch(
+            building_id=UUID(str(row.id)),
+            confidence=1.0,
+            distance_m=float(row.distance_m),
+            footprint_geojson=row.footprint_geojson,
         )
 
     def update_building_severity(self, building_id: UUID) -> None:
@@ -262,10 +359,58 @@ class GISService:
             footprint_geojson=row.footprint_geojson,
         )
 
+    def _candidates(
+        self, lat: float, lng: float, search_radius_m: float
+    ) -> List[BuildingCandidate]:
+        """Up to ``MAX_CANDIDATES`` footprints within the radius, nearest first.
+
+        Uses the same edge distance as ``_nearest_neighbour``, so for a
+        nearest-neighbour match the first candidate is the matched building.
+        """
+        rows = self._db.execute(
+            text("""
+                SELECT
+                    id,
+                    external_id,
+                    ST_AsGeoJSON(footprint)        AS footprint_geojson,
+                    ST_Distance(
+                        footprint::geography,
+                        ST_SetSRID(
+                            ST_Point(:lng, :lat), 4326
+                        )::geography
+                    )                              AS distance_m
+                FROM building
+                WHERE ST_DWithin(
+                    footprint::geography,
+                    ST_SetSRID(ST_Point(:lng, :lat), 4326)::geography,
+                    :radius_m
+                )
+                ORDER BY distance_m ASC
+                LIMIT :limit
+                """),
+            {
+                "lat": lat,
+                "lng": lng,
+                "radius_m": search_radius_m,
+                "limit": MAX_CANDIDATES,
+            },
+        ).fetchall()
+
+        return [
+            BuildingCandidate(
+                building_id=UUID(str(row.id)),
+                external_id=row.external_id,
+                distance_m=float(row.distance_m),
+                footprint_geojson=row.footprint_geojson,
+            )
+            for row in rows
+        ]
+
     def _landmark_geocoding(
         self,
         landmark_description: str,
         geocoding_provider,
+        with_candidates: bool = False,
     ) -> Optional[BuildingMatch]:
         """Step 3 — geocode the landmark text, then run nearest-neighbour."""
         from app.services.geocoding_service import GeocodingError
@@ -280,7 +425,6 @@ class GISService:
             return None
 
         geo_lat, geo_lng = coords
-        _LANDMARK_RADIUS_M = 100.0
 
         match = self._nearest_neighbour(geo_lat, geo_lng, _LANDMARK_RADIUS_M)
         if match is None:
@@ -292,6 +436,11 @@ class GISService:
             confidence=min(match.confidence, 0.5),
             distance_m=match.distance_m,
             footprint_geojson=match.footprint_geojson,
+            candidates=(
+                self._candidates(geo_lat, geo_lng, _LANDMARK_RADIUS_M)
+                if with_candidates
+                else []
+            ),
         )
 
     # ------------------------------------------------------------------
