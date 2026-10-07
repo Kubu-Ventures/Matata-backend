@@ -436,6 +436,121 @@ class TestGISServiceConfirmBuilding:
         assert db.execute.call_args[0][1]["radius_m"] == pytest.approx(90.0)
 
 
+class _FakeRedis:
+    """Minimal in-memory sync Redis: get/set(nx, px, ex)/pttl."""
+
+    def __init__(self):
+        self.store = {}
+        self.sets = []
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def set(self, key, value, nx=False, px=None, ex=None):
+        self.sets.append((key, value, nx, px, ex))
+        if nx and key in self.store:
+            return None
+        self.store[key] = value
+        return True
+
+    def pttl(self, key):
+        return 1
+
+
+class TestCachedGeocodingProvider:
+    def _provider(self, inner):
+        from app.services.geocoding_service import CachedGeocodingProvider
+
+        return CachedGeocodingProvider(inner, "nominatim", _FakeRedis())
+
+    def test_second_lookup_is_served_from_cache(self):
+        from app.services.geocoding_service import MockGeocodingProvider
+
+        inner = MockGeocodingProvider(result=(-1.31, 36.79))
+        cached = self._provider(inner)
+
+        assert cached.geocode("Olympic  Primary School") == (-1.31, 36.79)
+        # Normalised: case and whitespace don't create a second entry.
+        assert cached.geocode("olympic primary school") == (-1.31, 36.79)
+        assert len(inner.calls) == 1
+
+    def test_stores_only_a_hash_of_the_text(self):
+        from app.services.geocoding_service import MockGeocodingProvider
+
+        cached = self._provider(MockGeocodingProvider())
+        cached.geocode("near Mama Njeri's kiosk")
+        key = next(iter(cached._redis.store))
+        assert "kiosk" not in key and "njeri" not in key.lower()
+        assert len(key.rsplit(":", 1)[-1]) == 64  # sha256 hex
+
+    def test_caches_no_result_with_shorter_ttl(self):
+        from app.core.config import settings
+        from app.services.geocoding_service import MockGeocodingProvider
+
+        inner = MockGeocodingProvider()
+        inner.result = None
+        cached = self._provider(inner)
+
+        assert cached.geocode("nowhere") is None
+        assert cached.geocode("nowhere") is None
+        assert len(inner.calls) == 1
+        assert cached._redis.sets[-1][4] == settings.GEOCODING_CACHE_MISS_TTL_S
+
+    def test_errors_are_not_cached(self):
+        from app.services.geocoding_service import (
+            GeocodingError,
+            MockGeocodingProvider,
+        )
+
+        cached = self._provider(MockGeocodingProvider(raise_error=True))
+        with pytest.raises(GeocodingError):
+            cached.geocode("market")
+        assert cached._redis.store == {}
+
+
+class TestNominatimRateLimit:
+    def test_uses_shared_one_second_slot(self, monkeypatch):
+        from app.services import geocoding_service
+
+        fake = _FakeRedis()
+        provider = geocoding_service.NominatimGeocodingProvider(redis_client=fake)
+        response = MagicMock()
+        response.json.return_value = [{"lat": "-1.3", "lon": "36.8"}]
+        monkeypatch.setattr(
+            geocoding_service.httpx, "get", MagicMock(return_value=response)
+        )
+
+        assert provider.geocode("market") == (-1.3, 36.8)
+        key, _, nx, px, _ = fake.sets[0]
+        assert key == geocoding_service._NOMINATIM_SLOT_KEY
+        assert nx is True and px == 1000
+
+    def test_waits_while_another_worker_holds_the_slot(self, monkeypatch):
+        from app.services import geocoding_service
+
+        fake = _FakeRedis()
+        fake.store[geocoding_service._NOMINATIM_SLOT_KEY] = "1"  # held elsewhere
+        sleeps = []
+
+        def fake_sleep(s):
+            sleeps.append(s)
+            fake.store.pop(geocoding_service._NOMINATIM_SLOT_KEY, None)  # expires
+
+        monkeypatch.setattr(geocoding_service.time, "sleep", fake_sleep)
+        provider = geocoding_service.NominatimGeocodingProvider(redis_client=fake)
+        provider._wait_for_slot()
+        assert len(sleeps) == 1
+
+    def test_user_agent_identifies_matata_with_contact(self, monkeypatch):
+        from app.services import geocoding_service
+
+        monkeypatch.setattr(
+            geocoding_service.settings, "GEOCODING_CONTACT", "ops@example.org"
+        )
+        ua = geocoding_service._nominatim_headers()["User-Agent"]
+        assert ua.startswith("Matata/") and "ops@example.org" in ua
+
+
 # ===========================================================================
 # GeocodingService
 # ===========================================================================
@@ -484,6 +599,18 @@ class TestGeocodingFactory:
         monkeypatch.setattr(
             geocoding_service.settings, "GEOCODING_PROVIDER", "nominatim"
         )
+        provider = geocoding_service.get_geocoding_provider()
+        # With Redis configured, the real provider sits behind the cache.
+        assert isinstance(provider, geocoding_service.CachedGeocodingProvider)
+        assert isinstance(provider._inner, geocoding_service.NominatimGeocodingProvider)
+
+    def test_no_cache_without_redis(self, monkeypatch):
+        from app.services import geocoding_service
+
+        monkeypatch.setattr(
+            geocoding_service.settings, "GEOCODING_PROVIDER", "nominatim"
+        )
+        monkeypatch.setattr(geocoding_service.settings, "REDIS_URL", "")
         provider = geocoding_service.get_geocoding_provider()
         assert isinstance(provider, geocoding_service.NominatimGeocodingProvider)
 

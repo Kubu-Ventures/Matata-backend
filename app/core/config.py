@@ -126,6 +126,15 @@ class Settings(BaseSettings):
     # required for multi-country or global deployments.
     GEOCODING_COUNTRY_CODE: str = ""
 
+    # Contact shown in the Nominatim User-Agent, as its usage policy requires
+    # an identifiable application. A URL or an email both work.
+    GEOCODING_CONTACT: str = "https://github.com/Kubu-Ventures/Matata-backend"
+
+    # Geocoding results are cached in Redis, keyed by a SHA-256 of the
+    # normalised landmark text (the text itself is never stored).
+    GEOCODING_CACHE_TTL_S: int = 30 * 24 * 3600  # a found location
+    GEOCODING_CACHE_MISS_TTL_S: int = 24 * 3600  # "no result", retried daily
+
     # Nearest-neighbour building search radius in metres (spec §9.2).
     # Expanded dynamically to min(accuracy_m * 1.5, 100) when GPS accuracy > 50 m.
     BUILDING_FOOTPRINT_SEARCH_RADIUS_M: int = 30
