@@ -183,7 +183,8 @@ class TestGISServiceMatchBuilding:
     """Full matching sequence integration."""
 
     def test_step1_polygon_match_short_circuits(self):
-        """Point-in-polygon match should skip steps 2–4."""
+        """Point-in-polygon match skips steps 2–4 (only the probability pool
+        query follows it)."""
         from app.services.gis_service import GISService
 
         row = _make_row()
@@ -192,10 +193,12 @@ class TestGISServiceMatchBuilding:
 
         result = svc.match_building(lat=-1.295, lng=36.805)
 
+        # No buildings in the probability pool (mock) → heuristic 1.0 stays.
         assert result.confidence == 1.0
         assert result.building_id == _BUILDING_ID
-        # Only one query should have been executed (point-in-polygon).
-        assert db.execute.call_count == 1
+        # Point-in-polygon, then the probability pool; no nearest-neighbour.
+        assert db.execute.call_count == 2
+        assert "limit" in db.execute.call_args[0][1]
 
     def test_step2_nearest_neighbour_when_no_polygon_match(self):
         """When step 1 fails, step 2 should run."""
@@ -208,8 +211,15 @@ class TestGISServiceMatchBuilding:
         execute_result_nn = MagicMock()
         execute_result_nn.fetchone.return_value = nn_row
 
+        execute_result_pool = MagicMock()
+        execute_result_pool.fetchall.return_value = []
+
         db = MagicMock()
-        db.execute.side_effect = [execute_result_none, execute_result_nn]
+        db.execute.side_effect = [
+            execute_result_none,
+            execute_result_nn,
+            execute_result_pool,
+        ]
 
         svc = GISService(db)
         result = svc.match_building(lat=-1.295, lng=36.805)
@@ -313,14 +323,15 @@ class TestGISServiceCandidates:
             "limit": MAX_CANDIDATES,
         }
 
-    def test_not_queried_unless_requested(self):
+    def test_not_returned_unless_requested(self):
         from app.services.gis_service import GISService
 
         db = _make_db(fetchone_return=_make_row())
         result = GISService(db).match_building(lat=-1.295, lng=36.805)
 
+        # The pool is still queried (for the confidence) but not returned.
         assert result.candidates == []
-        assert db.execute.call_count == 1
+        assert db.execute.call_count == 2
 
     def test_polygon_match_carries_candidates(self):
         from app.services.gis_service import GISService
@@ -341,8 +352,12 @@ class TestGISServiceCandidates:
             lat=-1.295, lng=36.805, accuracy_m=60.0, with_candidates=True
         )
 
-        assert result.confidence == 1.0
         assert [c.building_id for c in result.candidates] == [_BUILDING_ID, neighbour]
+        # A neighbour 2 m away under a 60 m fix is almost as likely: the
+        # confidence is a probability (~0.5), not a certain 1.0.
+        assert result.confidence == pytest.approx(0.5, abs=0.01)
+        assert result.confidence == result.candidates[0].probability
+        assert sum(c.probability for c in result.candidates) == pytest.approx(1.0)
         # Candidates use the same accuracy-expanded radius as step 2.
         assert db.execute.call_args[0][1]["radius_m"] == pytest.approx(90.0)
 
@@ -403,6 +418,55 @@ class TestGISServiceCandidates:
             36.82,
             100.0,
         )
+
+
+class TestMatchProbabilities:
+    """Distance-based probabilities that replace the old 1 - d/r score."""
+
+    def test_single_building_takes_all(self):
+        from app.services.gis_service import GISService
+
+        assert GISService._probabilities([4.0], 6.9) == [pytest.approx(1.0)]
+
+    def test_equal_distances_split_evenly(self):
+        from app.services.gis_service import GISService
+
+        probs = GISService._probabilities([1.0, 1.0], 6.9)
+        assert probs == [pytest.approx(0.5), pytest.approx(0.5)]
+
+    def test_nearer_building_is_more_likely(self):
+        from app.services.gis_service import GISService
+
+        probs = GISService._probabilities([0.0, 3.0, 12.0], 6.9)
+        assert probs[0] > probs[1] > probs[2]
+        assert sum(probs) == pytest.approx(1.0)
+
+    def test_tight_fix_separates_neighbours_more(self):
+        from app.services.gis_service import GISService
+
+        loose = GISService._probabilities([0.0, 3.0], GISService._sigma_m(30.0))
+        tight = GISService._probabilities([0.0, 3.0], GISService._sigma_m(3.0))
+        assert tight[0] > loose[0]
+
+    def test_sigma_from_reported_accuracy_plus_map_error(self):
+        import math
+
+        from app.services.gis_service import GISService
+
+        assert GISService._sigma_m(10.0) == pytest.approx(math.hypot(10.0 / 1.515, 2.0))
+
+    def test_default_accuracy_when_missing(self):
+        from app.core.config import settings
+        from app.services.gis_service import GISService
+
+        assert GISService._sigma_m(None) == GISService._sigma_m(
+            settings.GPS_DEFAULT_ACCURACY_M
+        )
+
+    def test_empty_pool(self):
+        from app.services.gis_service import GISService
+
+        assert GISService._probabilities([], 5.0) == []
 
 
 class TestGISServiceConfirmBuilding:
@@ -651,6 +715,7 @@ class TestMatchBuildingTask:
         accuracy_m=None,
         landmark=None,
         confirmed=None,
+        missing=False,
     ):
         row = MagicMock()
         row.lat = lat
@@ -658,6 +723,7 @@ class TestMatchBuildingTask:
         row.gps_accuracy_m = accuracy_m
         row.landmark_description = landmark
         row.reporter_confirmed_building_id = confirmed
+        row.reporter_building_missing = missing
         return row
 
     @patch("app.workers.gis_tasks._SyncSessionLocal")
@@ -732,6 +798,34 @@ class TestMatchBuildingTask:
         ):
             result = _match_building_impl(str(uuid4()))
         return result, mock_confirm, mock_match, fallback
+
+    @patch("app.workers.gis_tasks._SyncSessionLocal")
+    @patch("app.workers.gis_tasks.sync_redis.Redis.from_url")
+    @patch("app.workers.gis_tasks.get_geocoding_provider")
+    def test_building_reported_missing_is_not_snapped_to_a_neighbour(
+        self, mock_geocoding, mock_redis_cls, mock_session_cls
+    ):
+        from app.workers.gis_tasks import _match_building_impl
+
+        db = MagicMock()
+        fetch_result = MagicMock()
+        fetch_result.fetchone.return_value = self._make_report_row(missing=True)
+        db.execute.return_value = fetch_result
+        mock_session_cls.return_value = db
+        redis_instance = MagicMock()
+        redis_instance.scan.return_value = (0, [])
+        mock_redis_cls.return_value = redis_instance
+
+        with (
+            patch("app.workers.gis_tasks.GISService.match_building") as mock_match,
+            patch("app.workers.gis_tasks.GISService.confirm_building") as mock_conf,
+        ):
+            result = _match_building_impl(str(uuid4()))
+
+        mock_match.assert_not_called()
+        mock_conf.assert_not_called()
+        assert result["building_id"] is None
+        assert result["confidence"] == 0.0
 
     @patch("app.workers.gis_tasks._SyncSessionLocal")
     @patch("app.workers.gis_tasks.sync_redis.Redis.from_url")
@@ -873,6 +967,7 @@ class TestMatchBuildingTask:
         report_row.gps_accuracy_m = None
         report_row.landmark_description = None
         report_row.reporter_confirmed_building_id = None
+        report_row.reporter_building_missing = False
         fetch_result = MagicMock()
         fetch_result.fetchone.return_value = report_row
         db.execute.return_value = fetch_result

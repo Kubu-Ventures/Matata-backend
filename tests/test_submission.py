@@ -653,6 +653,22 @@ class TestCreateReport:
         assert report.building_id is None
 
     @pytest.mark.asyncio
+    async def test_stores_building_not_on_map_flag(self):
+        from app.services.moderation_service import MockModerationProvider
+        from app.services.storage_service import MockStorageService
+        from app.services.submission_service import create_report
+
+        report = await create_report(
+            **self._BASE_KWARGS,
+            building_not_on_map=True,
+            db=_make_db_mock(),
+            redis=_make_redis_mock(),
+            moderation_provider=MockModerationProvider(),
+            storage_service=MockStorageService(),
+        )
+        assert report.reporter_building_missing is True
+
+    @pytest.mark.asyncio
     async def test_does_not_dispatch_jobs_itself(self):
         """create_report returns an uncommitted Report and never publishes the
         GIS/AI jobs — the route does that after commit (commit-race fix)."""
@@ -1122,6 +1138,20 @@ class TestReportCreateSchema:
             confirmed_building_id=str(building_id),
         )
         assert schema.confirmed_building_id == building_id
+        assert schema.building_not_on_map is False
+
+    def test_accepts_building_not_on_map(self):
+        from app.schemas.report_submission import ReportCreateSchema
+
+        schema = ReportCreateSchema(
+            crisis_type="flood",
+            infrastructure_type="residential",
+            damage_severity="partial",
+            lat=1.0,
+            lng=36.0,
+            building_not_on_map=True,
+        )
+        assert schema.building_not_on_map is True
 
     def test_valid_with_coords(self):
         from app.schemas.report_submission import ReportCreateSchema

@@ -141,6 +141,8 @@ class ReportDetailSchema(BaseModel):
     # Building the reporter picked on the form (None = no pick). Equal to
     # building_id when the GIS worker accepted the reporter's choice.
     reporter_confirmed_building_id: Optional[UUID] = None
+    # True when the reporter said their building is not on the map.
+    reporter_building_missing: bool = False
 
     # Reporter classification
     crisis_type: CrisisType

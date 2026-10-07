@@ -271,6 +271,7 @@ async def create_report(
     reporter_token: str,
     reporter_trust_tier: int = 0,
     confirmed_building_id: Optional[UUID] = None,
+    building_not_on_map: bool = False,
     # Infrastructure
     db: AsyncSession,
     redis: Redis,
@@ -316,6 +317,8 @@ async def create_report(
         confirmed_building_id: Building the reporter picked on the form, if
                                any. Stored as a claim; the GIS worker decides
                                whether to adopt it.
+        building_not_on_map:   The reporter says their building is not on
+                               the map; it is then left unmatched.
         db:                    Async database session.
         redis:                 Async Redis client.
         moderation_provider:   Injected for testing; defaults to factory instance.
@@ -419,6 +422,7 @@ async def create_report(
         gps_accuracy_m=gps_accuracy_m,
         landmark_description=landmark_description,
         reporter_confirmed_building_id=confirmed_building_id,
+        reporter_building_missing=building_not_on_map,
         electricity_status=electricity_status,
         health_services_status=health_services_status,
         most_pressing_needs=most_pressing_needs,

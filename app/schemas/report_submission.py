@@ -85,6 +85,13 @@ class ReportCreateSchema(BaseModel):
         max_length=500,
         description=("Textual landmark when GPS is unavailable. Max 500 characters."),
     )
+    building_not_on_map: bool = Field(
+        default=False,
+        description=(
+            "The reporter says their building is not on the map. The report "
+            "is then not attached to a neighbouring footprint."
+        ),
+    )
     confirmed_building_id: Optional[UUID] = Field(
         default=None,
         description=(

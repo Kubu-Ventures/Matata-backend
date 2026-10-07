@@ -11,10 +11,18 @@ This module provides:
   ``GISService`` instance obtained from the FastAPI dependency).
 
 Matching sequence (spec §9.2):
-  1. Point-in-polygon  ``ST_Contains``          → confidence 1.0
-  2. Nearest-neighbour ``ST_DWithin``            → confidence ∝ 1 − dist/radius
+  1. Point-in-polygon  ``ST_Contains``
+  2. Nearest-neighbour ``ST_DWithin``
   3. Landmark geocoding (when GPS absent)        → confidence ≤ 0.5
   4. Unmapped structure                          → building_id = None
+
+Confidence is a probability, not a distance score: every building within the
+search radius gets a likelihood from a 2-D Gaussian of its distance, with a
+spread set by the phone's reported accuracy plus map error, and the matched
+building's confidence is its share of the total. Two houses a metre apart
+under a 10 m fix are each about 50 %, not a falsely certain 0.98. The
+old ``1 - dist/radius`` score is kept only as a fallback when the
+probability pool is empty.
 
 With ``with_candidates=True`` the result also lists up to three buildings
 nearest the query point (within the same search radius), so a client can let
@@ -27,6 +35,7 @@ the reporter picked from that list.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import List, Optional
 from uuid import UUID
@@ -53,12 +62,15 @@ class BuildingCandidate:
         distance_m:        Metres from the query point to the footprint edge;
                            0.0 when the point lies inside the footprint.
         footprint_geojson: GeoJSON string of the footprint polygon.
+        probability:       Share of the match likelihood this building holds
+                           among those in range (0 until computed).
     """
 
     building_id: UUID
     external_id: str
     distance_m: float
     footprint_geojson: str
+    probability: float = 0.0
 
 
 @dataclass
@@ -67,7 +79,9 @@ class BuildingMatch:
 
     Attributes:
         building_id:      UUID of the matched building, or ``None`` if unmapped.
-        confidence:       Float in [0, 1]. 1.0 for exact polygon match.
+        confidence:       Float in [0, 1]: the probability that this is the
+                          right building given the GPS accuracy (1.0 when the
+                          reporter confirmed it; capped at 0.5 for landmarks).
         distance_m:       Metres from the query point to the matched centroid,
                           or ``None`` for an exact polygon match.
         footprint_geojson: GeoJSON string of the building footprint polygon,
@@ -91,6 +105,15 @@ class BuildingMatch:
 
 MAX_CANDIDATES = 3
 _LANDMARK_RADIUS_M = 100.0
+# Buildings considered when sharing out the match probability.
+_PROBABILITY_POOL = 10
+# Android reports accuracy as a 68 % radius; for a 2-D Gaussian that is
+# 1.515 per-axis standard deviations (Rayleigh distribution).
+_ACCURACY_TO_SIGMA = 1.515
+# Positional error of the footprints themselves (imagery offset, tracing).
+_MAP_SIGMA_M = 2.0
+# Landmark text is vague: treat it like a fix with this reported accuracy.
+_LANDMARK_ACCURACY_M = 50.0
 
 
 class GISService:
@@ -149,8 +172,12 @@ class GISService:
                 match = self._nearest_neighbour(lat, lng, search_radius_m)
 
             if match:
+                pool = self._candidates(
+                    lat, lng, search_radius_m, limit=_PROBABILITY_POOL
+                )
+                self._apply_probabilities(match, pool, accuracy_m)
                 if with_candidates:
-                    match.candidates = self._candidates(lat, lng, search_radius_m)
+                    match.candidates = pool[:MAX_CANDIDATES]
                 return match
 
         # Step 3: landmark geocoding fallback
@@ -359,10 +386,54 @@ class GISService:
             footprint_geojson=row.footprint_geojson,
         )
 
+    @staticmethod
+    def _sigma_m(accuracy_m: Optional[float]) -> float:
+        """Per-axis spread (m) of where the reporter really is, around the fix."""
+        acc = accuracy_m if accuracy_m and accuracy_m > 0 else None
+        if acc is None:
+            acc = float(getattr(settings, "GPS_DEFAULT_ACCURACY_M", 15.0))
+        gps_sigma = acc / _ACCURACY_TO_SIGMA
+        return math.hypot(gps_sigma, _MAP_SIGMA_M)
+
+    @staticmethod
+    def _probabilities(distances_m: List[float], sigma_m: float) -> List[float]:
+        """Share out the match probability among buildings by distance.
+
+        Each building's likelihood is exp(-d² / 2σ²): the chance a fix lands
+        d metres from a building the reporter is really at. Normalised, so
+        the shares sum to 1 over the buildings in range.
+        """
+        if not distances_m:
+            return []
+        weights = [math.exp(-(d * d) / (2 * sigma_m * sigma_m)) for d in distances_m]
+        total = sum(weights)
+        if total <= 0.0:  # every building far beyond the spread
+            return [1.0 / len(weights)] * len(weights)
+        return [w / total for w in weights]
+
+    def _apply_probabilities(
+        self,
+        match: BuildingMatch,
+        pool: List[BuildingCandidate],
+        accuracy_m: Optional[float],
+    ) -> None:
+        """Fill each candidate's probability and set the match's confidence."""
+        probs = self._probabilities(
+            [c.distance_m for c in pool], self._sigma_m(accuracy_m)
+        )
+        for cand, prob in zip(pool, probs):
+            cand.probability = prob
+            if cand.building_id == match.building_id:
+                match.confidence = prob
+
     def _candidates(
-        self, lat: float, lng: float, search_radius_m: float
+        self,
+        lat: float,
+        lng: float,
+        search_radius_m: float,
+        limit: int = MAX_CANDIDATES,
     ) -> List[BuildingCandidate]:
-        """Up to ``MAX_CANDIDATES`` footprints within the radius, nearest first.
+        """Up to ``limit`` footprints within the radius, nearest first.
 
         Uses the same edge distance as ``_nearest_neighbour``, so for a
         nearest-neighbour match the first candidate is the matched building.
@@ -392,7 +463,7 @@ class GISService:
                 "lat": lat,
                 "lng": lng,
                 "radius_m": search_radius_m,
-                "limit": MAX_CANDIDATES,
+                "limit": limit,
             },
         ).fetchall()
 
@@ -430,17 +501,18 @@ class GISService:
         if match is None:
             return None
 
+        pool = self._candidates(
+            geo_lat, geo_lng, _LANDMARK_RADIUS_M, limit=_PROBABILITY_POOL
+        )
+        self._apply_probabilities(match, pool, _LANDMARK_ACCURACY_M)
+
         # Cap confidence at 0.5 for landmark-derived matches (spec §9.2).
         return BuildingMatch(
             building_id=match.building_id,
             confidence=min(match.confidence, 0.5),
             distance_m=match.distance_m,
             footprint_geojson=match.footprint_geojson,
-            candidates=(
-                self._candidates(geo_lat, geo_lng, _LANDMARK_RADIUS_M)
-                if with_candidates
-                else []
-            ),
+            candidates=pool[:MAX_CANDIDATES] if with_candidates else [],
         )
 
     # ------------------------------------------------------------------

@@ -181,6 +181,7 @@ def _run_export_sync(
         min_ai_confidence=filter_params.get("min_ai_confidence"),
         include_footprints=filter_params.get("include_footprints", False),
         location_precision=filter_params.get("location_precision", "exact"),
+        not_on_map_only=bool(filter_params.get("not_on_map_only", False)),
     )
 
     iso_date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")

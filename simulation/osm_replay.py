@@ -209,6 +209,9 @@ def summarise(trials: list[Trial]) -> dict:
 
     calibration = []
     matched = [t for t in mapped if t.matched_id]
+    # Expected calibration error: the average gap between stated confidence
+    # and observed accuracy, weighted by how many matches fall in each bin.
+    gap_sum = 0.0
     for lo, hi in zip(_CALIBRATION_BINS, _CALIBRATION_BINS[1:]):
         last = hi == _CALIBRATION_BINS[-1]
         ts = [
@@ -216,19 +219,25 @@ def summarise(trials: list[Trial]) -> dict:
             for t in matched
             if lo <= t.confidence < hi or (last and t.confidence == hi)
         ]
+        mean_conf = statistics.fmean(t.confidence for t in ts) if ts else None
+        share = sum(1 for t in ts if t.correct) / len(ts) if ts else None
+        if mean_conf is not None and share is not None:
+            gap_sum += len(ts) * abs(mean_conf - share)
         calibration.append(
             {
                 "bin": f"{lo:.1f}-{hi:.1f}",
                 "n": len(ts),
                 "mean_confidence": (
-                    round(statistics.fmean(t.confidence for t in ts), 3) if ts else None
+                    round(mean_conf, 3) if mean_conf is not None else None
                 ),
                 "share_correct_pct": _rate(sum(1 for t in ts if t.correct), len(ts)),
             }
         )
+    ece = gap_sum / len(matched) if matched else None
 
     return {
         "overall": block(mapped),
+        "calibration_error": round(ece, 3) if ece is not None else None,
         "by_accuracy_m": {str(a): block(ts) for a, ts in sorted(by_accuracy.items())},
         "by_accuracy_and_density": {
             f"{a}m/{d}": block(ts) for (a, d), ts in sorted(by_cell.items())
@@ -431,6 +440,9 @@ def write_outputs(out_dir: str, trials: list[Trial], summary: dict, meta: dict) 
         ),
         "",
         "## Confidence calibration",
+        "",
+        f"Expected calibration error: {summary['calibration_error']} "
+        "(0 = confidence matches reality exactly).",
         "",
         *_table(
             {c["bin"]: c for c in summary["calibration"]},

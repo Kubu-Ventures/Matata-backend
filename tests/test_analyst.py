@@ -67,6 +67,7 @@ def _make_report(
     r.photo_status = PhotoStatus(photo_status)
     r.gps_accuracy_m = None
     r.reporter_confirmed_building_id = None
+    r.reporter_building_missing = False
     r.landmark_description = None
     r.electricity_status = None
     r.health_services_status = None

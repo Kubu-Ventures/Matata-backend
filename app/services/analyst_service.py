@@ -466,6 +466,7 @@ async def get_report_detail(
         building_id=report.building_id,
         footprint_geojson=footprint_geojson,
         reporter_confirmed_building_id=report.reporter_confirmed_building_id,
+        reporter_building_missing=bool(report.reporter_building_missing),
         crisis_type=report.crisis_type,
         infrastructure_type=report.infrastructure_type,
         damage_severity=report.damage_severity,

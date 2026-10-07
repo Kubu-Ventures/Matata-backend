@@ -162,6 +162,13 @@ class Report(TimestampMixin, Base):
         sa.UUID(as_uuid=True), nullable=True
     )
 
+    # The reporter said their building is not on the map. The GIS worker then
+    # leaves building_id empty instead of snapping to a neighbour, and the
+    # report becomes a "mapping gap" signal for OSM mappers.
+    reporter_building_missing: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, default=False, server_default=sa.false()
+    )
+
     # ── GIS worker results ────────────────────────────────────────────────────
     footprint_match_confidence: Mapped[Optional[float]] = mapped_column(
         sa.Float, nullable=True

@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     # Expanded dynamically to min(accuracy_m * 1.5, 100) when GPS accuracy > 50 m.
     BUILDING_FOOTPRINT_SEARCH_RADIUS_M: int = 30
 
+    # Reported GPS accuracy assumed when a client sends none, used to turn
+    # distances into match probabilities (see GISService._probabilities).
+    GPS_DEFAULT_ACCURACY_M: float = 15.0
+
     # ── Celery ────────────────────────────────────────────────────────────────
     # Both default to REDIS_URL when left empty, so no change is needed for
     # development.  Override in production to use separate Redis databases or
