@@ -138,6 +138,9 @@ class ReportDetailSchema(BaseModel):
     id: UUID
     building_id: Optional[UUID] = None
     footprint_geojson: Optional[str] = None
+    # Probability (0-1) that building_id is the reporter's building; 1.0 when
+    # the reporter confirmed it on the map. None when nothing was matched.
+    footprint_match_confidence: Optional[float] = None
     # Building the reporter picked on the form (None = no pick). Equal to
     # building_id when the GIS worker accepted the reporter's choice.
     reporter_confirmed_building_id: Optional[UUID] = None
