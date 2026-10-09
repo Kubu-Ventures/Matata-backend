@@ -531,3 +531,13 @@ class TestPrivyVerifyRoute:
             last = client.post("/api/v1/auth/privy/verify", json=payload)
         assert last.status_code == 429
         assert last.headers.get("Retry-After")
+
+
+def test_verification_key_accepts_escaped_newlines():
+    from app.core.config import Settings
+
+    pem = "-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----"
+    escaped = pem.replace("\n", "\\n")
+
+    assert Settings(PRIVY_VERIFICATION_KEY=escaped).PRIVY_VERIFICATION_KEY == pem
+    assert Settings(PRIVY_VERIFICATION_KEY=pem).PRIVY_VERIFICATION_KEY == pem

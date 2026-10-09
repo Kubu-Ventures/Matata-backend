@@ -1,0 +1,6 @@
+{
+	email {$ACME_EMAIL}
+}
+
+# One file per county, written by deploy/provision-county.sh.
+import /etc/caddy/sites/*.caddy

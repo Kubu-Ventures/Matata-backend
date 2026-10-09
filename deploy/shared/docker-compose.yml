@@ -1,0 +1,90 @@
+# Shared host services for county deployments — run ONCE per server:
+#
+#   COMPOSE_PROFILES=ollama,translate docker compose -p matata-shared \
+#       -f deploy/shared/docker-compose.yml --env-file deploy/operator.env up -d
+#
+# provision-county.sh does this for you, with the profiles operator.env needs.
+#
+# * caddy           — HTTPS for every county site (automatic Let's Encrypt
+#                     certificates). Each county adds one file under ./sites/.
+# * ollama          — local vision model (LLaVA), shared by all counties so the
+#                     ~4.7 GB of weights are downloaded and held in RAM once.
+#                     Profile `ollama`; started when VISION_PROVIDER=ollama.
+# * libretranslate  — translation fallback for UI strings missing from the
+#                     static catalogues. Profile `translate`; optional.
+#
+# County stacks reach these over the external `matata-shared` network
+# (see deploy/county/docker-compose.yml). Nothing here except Caddy publishes
+# a port on the host.
+
+name: matata-shared
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      ACME_EMAIL: "${ACME_EMAIL:?set ACME_EMAIL in deploy/operator.env}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./sites:/etc/caddy/sites:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [matata-shared]
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: [ollama]
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
+    networks: [matata-shared]
+
+  # Pulls the vision model on first boot, then exits; cached afterwards.
+  ollama-model-init:
+    image: ollama/ollama:latest
+    profiles: [ollama]
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "llava"]
+    networks: [matata-shared]
+
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    profiles: [translate]
+    restart: unless-stopped
+    environment:
+      LT_DISABLE_WEB_UI: "true"
+      LT_SUGGESTIONS: "false"
+      LT_LOAD_ONLY: "en,fr,es,ar,ru,zh"
+    volumes:
+      - libretranslate_data:/home/libretranslate/.local/share/argos-translate
+    networks: [matata-shared]
+
+networks:
+  matata-shared:
+    name: matata-shared
+
+volumes:
+  caddy_data:
+  caddy_config:
+  ollama_data:
+    labels:
+      backup: "false"
+  libretranslate_data:

@@ -1,0 +1,177 @@
+# One county's Matata stack. Written for deploy/provision-county.sh, which runs:
+#
+#   docker compose -p matata-<slug> -f deploy/county/docker-compose.yml \
+#       --env-file deploy/counties/<slug>/county.env up -d --build
+#
+# Every county gets its own Postgres, Redis, MinIO and workers (volumes are
+# namespaced by the compose project), so no report, photo or account is shared
+# between counties. The heavy, stateless services (HTTPS proxy, vision model,
+# translation) live once per host in deploy/shared/ and are reached over the
+# external `matata-shared` network.
+#
+# Only `app` and `web` are reachable from Caddy, under the per-county aliases
+# <slug>-api and <slug>-web. Nothing here publishes a host port.
+
+x-backend: &backend
+  image: matata-backend:local
+  build:
+    context: ../..
+    target: production
+  restart: unless-stopped
+  env_file:
+    - ${COUNTY_ENV_FILE:?run via deploy/provision-county.sh}
+
+# Workers skip entrypoint.sh: only `app` runs migrations, and the workers wait
+# for it to be healthy, so N containers never race `alembic upgrade head`.
+x-worker: &worker
+  <<: *backend
+  entrypoint: []
+  depends_on:
+    app:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
+    interval: 60s
+    timeout: 15s
+    retries: 3
+
+services:
+  app:
+    <<: *backend
+    environment:
+      WEB_CONCURRENCY: "${WEB_CONCURRENCY:-3}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      default:
+      shared:
+        aliases: ["${COUNTY_SLUG}-api"]
+
+  postgres:
+    image: postgis/postgis:15-3.4-alpine
+    restart: unless-stopped
+    shm_size: "256m"
+    environment:
+      POSTGRES_USER: matata
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?}"
+      POSTGRES_DB: matata_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U matata -d matata_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Append-only so refresh tokens and the logout denylist survive restarts.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: quay.io/minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?}"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  minio-init:
+    image: minio/mc:latest
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?}"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
+      mc mb -p local/crisismap
+      "
+
+  celery-gis:
+    <<: *worker
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "gis", "--concurrency", "2", "--loglevel", "info"]
+
+  celery-ai:
+    <<: *worker
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "ai", "--concurrency", "2", "--loglevel", "info"]
+    networks:
+      default:
+      shared: {}   # reaches the shared Ollama vision model
+
+  celery-duplicate:
+    <<: *worker
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "duplicate", "--concurrency", "2", "--loglevel", "info"]
+
+  celery-notifications:
+    <<: *worker
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "notifications", "--concurrency", "1", "--loglevel", "info"]
+
+  celery-export:
+    <<: *worker
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "export", "--concurrency", "1", "--loglevel", "info"]
+
+  # One replica only: emits the 5-minute pipeline reconciliation sweep.
+  celery-beat:
+    <<: *worker
+    command: ["celery", "-A", "app.workers.celery_app", "beat", "--loglevel", "info", "--schedule", "/tmp/celerybeat-schedule"]
+    healthcheck:
+      disable: true
+
+  web:
+    image: matata-web:${COUNTY_SLUG}
+    build:
+      context: ${FRONTEND_DIR:?}
+      dockerfile: ${DEPLOY_DIR:?}/county/web.Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: "${PUBLIC_URL:?}/api/v1"
+        NEXT_PUBLIC_PRIVY_APP_ID: "${PRIVY_APP_ID:?}"
+    restart: unless-stopped
+    networks:
+      shared:
+        aliases: ["${COUNTY_SLUG}-web"]
+
+networks:
+  shared:
+    name: matata-shared
+    external: true
+
+volumes:
+  postgres_data:
+    labels:
+      backup: "true"
+  minio_data:
+    labels:
+      backup: "true"
+  redis_data:

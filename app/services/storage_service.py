@@ -40,6 +40,10 @@ Set these variables in ``.env``:
     AWS_SECRET_ACCESS_KEY=minioadmin
     AWS_REGION=us-east-1
 
+When Rekognition moderation also needs real AWS keys, put the MinIO
+credentials in ``S3_ACCESS_KEY_ID`` / ``S3_SECRET_ACCESS_KEY`` instead; they
+take precedence over ``AWS_*`` for storage only.
+
 MinIO is fully compatible with the S3 API — no code changes required to
 switch between MinIO (local/self-hosted) and AWS S3 (cloud).
 
@@ -235,10 +239,14 @@ class S3StorageService:
         kwargs: dict = {
             "region_name": settings.AWS_REGION or "us-east-1",
         }
-        if settings.AWS_ACCESS_KEY_ID:
-            kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
-        if settings.AWS_SECRET_ACCESS_KEY:
-            kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY
+        # Storage-specific keys win so MinIO/R2 can coexist with Rekognition,
+        # which keeps using AWS_*.
+        access_key = settings.S3_ACCESS_KEY_ID or settings.AWS_ACCESS_KEY_ID
+        secret_key = settings.S3_SECRET_ACCESS_KEY or settings.AWS_SECRET_ACCESS_KEY
+        if access_key:
+            kwargs["aws_access_key_id"] = access_key
+        if secret_key:
+            kwargs["aws_secret_access_key"] = secret_key
         if settings.S3_ENDPOINT_URL:
             # Cloudflare R2 / MinIO / other S3-compatible endpoints.
             kwargs["endpoint_url"] = settings.S3_ENDPOINT_URL

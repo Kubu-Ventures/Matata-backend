@@ -2,6 +2,10 @@
 
 ## Contents
 
+> **Standing up a county pilot?** Use `deploy/provision-county.sh`. It
+> builds a county's own site with HTTPS, building footprints and review-team
+> accounts in one command. See [`deploy/README.md`](../deploy/README.md).
+
 1. [Development Quick-Start](#development-quick-start)
 2. [Self-Hosted Production](#self-hosted-production)
 3. [Cloud Prototype Deployments](#cloud-prototype-deployments)

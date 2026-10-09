@@ -10,6 +10,11 @@ Bootstrap the very first admin account (run once on the server):
 that's never stored) so `list-accounts` shows something recognisable besides
 a bare UUID.
 
+Provision an analyst, responder, or admin (idempotent — an existing account
+is reported and left unchanged):
+
+    python -m app.cli create-account --email a@example.org --role analyst [--label ...]
+
 List all provisioned analyst/responder/admin accounts:
 
     python -m app.cli list-accounts
@@ -37,6 +42,7 @@ import sys
 import uuid
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_ELEVATED_ROLES = ("analyst", "responder", "admin")
 
 
 # ---------------------------------------------------------------------------
@@ -45,15 +51,24 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 async def _create_admin(email: str, label: str | None = None) -> None:
+    await _create_account(email, "admin", label)
+
+
+async def _create_account(email: str, role: str, label: str | None = None) -> None:
     import sqlalchemy as sa
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from app.core.config import settings
     from app.models.analyst_account import AnalystAccount
-    from app.services.auth_service import Role, hash_identifier
+    from app.services.auth_service import hash_identifier
 
+    email = email.strip()
     if not _EMAIL_RE.match(email):
         print(f"ERROR: '{email}' is not a valid email address.")
+        sys.exit(1)
+
+    if role not in _ELEVATED_ROLES:
+        print(f"ERROR: '{role}' is not one of: {', '.join(_ELEVATED_ROLES)}.")
         sys.exit(1)
 
     email_hash = hash_identifier(email.strip().lower())
@@ -76,18 +91,19 @@ async def _create_admin(email: str, label: str | None = None) -> None:
                 f"INFO: This email address is already registered as "
                 f"role={existing.role} ({status})."
             )
-            if existing.role != Role.admin.value:
+            if existing.role != role:
                 print(
-                    "      To promote to admin, update the role directly"
+                    f"      To change it to {role}, update the role directly"
                     " in the database."
                 )
+            await engine.dispose()
             sys.exit(0)
 
         account = AnalystAccount(
             id=uuid.uuid4(),
             email_hash=email_hash,
             label=label,
-            role=Role.admin.value,
+            role=role,
             region_geojson=None,
             created_by_sub="cli-bootstrap",
             is_active=True,
@@ -97,12 +113,12 @@ async def _create_admin(email: str, label: str | None = None) -> None:
 
     await engine.dispose()
 
-    print("SUCCESS: Admin account created.")
+    print(f"SUCCESS: {role.capitalize()} account created.")
     print(f"  Account ID : {account.id}")
     print(f"  Label      : {label or '—'}")
-    print("  Role       : admin")
+    print(f"  Role       : {role}")
     print()
-    print("The admin can now log in through the frontend's Privy email OTP flow,")
+    print(f"The {role} can now log in through the frontend's Privy email OTP flow,")
     print("which posts the resulting tokens to POST /api/v1/auth/privy/verify.")
 
 
@@ -238,6 +254,30 @@ def main() -> None:
         ),
     )
 
+    # create-account
+    p_account = sub.add_parser(
+        "create-account",
+        help="Provision an analyst, responder, or admin account by email.",
+    )
+    p_account.add_argument(
+        "--email",
+        required=True,
+        metavar="EMAIL",
+        help="Email address the person will log in with.",
+    )
+    p_account.add_argument(
+        "--role",
+        default="analyst",
+        choices=_ELEVATED_ROLES,
+        help="Role to assign. Defaults to 'analyst'.",
+    )
+    p_account.add_argument(
+        "--label",
+        default=None,
+        metavar="LABEL",
+        help="Optional display name shown in list-accounts. Never the email.",
+    )
+
     # list-accounts
     sub.add_parser(
         "list-accounts",
@@ -279,6 +319,8 @@ def main() -> None:
 
     if args.command == "create-admin":
         asyncio.run(_create_admin(args.email, args.label))
+    elif args.command == "create-account":
+        asyncio.run(_create_account(args.email, args.role, args.label))
     elif args.command == "list-accounts":
         asyncio.run(_list_accounts())
     elif args.command == "deactivate-account":
