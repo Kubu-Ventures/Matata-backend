@@ -518,6 +518,58 @@ class TestExportServiceGeoJSON:
         assert "footprints" in data
 
     @pytest.mark.asyncio
+    async def test_geojson_carries_footprint_attribution(self):
+        """Every GeoJSON export credits the ODbL footprint sources."""
+        from app.services.export_service import FOOTPRINT_ATTRIBUTION
+
+        db = _make_db_mock([_make_report()])
+        svc = ExportService(db=db, analyst_id_hash="x")
+        result = await svc.export_geojson(ExportFilterParams(), "2024-06-01")
+        data = json.loads(result)
+        assert data["attribution"] == FOOTPRINT_ATTRIBUTION
+        assert "OpenStreetMap contributors" in data["attribution"]
+        assert "ODbL" in data["attribution"]
+
+    @pytest.mark.asyncio
+    async def test_geojson_with_footprints_is_odbl_licensed(self):
+        """Reports joined to footprints are an adapted database: ODbL notice
+        on the payload and the footprint collection, and each footprint keeps
+        its source and external ID so it can be traced back to OSM."""
+        building_id = uuid.uuid4()
+        report = _make_report(building_id=str(building_id))
+
+        footprint_row = MagicMock()
+        footprint_row.id = building_id
+        footprint_row.source = "osm"
+        footprint_row.external_id = "osm:way/540131184"
+        footprint_row.geojson = '{"type":"Polygon","coordinates":[]}'
+        footprint_result = MagicMock()
+        footprint_result.__iter__ = MagicMock(return_value=iter([footprint_row]))
+
+        main_scalars = MagicMock()
+        main_scalars.all.return_value = [report]
+        main_result = MagicMock()
+        main_result.scalars.return_value = main_scalars
+        main_result.scalar_one.return_value = 1
+
+        db = _make_db_mock([report])
+        db.execute = AsyncMock(side_effect=[main_result, footprint_result])
+
+        svc = ExportService(db=db, analyst_id_hash="x")
+        filters = ExportFilterParams(include_footprints=True)
+        data = json.loads(await svc.export_geojson(filters, "2024-06-01"))
+
+        assert data["license"] == "ODbL-1.0"
+        assert data["footprints"]["license"] == "ODbL-1.0"
+        assert "OpenStreetMap contributors" in data["footprints"]["attribution"]
+        props = data["footprints"]["features"][0]["properties"]
+        assert props == {
+            "building_id": str(building_id),
+            "source": "osm",
+            "external_id": "osm:way/540131184",
+        }
+
+    @pytest.mark.asyncio
     async def test_geojson_include_footprints_no_building_ids(self):
         """When no records have building_id, footprints list should be empty."""
         report = _make_report(building_id=None)

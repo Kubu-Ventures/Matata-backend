@@ -28,6 +28,15 @@ places (~110 m); ``coarse`` to 2 dp (~1.1 km).  Anything other than
 ``exact`` also drops ``gps_accuracy_m`` (which would otherwise leak the
 original precision).  Default is ``exact`` — backwards compatible.
 
+Licensing
+---------
+Building footprints come from OpenStreetMap and Microsoft's Global ML
+Building Footprints, both under the Open Database License (ODbL) 1.0.
+GeoJSON exports carry ``FOOTPRINT_ATTRIBUTION`` as a top-level member, and
+exports that include footprint polygons also carry ``FOOTPRINT_LICENSE``: a
+dataset of reports joined to those polygons is an adapted database, which
+must be shared under the ODbL with this attribution.
+
 Schema follows HDX disaster damage dataset standards; field mapping is
 documented in ``docs/hdx_schema.md``.
 """
@@ -53,6 +62,19 @@ from app.models.audit_log import AuditLog
 from app.models.report import Report
 
 logger = logging.getLogger(__name__)
+
+# Attribution for the building footprints Matata matches reports against.
+# GeoJSON allows extra top-level members, so these ride along in the file.
+FOOTPRINT_ATTRIBUTION = (
+    "Building footprints \u00a9 OpenStreetMap contributors and Microsoft "
+    "Global ML Building Footprints, available under the Open Database "
+    "License (ODbL) 1.0."
+)
+FOOTPRINT_LICENSE: Dict[str, str] = {
+    "license": "ODbL-1.0",
+    "license_url": "https://opendatacommons.org/licenses/odbl/1-0/",
+    "attribution": FOOTPRINT_ATTRIBUTION,
+}
 
 # ---------------------------------------------------------------------------
 # Exportable field definitions — spec §12.1
@@ -364,6 +386,7 @@ class ExportService:
 
         collection: Dict[str, Any] = {
             "type": "FeatureCollection",
+            "attribution": FOOTPRINT_ATTRIBUTION,
             "features": features,
         }
 
@@ -371,9 +394,11 @@ class ExportService:
             footprint_features = await self._fetch_footprint_features(records)
             footprint_collection: Dict[str, Any] = {
                 "type": "FeatureCollection",
+                **FOOTPRINT_LICENSE,
                 "features": footprint_features,
             }
             payload = {
+                **FOOTPRINT_LICENSE,
                 "reports": collection,
                 "footprints": footprint_collection,
             }
@@ -508,7 +533,8 @@ class ExportService:
 
         rows = await self._db.execute(
             text(
-                "SELECT id, ST_AsGeoJSON(footprint) AS geojson "
+                "SELECT id, source, external_id, "
+                "ST_AsGeoJSON(footprint) AS geojson "
                 "FROM building WHERE id = ANY(:ids)"
             ).bindparams(ids=building_ids)
         )
@@ -522,7 +548,13 @@ class ExportService:
                 {
                     "type": "Feature",
                     "geometry": geom,
-                    "properties": {"building_id": str(row.id)},
+                    # source + external_id (e.g. "osm:way/123") let a
+                    # recipient trace each footprint back to its origin.
+                    "properties": {
+                        "building_id": str(row.id),
+                        "source": str(row.source),
+                        "external_id": row.external_id,
+                    },
                 }
             )
         return features
