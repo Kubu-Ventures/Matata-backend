@@ -24,7 +24,7 @@ from __future__ import annotations
 import os
 import uuid
 from typing import Optional
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -75,6 +75,8 @@ def _make_session_factory():
                 id                      TEXT PRIMARY KEY,
                 photo_url               TEXT,
                 damage_severity         TEXT NOT NULL DEFAULT 'partial',
+                crisis_type             TEXT NOT NULL DEFAULT 'flood',
+                infrastructure_type     TEXT NOT NULL DEFAULT 'residential',
                 reporter_token_hash     TEXT NOT NULL DEFAULT 'hash',
                 lat                     REAL,
                 lng                     REAL,
@@ -397,6 +399,29 @@ class TestProcessReportImageImpl:
 
         assert result["photo_status"] == "accepted"
         assert result["ai_quality_score"] == pytest.approx(0.45)
+
+    def test_crisis_and_building_type_passed_to_provider(self):
+        """The provider gets crisis and building type as context; the
+        reporter's severity is passed only for the mock/sim providers."""
+        rid = str(uuid.uuid4())
+        _insert_report(self.factory, report_id=rid, damage_severity="destroyed")
+
+        provider = MagicMock()
+        provider.analyse_damage_image = AsyncMock(
+            return_value=ImageAnalysisResult(
+                quality_score=0.9,
+                quality_flag="usable",
+                ai_severity_prediction="partial",
+                ai_confidence=0.8,
+            )
+        )
+
+        with patch("app.workers.ai_tasks._download_image", return_value=b"img"):
+            self._run(rid, provider)
+
+        kwargs = provider.analyse_damage_image.await_args.kwargs
+        assert kwargs["crisis_type"] == "flood"
+        assert kwargs["infrastructure_type"] == "residential"
 
     # ── Missing / not found ──────────────────────────────────────────────────
 

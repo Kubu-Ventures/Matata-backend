@@ -4,7 +4,8 @@ Defines the ``VisionProvider`` Protocol and four concrete implementations:
 
 * ``MockVisionProvider``      — deterministic, configurable via fixtures; no API calls.
 * ``OpenAIVisionProvider``    — GPT-4o with ``response_format={"type": "json_object"}``.
-* ``AnthropicVisionProvider`` — Claude claude-opus-4-6 vision (optional alternative).
+* ``AnthropicVisionProvider`` — Claude vision with structured outputs (model set by
+                                ``ANTHROPIC_VISION_MODEL``).
 * ``OllamaVisionProvider``    — local open-source vision model via Ollama (no API key).
 
 A factory ``get_vision_provider()`` selects the implementation from the
@@ -19,6 +20,10 @@ Design notes
   never with string manipulation.
 * The quality assessment and damage classification are batched into a **single**
   vision API call to avoid double API cost (spec §8.3).
+* The model is told the crisis type and building type but **not** the
+  reporter's own severity: showing it anchors the model towards agreeing,
+  which hides exactly the disagreements the divergence check exists to catch.
+  ``reporter_severity`` stays in the signature for the mock and sim providers.
 * ``VisionProvider`` is a structural Protocol so new providers can be added
   without modifying existing code.
 """
@@ -79,6 +84,9 @@ class VisionProvider(Protocol):
         self,
         image_bytes: bytes,
         reporter_severity: str,
+        *,
+        crisis_type: str | None = None,
+        infrastructure_type: str | None = None,
     ) -> ImageAnalysisResult:
         """Assess image quality and classify damage in a single model call.
 
@@ -86,8 +94,11 @@ class VisionProvider(Protocol):
             image_bytes:       Raw JPEG/PNG image binary.
             reporter_severity: The reporter's own damage classification
                                (``minimal`` / ``partial`` / ``destroyed``).
-                               Provided as context — the model must never
-                               simply echo it back.
+                               Real providers do NOT show it to the model
+                               (it anchors the prediction); the mock and sim
+                               providers use it to shape their output.
+            crisis_type:         e.g. ``flood``; given to the model as context.
+            infrastructure_type: e.g. ``residential``; given as context.
 
         Returns:
             Validated ``ImageAnalysisResult``.
@@ -112,52 +123,86 @@ class VisionAPIError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-You are an expert structural damage assessment AI for a humanitarian crisis \
-mapping system.  You will be shown a photograph submitted by a community \
-reporter after a disaster event.
+You assess photos of buildings and infrastructure for a humanitarian crisis \
+mapping system. Residents photograph damage on their phones after a disaster, \
+often in informal settlements with mud, timber or iron-sheet walls and \
+iron-sheet roofs. Your assessment only sets the order in which human analysts \
+review reports; it never replaces what the resident reported.
 
-Your task is to evaluate the image on TWO dimensions simultaneously:
+Evaluate the photo on two dimensions in one pass.
 
-1. IMAGE QUALITY
-   - Is the primary subject a building or piece of infrastructure (road, bridge, \
-utility pole)?
-   - Is damage (or its absence) clearly visible in the frame?
-   - Is the image adequately lit and in focus?
+1. IMAGE QUALITY: can this photo support a damage assessment?
+   - Is the main subject a building or infrastructure (road, bridge, utility \
+pole, water point)? A close-up or interior shot of a building counts.
+   - Is the damaged part (or the undamaged structure) visible?
+   - Is it lit well enough and in focus? Ordinary phone quality is fine.
+   A photo of people, a document, a screen, or a scene with no structure in \
+it is unusable.
 
-2. DAMAGE SEVERITY
-   - minimal  — Structure is standing; minor cosmetic damage only.
-   - partial  — Significant structural damage but the building is still \
-recognisable and partially standing.
-   - destroyed — Complete or near-complete collapse; rubble or total loss.
+2. DAMAGE SEVERITY: judge only what is visible in the photo.
+   minimal: standing and usable. No visible damage, or surface damage only: \
+stains, cracked plaster, a few loose roof sheets, debris around the building. \
+Flood: water or mud marks below knee height, wet floors, no structural harm.
+   partial: significant damage but still standing. Part of the roof gone; \
+walls cracked through, leaning or partly collapsed; doors or windows torn out. \
+Flood: a water line above knee height or water inside living space; wall bases \
+eroded or undermined; parts of mud or wattle walls washed away. Fire: partly \
+burned.
+   destroyed: collapsed or no longer habitable. Roof and walls largely down, \
+only rubble or foundations left, the structure washed away, or completely \
+burned out.
 
-You MUST respond ONLY with a single JSON object — no prose, no markdown, no \
-code fences — that matches this exact schema:
+How to set ai_confidence:
+   0.85-1.0  the damage, or its absence, is clearly visible and fits one level.
+   0.6-0.84  the level is likely, but part of the structure is out of frame \
+or the photo is unclear.
+   below 0.6 you cannot see enough of the structure to judge; give your best \
+guess and a low confidence rather than a confident guess.
 
-{
-  "quality_score": <float 0.0–1.0>,
-  "quality_flag": "<usable|borderline|unusable>",
-  "ai_severity_prediction": "<minimal|partial|destroyed>",
-  "ai_confidence": <float 0.0–1.0>
-}
-
-Definitions:
-  quality_score: 0.0 = completely unusable; 1.0 = perfect quality.
-  quality_flag:
-    usable     — quality_score >= 0.6; image supports confident assessment.
-    borderline — quality_score 0.3–0.59; assessment possible but uncertain.
-    unusable   — quality_score < 0.3; image cannot support any assessment.
-  ai_confidence: your confidence in ai_severity_prediction (0.0–1.0).
-
-IMPORTANT: base your ai_severity_prediction on what you SEE, not on the \
-reporter's classification.  They may be wrong.
+Return a JSON object with exactly these fields:
+  quality_score: 0.0 (completely unusable) to 1.0 (clear, well-framed).
+  quality_flag: "usable" (quality_score 0.6 or more), "borderline" (0.3-0.59) \
+or "unusable" (below 0.3).
+  ai_severity_prediction: "minimal", "partial" or "destroyed".
+  ai_confidence: 0.0 to 1.0, as defined above.
 """
 
+# JSON Schema for providers that support structured outputs (Anthropic).
+_RESULT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "quality_score": {"type": "number"},
+        "quality_flag": {
+            "type": "string",
+            "enum": ["usable", "borderline", "unusable"],
+        },
+        "ai_severity_prediction": {
+            "type": "string",
+            "enum": ["minimal", "partial", "destroyed"],
+        },
+        "ai_confidence": {"type": "number"},
+    },
+    "required": [
+        "quality_score",
+        "quality_flag",
+        "ai_severity_prediction",
+        "ai_confidence",
+    ],
+    "additionalProperties": False,
+}
 
-def _user_prompt(reporter_severity: str) -> str:
-    return (
-        f"The reporter classified this image as: {reporter_severity}.\n"
-        "Assess the image independently and return only the JSON object."
-    )
+
+def _user_prompt(
+    crisis_type: str | None = None, infrastructure_type: str | None = None
+) -> str:
+    """Context for one photo. Deliberately excludes the reporter's severity."""
+    lines = []
+    if crisis_type:
+        lines.append(f"Crisis type: {crisis_type}.")
+    if infrastructure_type:
+        lines.append(f"Building or infrastructure type: {infrastructure_type}.")
+    lines.append("Assess this photo and return only the JSON object.")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +259,9 @@ class MockVisionProvider:
         self,
         image_bytes: bytes,
         reporter_severity: str,
+        *,
+        crisis_type: str | None = None,
+        infrastructure_type: str | None = None,
     ) -> ImageAnalysisResult:
         self.calls.append((len(image_bytes), reporter_severity))
         self.call_count += 1
@@ -273,6 +321,9 @@ class OpenAIVisionProvider:
         self,
         image_bytes: bytes,
         reporter_severity: str,
+        *,
+        crisis_type: str | None = None,
+        infrastructure_type: str | None = None,
     ) -> ImageAnalysisResult:
         """Call GPT-4o vision API and parse the structured JSON response.
 
@@ -318,9 +369,12 @@ class OpenAIVisionProvider:
                         "content": [
                             {
                                 "type": "image_url",
-                                "image_url": {"url": data_uri, "detail": "low"},
+                                "image_url": {"url": data_uri, "detail": "high"},
                             },
-                            {"type": "text", "text": _user_prompt(reporter_severity)},
+                            {
+                                "type": "text",
+                                "text": _user_prompt(crisis_type, infrastructure_type),
+                            },
                         ],
                     },
                 ],
@@ -349,29 +403,44 @@ class OpenAIVisionProvider:
 
 
 # ---------------------------------------------------------------------------
-# AnthropicVisionProvider — Claude claude-opus-4-6 (optional alternative)
+# AnthropicVisionProvider — Claude vision with structured outputs
 # ---------------------------------------------------------------------------
+
+# Models that accept server-side refusal fallbacks (``fallbacks: "default"``).
+_FALLBACK_MODEL_PREFIXES = ("claude-opus-5", "claude-fable-5", "claude-sonnet-5-5")
 
 
 class AnthropicVisionProvider:
-    """Optional vision provider backed by Anthropic Claude claude-opus-4-6.
+    """Vision provider backed by Anthropic Claude.
 
-    Uses the Messages API with a base64-encoded image content block.  Instructs
-    the model to respond only in JSON via the system prompt and ``prefill``
-    technique (pre-filling the assistant turn with ``{``).
+    Sends the image as a base64 content block and constrains the reply with
+    structured outputs (``output_config.format``), so the text block is
+    always JSON matching ``_RESULT_SCHEMA``. Current Claude models reject an
+    assistant prefill, which the previous version relied on.
+
+    The model comes from ``ANTHROPIC_VISION_MODEL`` (default
+    ``claude-opus-5-5``). Effort is ``low``: one photo, one short JSON answer.
+    On models that support it, a policy refusal is retried server-side on
+    Anthropic's recommended fallback model (``fallbacks: "default"``).
 
     Requires:
-        ``pip install anthropic``
+        ``anthropic`` package (in requirements.txt)
         ``ANTHROPIC_API_KEY`` environment variable.
     """
 
     def __init__(
         self,
-        model: str = "claude-opus-4-6-20241101",
-        max_tokens: int = 256,
-        timeout: float = 30.0,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        timeout: float = 60.0,
     ) -> None:
+        if model is None:
+            from app.core.config import settings
+
+            model = getattr(settings, "ANTHROPIC_VISION_MODEL", "claude-opus-5-5")
         self._model = model
+        # Thinking is on for current models and counts towards max_tokens, so
+        # this is well above the ~60 tokens the JSON answer needs.
         self._max_tokens = max_tokens
         self._timeout = timeout
 
@@ -379,21 +448,27 @@ class AnthropicVisionProvider:
         self,
         image_bytes: bytes,
         reporter_severity: str,
+        *,
+        crisis_type: str | None = None,
+        infrastructure_type: str | None = None,
     ) -> ImageAnalysisResult:
         """Call Claude vision API and parse the structured JSON response.
 
         Args:
-            image_bytes:       Raw image binary.
-            reporter_severity: Reporter's damage classification.
+            image_bytes:         Raw image binary.
+            reporter_severity:   Not sent to the model (see module docstring).
+            crisis_type:         Crisis type, given as context.
+            infrastructure_type: Building type, given as context.
 
         Returns:
             Validated ``ImageAnalysisResult``.
 
         Raises:
-            VisionAPIError: On any Anthropic or network error.
+            VisionAPIError: On any Anthropic or network error, a refusal, or
+                            a response that fails validation.
         """
         try:
-            import anthropic  # type: ignore[import]
+            import anthropic
         except ImportError as exc:
             raise VisionAPIError(
                 "anthropic package is required for VISION_PROVIDER=anthropic. "
@@ -409,40 +484,50 @@ class AnthropicVisionProvider:
             )
 
         b64 = base64.b64encode(image_bytes).decode("utf-8")
+        request: dict = {
+            "model": self._model,
+            "max_tokens": self._max_tokens,
+            "system": _SYSTEM_PROMPT,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": b64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": _user_prompt(crisis_type, infrastructure_type),
+                        },
+                    ],
+                }
+            ],
+            "output_config": {
+                "effort": "low",
+                "format": {"type": "json_schema", "schema": _RESULT_SCHEMA},
+            },
+        }
+        if self._model.startswith(_FALLBACK_MODEL_PREFIXES):
+            request["betas"] = ["server-side-fallback-2026-07-01"]
+            request["fallbacks"] = "default"
 
         client = anthropic.AsyncAnthropic(api_key=api_key, timeout=self._timeout)
         try:
-            response = await client.messages.create(
-                model=self._model,
-                max_tokens=self._max_tokens,
-                system=_SYSTEM_PROMPT,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": b64,
-                                },
-                            },
-                            {"type": "text", "text": _user_prompt(reporter_severity)},
-                        ],
-                    },
-                    # Prefill: nudge Claude to start its response with '{'
-                    # so it returns raw JSON without prose preamble.
-                    {"role": "assistant", "content": "{"},
-                ],
-            )
+            response = await client.beta.messages.create(**request)
         except Exception as exc:
             raise VisionAPIError(
                 f"Anthropic vision API error: {type(exc).__name__}: {exc}"
             ) from exc
 
-        # Reconstruct the full JSON: prefill '{' + model continuation.
-        raw_text = "{" + (response.content[0].text if response.content else "")
+        if response.stop_reason == "refusal":
+            raise VisionAPIError(f"Anthropic declined the image ({self._model}).")
+
+        raw_text = next((b.text for b in response.content if b.type == "text"), "")
         logger.debug("Anthropic raw response: %s", raw_text[:500])
 
         try:
@@ -540,6 +625,9 @@ class OllamaVisionProvider:
         self,
         image_bytes: bytes,
         reporter_severity: str,
+        *,
+        crisis_type: str | None = None,
+        infrastructure_type: str | None = None,
     ) -> ImageAnalysisResult:
         """Call a local Ollama vision model and parse the structured JSON response.
 
@@ -585,7 +673,10 @@ class OllamaVisionProvider:
                                 "type": "image_url",
                                 "image_url": {"url": data_uri},
                             },
-                            {"type": "text", "text": _user_prompt(reporter_severity)},
+                            {
+                                "type": "text",
+                                "text": _user_prompt(crisis_type, infrastructure_type),
+                            },
                         ],
                     },
                 ],
@@ -639,12 +730,18 @@ class FallbackVisionProvider:
         self,
         image_bytes: bytes,
         reporter_severity: str,
+        *,
+        crisis_type: str | None = None,
+        infrastructure_type: str | None = None,
     ) -> ImageAnalysisResult:
         last_exc: VisionAPIError | None = None
         for provider in self._providers:
             try:
                 return await provider.analyse_damage_image(
-                    image_bytes, reporter_severity
+                    image_bytes,
+                    reporter_severity,
+                    crisis_type=crisis_type,
+                    infrastructure_type=infrastructure_type,
                 )
             except VisionAPIError as exc:
                 logger.warning(
@@ -671,7 +768,7 @@ def get_vision_provider() -> VisionProvider:
     * ``mock``      — ``MockVisionProvider`` (dev/CI only — returns deterministic
                       fake data; NEVER use in production).
     * ``openai``    — GPT-4o with automatic Ollama fallback.
-    * ``anthropic`` — Claude claude-opus-4-6 with automatic Ollama fallback.
+    * ``anthropic`` — Claude (``ANTHROPIC_VISION_MODEL``) with Ollama fallback.
     * ``ollama``    — Local open-source model only (free, no API key required).
 
     For ``openai`` and ``anthropic``, if the primary call fails (rate limit,
