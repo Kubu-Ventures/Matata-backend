@@ -1,4 +1,4 @@
-# CrisisMap Backend
+# Matata Backend
 
 > Community crisis damage reporting platform built for crisis-response field operations.
 
@@ -11,7 +11,9 @@ Built and maintained by [Origin Africa Software Limited](https://www.origin.co.k
 
 Frontend (reporter app and analyst dashboard): [Kubu-Ventures/Matata](https://github.com/Kubu-Ventures/Matata).
 
-CrisisMap is a FastAPI backend that lets community members report infrastructure damage after a crisis (flood, earthquake, conflict, wildfire) with GPS coordinates and photos. Field analysts and responders triage reports, merge duplicates, and export structured datasets for field operational planning.
+Matata is a FastAPI backend that lets community members report infrastructure damage after a crisis (flood, earthquake, conflict, wildfire) with GPS coordinates and photos. Field analysts and responders triage reports, merge duplicates, and export structured datasets for field operational planning.
+
+The codebase's internal name is CrisisMap, so you'll see it in some settings and identifiers (for example the `crisismap` storage bucket and `crisismap:` Redis keys).
 
 ---
 
@@ -201,7 +203,7 @@ See `.env.example` for the full reference including all production settings, rot
 
 ## Authentication
 
-CrisisMap uses three roles with different authentication flows.
+Matata uses three roles with different authentication flows.
 
 ### Anonymous reporter
 
