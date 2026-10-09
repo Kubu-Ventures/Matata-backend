@@ -66,6 +66,9 @@ class SimVisionProvider:
         self,
         image_bytes: bytes,
         reporter_severity: str,
+        *,
+        crisis_type: str | None = None,
+        infrastructure_type: str | None = None,
     ) -> ImageAnalysisResult:
         d = _digest(image_bytes)
 

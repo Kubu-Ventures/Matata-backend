@@ -68,7 +68,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from celery import Task
@@ -359,6 +359,13 @@ def _download_image(object_key: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+def _enum_text(value: Any) -> Optional[str]:
+    """Plain string for an enum column value (or ``None``)."""
+    if value is None:
+        return None
+    return str(value.value) if hasattr(value, "value") else str(value)
+
+
 def _compute_phash(image_bytes: bytes) -> Optional[str]:
     """Compute the report's perceptual hash — the AI worker is the sole writer.
 
@@ -462,7 +469,8 @@ def _process_report_image_impl(
         # ── 1. Load report ────────────────────────────────────────────────────
         row = db.execute(
             text("""
-                SELECT id, photo_url, damage_severity, lat, lng
+                SELECT id, photo_url, damage_severity, lat, lng,
+                       crisis_type, infrastructure_type
                 FROM report
                 WHERE id = :report_id
             """),
@@ -510,6 +518,8 @@ def _process_report_image_impl(
             provider.analyse_damage_image(
                 image_bytes=image_bytes,
                 reporter_severity=reporter_severity,
+                crisis_type=_enum_text(row.crisis_type),
+                infrastructure_type=_enum_text(row.infrastructure_type),
             )
         )
 

@@ -158,13 +158,17 @@ class Settings(BaseSettings):
     # ── AI / Vision worker ─────────────────────────────────────────────────────
     # VISION_PROVIDER=mock        — deterministic stub (default, dev/CI).
     # VISION_PROVIDER=openai      — GPT-4o (requires OPENAI_API_KEY).
-    # VISION_PROVIDER=anthropic   — Claude claude-opus-4-6 (requires ANTHROPIC_API_KEY).
+    # VISION_PROVIDER=anthropic   — Claude, model ANTHROPIC_VISION_MODEL
+    #                               (requires ANTHROPIC_API_KEY).
     # VISION_PROVIDER=ollama      — local open-source model via Ollama (free, no key).
     #                               Requires Ollama running locally with a
     #                               vision-capable model (e.g. `ollama pull llava`).
     VISION_PROVIDER: str = "mock"
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
+    # Claude model for photo assessment. claude-haiku-5-5 costs far less per
+    # photo; claude-opus-5-5 is the most capable current Opus.
+    ANTHROPIC_VISION_MODEL: str = "claude-opus-5-5"
     # Ollama — only required when VISION_PROVIDER=ollama.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_VISION_MODEL: str = "llava"
