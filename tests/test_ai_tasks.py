@@ -428,7 +428,9 @@ class TestProcessReportImageImpl:
         db_row = _fetch_report(self.factory, rid)
         assert db_row["photo_phash"] == "deadbeef1234"
 
-    def test_phash_not_stored_for_unusable_image(self):
+    def test_phash_stored_for_unusable_image(self):
+        """Duplicate scoring compares photos by hash, so an unusable rating
+        must not stop the hash being stored."""
         rid = str(uuid.uuid4())
         _insert_report(self.factory, report_id=rid)
 
@@ -441,10 +443,32 @@ class TestProcessReportImageImpl:
             )
         )
 
-        with patch("app.workers.ai_tasks._download_image", return_value=b"img"):
+        with (
+            patch("app.workers.ai_tasks._download_image", return_value=b"img"),
+            patch("app.workers.ai_tasks._compute_phash", return_value="deadbeef1234"),
+        ):
             result = self._run(rid, provider)
 
-        assert result["photo_phash"] is None
+        assert result["photo_phash"] == "deadbeef1234"
+        assert _fetch_report(self.factory, rid)["photo_phash"] == "deadbeef1234"
+
+    def test_phash_stored_when_vision_provider_fails(self):
+        """The hash is written before the vision call, so it survives a
+        provider failure (and every retry recomputes the same value)."""
+        rid = str(uuid.uuid4())
+        _insert_report(self.factory, report_id=rid)
+
+        provider = MockVisionProvider(raise_on_calls=999)  # always fails
+
+        with (
+            patch("app.workers.ai_tasks._SyncSessionLocal", self.factory),
+            patch("app.workers.ai_tasks._download_image", return_value=b"img"),
+            patch("app.workers.ai_tasks._compute_phash", return_value="deadbeef1234"),
+            pytest.raises(VisionAPIError),
+        ):
+            _process_report_image_impl(rid, vision_provider=provider)
+
+        assert _fetch_report(self.factory, rid)["photo_phash"] == "deadbeef1234"
 
 
 # ---------------------------------------------------------------------------

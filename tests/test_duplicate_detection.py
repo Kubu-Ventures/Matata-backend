@@ -364,12 +364,14 @@ class TestDuplicateScorer:
             incoming_infrastructure_type="residential",
             candidates=[candidate],
         )
-        # Building 40% + category 10% = 0.5 → independent
-        assert result.best_score == pytest.approx(0.5, abs=0.01)
-        assert result.action == DuplicateAction.INDEPENDENT
+        # Missing GPS/photo are left out: (0.4 + 0.1) / 0.5 = 1.0. Without GPS
+        # (a landmark-only match) the pair is capped at an analyst flag.
+        assert result.best_score == pytest.approx(1.0, abs=0.01)
+        assert result.action == DuplicateAction.ANALYST_FLAG
 
     def test_building_match_alone_reaches_analyst_flag(self) -> None:
-        """Building (0.4) + full category (0.1) = 0.5 — below flag threshold."""
+        """Same building + category with nothing else known is flagged, not
+        queued for merge review."""
         bid = uuid4()
         candidate = _make_candidate(
             building_id=bid,
@@ -385,7 +387,94 @@ class TestDuplicateScorer:
             incoming_infrastructure_type="residential",
             candidates=[candidate],
         )
-        assert result.best_score == pytest.approx(0.5, abs=0.01)
+        assert result.best_score == pytest.approx(1.0, abs=0.01)
+        assert result.action == DuplicateAction.ANALYST_FLAG
+
+    # -- Missing signals don't count against a pair ---------------------------
+
+    def test_unmatched_same_photo_same_spot_is_flagged(self) -> None:
+        """Regression: with no building match, the same photo at the same spot
+        used to score 0.6 at best and was never flagged."""
+        candidate = _make_candidate(
+            building_id=None,
+            lat=-1.2921,
+            lng=36.8219,
+            photo_phash="a1b2c3d4e5f60708",
+            crisis_type="flood",
+            infrastructure_type="residential",
+        )
+        result = self._scorer().score(
+            incoming_building_id=None,
+            incoming_lat=-1.2921,
+            incoming_lng=36.8219,
+            incoming_phash="a1b2c3d4e5f60708",
+            incoming_crisis_type="flood",
+            incoming_infrastructure_type="residential",
+            candidates=[candidate],
+        )
+        assert result.best_score == pytest.approx(1.0, abs=0.01)
+        assert result.action == DuplicateAction.ANALYST_FLAG
+
+    def test_unmatched_pair_never_queued_for_merge_review(self) -> None:
+        """Without a building match GPS can't separate neighbouring houses,
+        so even a perfect score is capped at an analyst flag."""
+        candidate = _make_candidate(
+            building_id=None,
+            lat=-1.2921,
+            lng=36.8219,
+            crisis_type="flood",
+            infrastructure_type="residential",
+        )
+        result = self._scorer().score(
+            incoming_building_id=None,
+            incoming_lat=-1.2921,
+            incoming_lng=36.8219,
+            incoming_phash=None,
+            incoming_crisis_type="flood",
+            incoming_infrastructure_type="residential",
+            candidates=[candidate],
+        )
+        assert result.best_score >= 0.9
+        assert result.action == DuplicateAction.ANALYST_FLAG
+
+    def test_different_buildings_still_independent(self) -> None:
+        """Two matched buildings that differ are real evidence of two incidents."""
+        candidate = _make_candidate(
+            building_id=uuid4(),
+            lat=-1.2921,
+            lng=36.82197,
+            crisis_type="flood",
+            infrastructure_type="residential",
+        )
+        result = self._scorer().score(
+            incoming_building_id=uuid4(),
+            incoming_lat=-1.2921,
+            incoming_lng=36.8219,
+            incoming_phash=None,
+            incoming_crisis_type="flood",
+            incoming_infrastructure_type="residential",
+            candidates=[candidate],
+        )
+        assert result.action == DuplicateAction.INDEPENDENT
+
+    def test_no_location_signal_is_independent(self) -> None:
+        """Category agreement alone must never make a duplicate."""
+        candidate = _make_candidate(
+            building_id=None,
+            crisis_type="flood",
+            infrastructure_type="residential",
+        )
+        result = self._scorer().score(
+            incoming_building_id=None,
+            incoming_lat=None,
+            incoming_lng=None,
+            incoming_phash=None,
+            incoming_crisis_type="flood",
+            incoming_infrastructure_type="residential",
+            candidates=[candidate],
+        )
+        assert result.best_score == 0.0
+        assert result.action == DuplicateAction.INDEPENDENT
 
     def test_composite_weights_sum_correctly(self) -> None:
         """Verify that all four signals at 1.0 give composite = 1.0."""
