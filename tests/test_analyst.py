@@ -48,6 +48,7 @@ def _make_report(
     ai_confidence: float | None = 0.85,
     photo_url: str | None = None,
     photo_status: str = "accepted",
+    footprint_match_confidence: float | None = None,
 ):
     r = MagicMock()
     r.id = id or uuid4()
@@ -66,6 +67,7 @@ def _make_report(
     r.photo_url = photo_url
     r.photo_status = PhotoStatus(photo_status)
     r.gps_accuracy_m = None
+    r.footprint_match_confidence = footprint_match_confidence
     r.reporter_confirmed_building_id = None
     r.reporter_building_missing = False
     r.landmark_description = None
@@ -367,6 +369,29 @@ class TestGetReportDetail:
 
         assert result is not None
         assert len(result.building_timeline) == 1
+
+    @pytest.mark.asyncio
+    async def test_returns_footprint_and_match_confidence(self):
+        from app.services.analyst_service import get_report_detail
+
+        building_id = uuid4()
+        report = _make_report(building_id=building_id, footprint_match_confidence=0.42)
+        report.analyst_notes = []
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[_scalar_result(report), _scalars_result([])]
+        )
+
+        with patch(
+            "app.services.analyst_service._get_building_footprint_geojson",
+            new=AsyncMock(return_value='{"type":"Polygon"}'),
+        ):
+            result = await get_report_detail(db, report.id)
+
+        assert result is not None
+        assert result.footprint_geojson == '{"type":"Polygon"}'
+        assert result.footprint_match_confidence == 0.42
 
     @pytest.mark.asyncio
     async def test_responder_scope_returns_none_for_out_of_region(self):
