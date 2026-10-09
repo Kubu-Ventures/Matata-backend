@@ -7,6 +7,7 @@ All variables are documented in ``.env.example``.
 
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -109,6 +110,10 @@ class Settings(BaseSettings):
     S3_BUCKET_NAME: str | None = None
     # Leave empty for AWS S3.  MinIO / R2 example: http://localhost:9000
     S3_ENDPOINT_URL: str | None = None
+    # Storage-only credentials. Fall back to AWS_* when unset; set them when
+    # photos live in MinIO / R2 while Rekognition still needs real AWS keys.
+    S3_ACCESS_KEY_ID: str | None = None
+    S3_SECRET_ACCESS_KEY: str | None = None
 
     # ── GIS worker ────────────────────────────────────────────────────────────
     # Geocoding provider for landmark-based building matching (spec §9.2 step 3).
@@ -241,6 +246,16 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",  # .env is shared with other services; skip unknown vars
     )
+
+    @field_validator("PRIVY_VERIFICATION_KEY")
+    @classmethod
+    def _unescape_pem_newlines(cls, value: str) -> str:
+        """Accept the PEM on one line with literal ``\\n`` separators.
+
+        Env files (Docker ``env_file``, most PaaS dashboards) cannot hold a
+        multi-line value, so the key usually arrives as one escaped line.
+        """
+        return value.replace("\\n", "\n")
 
     # ── Derived helpers ───────────────────────────────────────────────────────
     @property
