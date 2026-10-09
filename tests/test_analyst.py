@@ -535,7 +535,7 @@ class TestTransitionReportStatus:
             )
 
     @pytest.mark.asyncio
-    async def test_verified_with_building_triggers_severity_sync(self):
+    async def test_verified_with_building_recomputes_severity(self):
         from app.services.analyst_service import transition_report_status
 
         building_id = uuid4()
@@ -547,7 +547,7 @@ class TestTransitionReportStatus:
         db.add = MagicMock()
 
         with patch(
-            "app.services.analyst_service._sync_building_severity",
+            "app.services.analyst_service._recompute_building_severity",
             new=AsyncMock(),
         ) as mock_sync:
             await transition_report_status(
@@ -561,7 +561,33 @@ class TestTransitionReportStatus:
             mock_sync.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_verified_without_building_skips_severity_sync(self):
+    async def test_rejected_with_building_recomputes_severity(self):
+        """Rejecting a report must be able to lower the building's severity."""
+        from app.services.analyst_service import transition_report_status
+
+        report = _make_report(reporter_trust_tier=1, building_id=uuid4())
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalar_result(report))
+        db.flush = AsyncMock()
+        db.add = MagicMock()
+
+        with patch(
+            "app.services.analyst_service._recompute_building_severity",
+            new=AsyncMock(),
+        ) as mock_recompute:
+            await transition_report_status(
+                db,
+                report.id,
+                new_status=ReportStatus.rejected,
+                reason_code="inaccurate",
+                notes=None,
+                analyst_id_hash="x" * 64,
+            )
+            mock_recompute.assert_awaited_once_with(db, report.building_id)
+
+    @pytest.mark.asyncio
+    async def test_verified_without_building_skips_severity_recompute(self):
         from app.services.analyst_service import transition_report_status
 
         report = _make_report(reporter_trust_tier=1, building_id=None)
@@ -572,7 +598,7 @@ class TestTransitionReportStatus:
         db.add = MagicMock()
 
         with patch(
-            "app.services.analyst_service._sync_building_severity",
+            "app.services.analyst_service._recompute_building_severity",
             new=AsyncMock(),
         ) as mock_sync:
             await transition_report_status(
@@ -719,48 +745,89 @@ class TestTransitionReportStatus:
             assert result is not None
 
 
-class TestSyncBuildingSeverity:
-    """Tests for _sync_building_severity (lines 498-535)."""
+class TestRecomputeBuildingSeverity:
+    """Tests for _recompute_building_severity (audit L-7)."""
+
+    @staticmethod
+    def _db(building, severities):
+        severity_result = MagicMock()
+        severity_result.scalars.return_value.all.return_value = severities
+        db = AsyncMock()
+        db.flush = AsyncMock()
+        db.execute = AsyncMock(side_effect=[_scalar_result(building), severity_result])
+        return db
 
     @pytest.mark.asyncio
     async def test_no_op_when_building_not_found(self):
-        from app.services.analyst_service import _sync_building_severity
+        from app.services.analyst_service import _recompute_building_severity
 
         db = AsyncMock()
+        db.flush = AsyncMock()
         db.execute = AsyncMock(return_value=_scalar_result(None))
 
-        await _sync_building_severity(db, uuid4(), ReportDamageSeverity.destroyed)
+        await _recompute_building_severity(db, uuid4())
+
+        db.execute.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_upgrades_severity_when_higher(self):
+    async def test_takes_worst_counting_report(self):
         from app.models.enums import DamageSeverity
-        from app.services.analyst_service import _sync_building_severity
+        from app.services.analyst_service import _recompute_building_severity
 
         building = MagicMock()
-        building.current_severity = DamageSeverity.minimal
+        building.current_severity = DamageSeverity.none
+        db = self._db(
+            building,
+            [ReportDamageSeverity.partial, ReportDamageSeverity.destroyed],
+        )
 
-        db = AsyncMock()
-        db.execute = AsyncMock(return_value=_scalar_result(building))
-
-        await _sync_building_severity(db, uuid4(), ReportDamageSeverity.destroyed)
+        await _recompute_building_severity(db, uuid4())
 
         assert building.current_severity == DamageSeverity.destroyed
 
     @pytest.mark.asyncio
-    async def test_no_change_when_same_or_lower_severity(self):
+    async def test_lowers_severity_when_worst_report_no_longer_counts(self):
+        """The old helper only ever raised severity; one rejected 'destroyed'
+        report pinned the building there for good."""
         from app.models.enums import DamageSeverity
-        from app.services.analyst_service import _sync_building_severity
+        from app.services.analyst_service import _recompute_building_severity
 
         building = MagicMock()
         building.current_severity = DamageSeverity.destroyed
-        original_severity = building.current_severity
+        db = self._db(building, [ReportDamageSeverity.minimal])
 
-        db = AsyncMock()
-        db.execute = AsyncMock(return_value=_scalar_result(building))
+        await _recompute_building_severity(db, uuid4())
 
-        await _sync_building_severity(db, uuid4(), ReportDamageSeverity.minimal)
+        assert building.current_severity == DamageSeverity.minimal
 
-        assert building.current_severity == original_severity
+    @pytest.mark.asyncio
+    async def test_resets_to_none_when_no_counting_reports(self):
+        from app.models.enums import DamageSeverity
+        from app.services.analyst_service import _recompute_building_severity
+
+        building = MagicMock()
+        building.current_severity = DamageSeverity.destroyed
+        db = self._db(building, [])
+
+        await _recompute_building_severity(db, uuid4())
+
+        assert building.current_severity == DamageSeverity.none
+
+    @pytest.mark.asyncio
+    async def test_query_excludes_rejected_reports_only(self):
+        from app.models.enums import DamageSeverity
+        from app.services.analyst_service import _recompute_building_severity
+
+        building = MagicMock()
+        building.current_severity = DamageSeverity.none
+        db = self._db(building, [])
+
+        await _recompute_building_severity(db, uuid4())
+
+        stmt = db.execute.await_args_list[1].args[0]
+        sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "status != 'rejected'" in sql
+        assert "duplicate" not in sql
 
 
 class TestMergeReports:

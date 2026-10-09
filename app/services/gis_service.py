@@ -261,9 +261,12 @@ class GISService:
     def update_building_severity(self, building_id: UUID) -> None:
         """Recompute and persist ``current_severity`` for a building.
 
-        Sets ``current_severity`` to the MAX enum ordinal across all linked
-        reports with a confirmed (non-null) damage_severity, and sets
-        ``last_report_at`` to NOW().
+        Sets ``current_severity`` to the worst damage_severity among linked
+        reports that are not rejected, or ``none`` when there are none, and
+        sets ``last_report_at`` to NOW(). Recomputed from scratch, so it can
+        go down as well as up (audit L-7). Rejected reports are known to be
+        false; duplicates still count, as genuine reports of the same damage.
+        Mirrors ``analyst_service._recompute_building_severity``.
 
         Args:
             building_id: UUID of the building to update.
@@ -281,6 +284,7 @@ class GISService:
                             FROM report
                             WHERE building_id = :building_id
                               AND damage_severity IS NOT NULL
+                              AND status::text <> 'rejected'
                             ORDER BY
                                 CASE damage_severity::text
                                     WHEN 'destroyed' THEN 3
@@ -290,7 +294,7 @@ class GISService:
                                 END DESC
                             LIMIT 1
                         ),
-                        current_severity
+                        'none'::damage_severity_enum
                     ),
                     last_report_at = NOW()
                 WHERE id = :building_id

@@ -512,10 +512,12 @@ async def transition_report_status(
     """Apply a status transition with all associated side-effects.
 
     Side-effects:
-    * ``verified``: increments ``reporter_trust_tier`` (cap 2); updates
-      ``buildings.current_severity`` if this report's severity is higher.
+    * ``verified``: increments ``reporter_trust_tier`` (cap 2).
     * ``rejected``: decrements ``reporter_trust_tier`` (floor 0); removes
       from active map (status=rejected in DB; record preserved).
+    * Any transition of a report linked to a building recomputes
+      ``buildings.current_severity``, so rejecting a report can lower it
+      and un-rejecting one can raise it again (audit L-7).
     * All transitions written to ``AuditLog`` with before/after state.
 
     Args:
@@ -595,15 +597,11 @@ async def transition_report_status(
     # Trust tier side-effects
     if new_status == ReportStatus.verified:
         report.reporter_trust_tier = min(report.reporter_trust_tier + 1, 2)
-
-        # Update building current_severity if this report's severity is higher
-        if report.building_id is not None:
-            await _sync_building_severity(
-                db, report.building_id, report.damage_severity
-            )
-
     elif new_status == ReportStatus.rejected:
         report.reporter_trust_tier = max(report.reporter_trust_tier - 1, 0)
+
+    if report.building_id is not None:
+        await _recompute_building_severity(db, report.building_id)
 
     # Attach optional analyst note
     if notes:
@@ -670,50 +668,42 @@ async def transition_report_status(
     return report
 
 
-async def _sync_building_severity(
-    db: AsyncSession,
-    building_id: UUID,
-    new_report_severity: ReportDamageSeverity,
-) -> None:
-    """Update ``buildings.current_severity`` if new report severity is higher."""
+async def _recompute_building_severity(db: AsyncSession, building_id: UUID) -> None:
+    """Set ``buildings.current_severity`` to the worst non-rejected report.
+
+    Recomputed from scratch on every status change rather than only ever
+    raised (audit L-7): a single rejected "destroyed" report used to pin the
+    building at "destroyed" for good. Rejected reports are known to be false,
+    so they don't count. Duplicates still do: they are genuine reports of the
+    same damage, and dropping a "destroyed" duplicate merged into a "partial"
+    primary would understate it. With no counting reports the building goes
+    back to "none". Mirrors ``GISService.update_building_severity``.
+    """
+    await db.flush()  # make this transaction's status change visible below
     result = await db.execute(sa.select(Building).where(Building.id == building_id))
     building = result.scalar_one_or_none()
     if building is None:
         return
 
-    current_order = _SEVERITY_ORDER.get(
-        (
-            building.current_severity.value
-            if hasattr(building.current_severity, "value")
-            else str(building.current_severity)
-        ),
-        0,
-    )
-    new_order = _SEVERITY_ORDER.get(
-        (
-            new_report_severity.value
-            if hasattr(new_report_severity, "value")
-            else str(new_report_severity)
-        ),
-        0,
-    )
-
-    if new_order > current_order:
-        new_building_severity = _DAMAGE_TO_BUILDING_SEVERITY.get(
-            (
-                new_report_severity.value
-                if hasattr(new_report_severity, "value")
-                else str(new_report_severity)
-            ),
-            "none",
+    severities = await db.execute(
+        sa.select(Report.damage_severity).where(
+            Report.building_id == building_id,
+            Report.status != ReportStatus.rejected,
+            Report.damage_severity.isnot(None),
         )
-        building.current_severity = DamageSeverity(new_building_severity)
-        building.last_report_at = datetime.now(tz=timezone.utc)
-        logger.debug(
-            "Building %s severity updated to %s",
-            building_id,
-            new_building_severity,
-        )
+    )
+    worst = max(
+        (
+            _DAMAGE_TO_BUILDING_SEVERITY.get(
+                sev.value if hasattr(sev, "value") else str(sev), "none"
+            )
+            for sev in severities.scalars().all()
+        ),
+        key=lambda value: _SEVERITY_ORDER.get(value, 0),
+        default="none",
+    )
+    building.current_severity = DamageSeverity(worst)
+    logger.debug("Building %s severity recomputed as %s", building_id, worst)
 
 
 # ---------------------------------------------------------------------------
