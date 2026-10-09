@@ -158,8 +158,33 @@ ESRI DBF attribute names are limited to 10 characters.
 
 ---
 
+## Licensing and attribution
+
+Building footprints come from OpenStreetMap and Microsoft's Global ML
+Building Footprints, both under the
+[Open Database License (ODbL) 1.0](https://opendatacommons.org/licenses/odbl/1-0/).
+
+- **GeoJSON** exports carry a top-level `attribution` member (GeoJSON allows
+  extra top-level members): "Building footprints © OpenStreetMap
+  contributors and Microsoft Global ML Building Footprints, available under
+  the Open Database License (ODbL) 1.0."
+- **GeoJSON with `include_footprints=true`** joins reports to footprint
+  polygons, which makes it an *adapted database*. The payload and its
+  `footprints` collection also carry `license: "ODbL-1.0"` and `license_url`.
+  If you publish it, publish it under the ODbL with the attribution above.
+  Each footprint feature has `building_id`, `source` (`osm`,
+  `microsoft_africa` or `manual`) and `external_id` (for OSM,
+  `osm:way/<id>`), so it can be traced back to its source.
+- **CSV and Shapefile** exports contain report points only, not footprint
+  geometry. Credit the footprint sources wherever you show them on a map
+  next to footprints.
+- Matata never writes reports back into OpenStreetMap.
+
+---
+
 ## References
 
 - HDX Data Standards -- <https://data.humdata.org/>
 - Humanitarian Exchange Language (HXL) -- <https://hxlstandard.org/>
 - Microsoft / Google Open Buildings footprints (footprint import source)
+- OpenStreetMap copyright and licence -- <https://www.openstreetmap.org/copyright>
