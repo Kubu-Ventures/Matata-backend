@@ -13,13 +13,29 @@ Scoring signals (spec §10.1)
 | Image similarity    |  20 %  | pHash Hamming distance, decay 10 → 30 bits  |
 | Damage category     |  10 %  | crisis_type + infrastructure_type agreement |
 
-Composite = 0.4 × building + 0.3 × gps + 0.2 × image + 0.1 × category
+Composite = weighted mean of the signals available for the pair:
+
+    Σ wᵢ·sᵢ / Σ wᵢ   over the signals both reports have data for
+
+A signal is *available* only when both reports carry it: a building match
+on both (``building_id``), coordinates on both, a pHash on both. Category is
+always available. A missing signal is left out rather than scored 0, so an
+unmatched building or a report without a photo no longer counts as evidence
+that two reports differ. Before this, two reports of the same incident with
+no building match could never reach the flag threshold: the same photo at
+the same spot scored 0.3 + 0.2 + 0.1 = 0.6 at best, and different photos 0.4.
 
 Thresholds and actions (spec §10.2)
 -------------------------------------
-≥ 0.9  → AUTO_MERGE  — new report marked duplicate; primary photo updated.
+≥ 0.9  → AUTO_MERGE  — queued for analyst merge review.
 0.6–0.9 → FLAG        — stored independently with ``possible_duplicate_of_id``.
 < 0.6  → INDEPENDENT  — stored as a new unique incident.
+
+Merge review needs a building match and GPS on both reports: without
+footprints, GPS alone can't tell neighbouring houses apart, and a building
+matched from landmark text alone is too vague, so such pairs are capped at
+FLAG and an analyst decides. Pairs with no location signal at all (neither
+building nor GPS) are always INDEPENDENT.
 
 Design notes
 ------------
@@ -204,7 +220,8 @@ def _image_signal(phash_a: Optional[str], phash_b: Optional[str]) -> float:
     Score = 0.0 when Hamming distance ≥ 30 (visually dissimilar).
     Linear interpolation in between.
 
-    If either hash is absent, returns 0.0 (no signal — do not penalise).
+    If either hash is absent, returns 0.0; ``DuplicateScorer`` leaves the
+    signal out of the composite in that case, so it doesn't penalise.
     """
     if not phash_a or not phash_b:
         return 0.0
@@ -239,6 +256,41 @@ def _category_signal(
     infra_match = infra_type_a == infra_type_b
     matches = int(crisis_match) + int(infra_match)
     return matches * 0.5
+
+
+def _composite(
+    *,
+    incoming_building_id: Optional[UUID],
+    incoming_lat: Optional[float],
+    incoming_lng: Optional[float],
+    incoming_phash: Optional[str],
+    candidate: CandidateReport,
+    signals: tuple[float, float, float, float],
+) -> float:
+    """Weighted mean of the signals both reports have data for.
+
+    ``signals`` is ``(building, gps, image, category)``. Returns 0.0 when the
+    pair has no location signal (neither a building match on both nor
+    coordinates on both): category alone must never make a duplicate.
+    """
+    b, g, i, c = signals
+    has_building = (
+        incoming_building_id is not None and candidate.building_id is not None
+    )
+    has_gps = None not in (incoming_lat, incoming_lng, candidate.lat, candidate.lng)
+    has_image = bool(incoming_phash) and bool(candidate.photo_phash)
+    if not (has_building or has_gps):
+        return 0.0
+
+    weighted = [
+        (_W_BUILDING, b, has_building),
+        (_W_GPS, g, has_gps),
+        (_W_IMAGE, i, has_image),
+        (_W_CATEGORY, c, True),
+    ]
+    total_weight = sum(w for w, _, available in weighted if available)
+    score = sum(w * s for w, s, available in weighted if available)
+    return score / total_weight
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +367,14 @@ class DuplicateScorer:
                 candidate.infrastructure_type,
             )
 
-            composite = _W_BUILDING * b + _W_GPS * g + _W_IMAGE * i + _W_CATEGORY * c
+            composite = _composite(
+                incoming_building_id=incoming_building_id,
+                incoming_lat=incoming_lat,
+                incoming_lng=incoming_lng,
+                incoming_phash=incoming_phash,
+                candidate=candidate,
+                signals=(b, g, i, c),
+            )
 
             scored.append(
                 ScoredCandidate(
@@ -339,7 +398,16 @@ class DuplicateScorer:
             best.candidate.id,
         )
 
-        if best.composite_score >= _THRESHOLD_AUTO_MERGE:
+        # Merge review needs a building match AND GPS on both reports: a
+        # building matched from landmark text alone is too vague to queue a
+        # merge, and GPS alone can't separate neighbouring houses.
+        strong_location = (
+            incoming_building_id is not None
+            and best.candidate.building_id is not None
+            and None
+            not in (incoming_lat, incoming_lng, best.candidate.lat, best.candidate.lng)
+        )
+        if best.composite_score >= _THRESHOLD_AUTO_MERGE and strong_location:
             action = DuplicateAction.AUTO_MERGE
         elif best.composite_score >= _THRESHOLD_ANALYST_FLAG:
             action = DuplicateAction.ANALYST_FLAG

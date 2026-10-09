@@ -33,7 +33,9 @@ If ``ai_severity_prediction != damage_severity`` AND ``ai_confidence > 0.7``,
 Perceptual hash
 ---------------
 A pHash is computed from the downloaded image bytes and stored in
-``report.photo_phash`` (after confirming the image is usable or borderline).
+``report.photo_phash`` straight away, before the vision call. Duplicate
+scoring compares photos by this hash, so it must not depend on the vision
+provider succeeding or rating the image usable.
 
 Duplicate-scoring coordination
 -------------------------------
@@ -505,6 +507,17 @@ def _process_report_image_impl(
         # via the StorageService (see _download_image docstring).
         image_bytes = _download_image(photo_url)
 
+        # Store the perceptual hash before the vision call: duplicate scoring
+        # needs it even when the provider fails or rates the image unusable.
+        # Retries recompute the same value, so the write is idempotent.
+        photo_phash = _compute_phash(image_bytes)
+        if photo_phash is not None:
+            db.execute(
+                text("UPDATE report SET photo_phash = :phash WHERE id = :report_id"),
+                {"phash": photo_phash, "report_id": str(_report_id)},
+            )
+            db.commit()
+
         # ── 3. Call vision provider (Stage 3.1 + 3.2 in one batched call) ─────
         result: ImageAnalysisResult = asyncio.run(
             provider.analyse_damage_image(
@@ -564,14 +577,11 @@ def _process_report_image_impl(
                 "ai_severity_prediction": None,
                 "ai_confidence": None,
                 "ai_divergence": None,
-                "photo_phash": None,
+                "photo_phash": photo_phash,
                 "review_priority": priority,
             }
 
-        # ── 5. Compute perceptual hash (usable / borderline only) ─────────────
-        photo_phash = _compute_phash(image_bytes)
-
-        # ── 6. Evaluate divergence flag ────────────────────────────────────────
+        # ── 5. Evaluate divergence flag ────────────────────────────────────────
         # Threshold is read from Redis each task run so the active learning
         # loop can adjust sensitivity without a worker restart.
         divergence_threshold = _get_divergence_threshold()
@@ -580,14 +590,14 @@ def _process_report_image_impl(
             and result.ai_confidence > divergence_threshold
         )
 
-        # ── 7. Compute analyst queue priority ─────────────────────────────────
+        # ── 6. Compute analyst queue priority ─────────────────────────────────
         priority = _compute_review_priority(
             ai_confidence=result.ai_confidence,
             ai_quality_score=result.quality_score,
             ai_divergence=divergence,
         )
 
-        # ── 8. Write AI results back to report (Stage 3.2) ────────────────────
+        # ── 7. Write AI results back to report (Stage 3.2) ────────────────────
         # CRITICAL: ai_severity_prediction NEVER overwrites damage_severity.
         db.execute(
             text("""
@@ -625,7 +635,7 @@ def _process_report_image_impl(
             priority,
         )
 
-        # ── 9. Real-time SSE alert for divergent predictions ──────────────────
+        # ── 8. Real-time SSE alert for divergent predictions ──────────────────
         # Published AFTER commit so the report is readable when an analyst
         # clicks through.  Fire-and-forget: Redis failure never fails the task.
         if divergence:
