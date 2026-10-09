@@ -19,6 +19,7 @@ docs/
 !README.md
 
 # Python artefacts
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -29,8 +30,10 @@ dist/
 build/
 
 
-# Infrastructure configs — not needed inside the app container
+# Infrastructure configs — not needed inside the app container.
+# deploy/ also holds each county's generated secrets: never bake them in.
 infra/
+deploy/
 docker-compose*.yml
 Dockerfile
 
