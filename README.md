@@ -9,6 +9,8 @@
 
 Built and maintained by [Origin Africa Software Limited](https://www.origin.co.ke).
 
+Frontend (reporter app and analyst dashboard): [Kubu-Ventures/Matata](https://github.com/Kubu-Ventures/Matata).
+
 CrisisMap is a FastAPI backend that lets community members report infrastructure damage after a crisis (flood, earthquake, conflict, wildfire) with GPS coordinates and photos. Field analysts and responders triage reports, merge duplicates, and export structured datasets for field operational planning.
 
 ---
