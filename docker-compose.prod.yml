@@ -11,7 +11,10 @@ services:
     build:
       context: .
       target: production          # Use the hardened production Dockerfile stage
-    volumes: []                   # No code mount in production; image is immutable
+    # `!reset` is required: Compose merges list fields with the base file, so a
+    # plain `[]` would keep the base's code mount, dev command and ports.
+    volumes: !reset []            # No code mount in production; image is immutable
+    command: !reset null          # Use the image's entrypoint.sh + gunicorn CMD, not the base uvicorn --reload
     restart: unless-stopped
     environment:
       WEB_CONCURRENCY: "4"        # Gunicorn worker count; tune to (2 × vCPU) + 1
@@ -35,7 +38,7 @@ services:
   # ── PostgreSQL ───────────────────────────────────────────────
   postgres:
     restart: unless-stopped
-    ports: []                     # Not exposed externally in production
+    ports: !reset []              # Not exposed externally in production
     shm_size: "256m"              # Recommended for PostGIS workloads
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -43,7 +46,7 @@ services:
   # ── Redis ────────────────────────────────────────────────────
   redis:
     restart: unless-stopped
-    ports: []                     # Not exposed externally in production
+    ports: !reset []              # Not exposed externally in production
 
   # ── MinIO — self-hosted S3-compatible object storage ─────────
   # Stores reporter photo uploads. Fully compatible with the S3StorageService;
