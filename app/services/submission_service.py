@@ -64,6 +64,7 @@ import sqlalchemy as sa
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.audit_log import AuditLog
 from app.models.enums import PhotoStatus, ReportStatus
 from app.models.report import Report
@@ -77,8 +78,8 @@ logger = logging.getLogger(__name__)
 # Rate limiting constants
 # ---------------------------------------------------------------------------
 
-# Spec §5.4: maximum 10 submissions per token per hour.
-_RATE_LIMIT_MAX = 10
+# Spec §5.4: maximum submissions per token per hour, from
+# settings.REPORT_SUBMISSIONS_PER_HOUR (10 by default).
 _RATE_LIMIT_WINDOW_SECONDS = 3600  # 1 hour
 
 _NS = "crisismap:submission"
@@ -192,7 +193,8 @@ async def _check_rate_limit(token_hash: str, redis: Redis) -> None:
         redis:      Async Redis client.
 
     Raises:
-        RateLimitExceededError: If the reporter has exceeded 10 submissions/hour.
+        RateLimitExceededError: If the reporter has exceeded
+            ``settings.REPORT_SUBMISSIONS_PER_HOUR`` submissions in the hour.
     """
     key = _rate_limit_key(token_hash)
     count = await redis.incr(key)
@@ -200,15 +202,14 @@ async def _check_rate_limit(token_hash: str, redis: Redis) -> None:
         # First submission in this window — set the expiry.
         await redis.expire(key, _RATE_LIMIT_WINDOW_SECONDS)
 
-    if count > _RATE_LIMIT_MAX:
+    limit = settings.REPORT_SUBMISSIONS_PER_HOUR
+    if count > limit:
         logger.warning(
             "Rate limit exceeded for token hash %s… (count=%d)",
             token_hash[:8],
             count,
         )
-        raise RateLimitExceededError(
-            f"Maximum {_RATE_LIMIT_MAX} submissions per hour exceeded."
-        )
+        raise RateLimitExceededError(f"Maximum {limit} submissions per hour exceeded.")
 
 
 # ---------------------------------------------------------------------------
