@@ -144,6 +144,10 @@ class Settings(BaseSettings):
     # Expanded dynamically to min(accuracy_m * 1.5, 100) when GPS accuracy > 50 m.
     BUILDING_FOOTPRINT_SEARCH_RADIUS_M: int = 30
 
+    # Reports one reporter token may submit per hour (spec §5.4 sets 10).
+    # Raise it temporarily for field tests where one phone files many reports.
+    REPORT_SUBMISSIONS_PER_HOUR: int = 10
+
     # Reported GPS accuracy assumed when a client sends none, used to turn
     # distances into match probabilities (see GISService._probabilities).
     GPS_DEFAULT_ACCURACY_M: float = 15.0

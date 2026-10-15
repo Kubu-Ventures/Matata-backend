@@ -531,6 +531,24 @@ class TestRateLimitHelper:
             await _check_rate_limit("hash", redis)
 
     @pytest.mark.asyncio
+    async def test_limit_follows_setting(self):
+        """A raised REPORT_SUBMISSIONS_PER_HOUR lets the 11th report through."""
+        from app.services.submission_service import (
+            RateLimitExceededError,
+            _check_rate_limit,
+        )
+
+        redis = AsyncMock()
+        redis.expire = AsyncMock()
+        with patch("app.services.submission_service.settings") as s:
+            s.REPORT_SUBMISSIONS_PER_HOUR = 30
+            redis.incr = AsyncMock(return_value=30)
+            await _check_rate_limit("hash", redis)
+            redis.incr = AsyncMock(return_value=31)
+            with pytest.raises(RateLimitExceededError):
+                await _check_rate_limit("hash", redis)
+
+    @pytest.mark.asyncio
     async def test_expire_set_on_first_submission(self):
         from app.services.submission_service import _check_rate_limit
 
