@@ -223,7 +223,7 @@ async def _get_building_footprint_geojson(
         text(
             "SELECT ST_AsGeoJSON(footprint) AS geojson "
             "FROM building WHERE id = :building_id"
-        ).bindparams(building_id=str(building_id))
+        ).bindparams(sa.bindparam("building_id", building_id, type_=sa.Uuid))
     )
     result = row.fetchone()
     return result.geojson if result else None
