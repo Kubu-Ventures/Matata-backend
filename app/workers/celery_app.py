@@ -46,6 +46,8 @@ celery_app = Celery(
         "app.workers.duplicate_tasks",
         # Periodic pipeline reconciliation sweep (audit M-8 / M-9).
         "app.workers.reconciliation_tasks",
+        # Daily photo retention sweep (PHOTO_RETENTION_DAYS; off when 0).
+        "app.workers.retention_tasks",
         # Registers run_export_job — without this the celery-export worker
         # never imports the module, so the @celery_app.task decorator never
         # runs and every export.delay() lands as "Received unregistered
@@ -83,6 +85,7 @@ celery_app.conf.update(
         # The reconciliation sweep is light and infrequent — it rides the
         # duplicate queue's worker rather than needing its own.
         "app.workers.reconciliation_tasks.*": {"queue": "duplicate"},
+        "app.workers.retention_tasks.*": {"queue": "duplicate"},
     },
     # Default queue (for tasks without explicit routing)
     task_default_queue="default",
@@ -97,6 +100,13 @@ celery_app.conf.update(
             "task": "app.workers.reconciliation_tasks.reconcile_stuck_reports",
             "schedule": 300.0,
             "options": {"queue": "duplicate", "expires": 240},
+        },
+        # Photo retention sweep once a day. A no-op while
+        # PHOTO_RETENTION_DAYS is 0 (the default).
+        "purge-expired-photos": {
+            "task": "app.workers.retention_tasks.purge_expired_photos",
+            "schedule": 86400.0,
+            "options": {"queue": "duplicate", "expires": 3600},
         },
     },
     # Result TTL — keep task results for 1 hour

@@ -29,6 +29,11 @@ report committed (audit M-8 / M-9) — the same sweep Celery beat runs every
 
     python -m app.cli reconcile [--grace-minutes 15] [--limit 500]
 
+Delete report photos older than PHOTO_RETENTION_DAYS (or --days) — the same
+sweep Celery beat runs daily. --dry-run only counts what would be deleted:
+
+    python -m app.cli purge-photos [--days 90] [--limit 500] [--dry-run]
+
 All commands connect to the database defined by DATABASE_URL in the
 environment (or .env file).  No running server is required.
 """
@@ -220,6 +225,25 @@ def _reconcile(grace_minutes: int, limit: int) -> None:
         sys.exit(1)
 
 
+def _purge_photos(days: int | None, limit: int, dry_run: bool) -> None:
+    """Run the photo retention sweep synchronously (no Celery needed)."""
+    from app.workers.retention_tasks import _purge_impl
+
+    summary = _purge_impl(retention_days=days, limit=limit, dry_run=dry_run)
+    if summary["retention_days"] <= 0:
+        print("Photo retention is off (PHOTO_RETENTION_DAYS=0). Pass --days N to run.")
+        return
+    print(f"Photo retention sweep ({summary['retention_days']} days) complete:")
+    print(f"  photos past retention : {summary['expired']}")
+    if dry_run:
+        print("  dry run: nothing was deleted")
+    else:
+        print(f"  photos deleted        : {summary['deleted']}")
+    if summary["failed"]:
+        print(f"  delete failures (retried next run) : {summary['failed']}")
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -315,6 +339,29 @@ def main() -> None:
         help="Maximum reports to re-drive in one sweep (default 500).",
     )
 
+    # purge-photos
+    p_purge = sub.add_parser(
+        "purge-photos",
+        help="Delete report photos older than PHOTO_RETENTION_DAYS.",
+    )
+    p_purge.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="Retention in days; overrides PHOTO_RETENTION_DAYS for this run.",
+    )
+    p_purge.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Maximum photos to delete in one sweep (default 500).",
+    )
+    p_purge.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Count expired photos without deleting anything.",
+    )
+
     args = parser.parse_args()
 
     if args.command == "create-admin":
@@ -327,6 +374,8 @@ def main() -> None:
         asyncio.run(_deactivate_account(args.account_id))
     elif args.command == "reconcile":
         _reconcile(args.grace_minutes, args.limit)
+    elif args.command == "purge-photos":
+        _purge_photos(args.days, args.limit, args.dry_run)
     else:
         parser.print_help()
         sys.exit(1)
