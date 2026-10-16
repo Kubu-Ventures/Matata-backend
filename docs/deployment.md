@@ -232,5 +232,7 @@ All variables must be present in `.env` for production. Defaults shown where saf
 | `SENTRY_DSN` | — | Error tracking DSN | — |
 | `CELERY_BROKER_URL` | — | Celery broker (defaults to `REDIS_URL`) | `redis://redis:6379/1` |
 | `CELERY_RESULT_BACKEND` | — | Celery result backend | `redis://redis:6379/2` |
+| `PHOTO_RETENTION_DAYS` | ✅ | Days report photos are kept before the daily sweep deletes them. `0` (default) keeps them forever, which contradicts the published privacy policy. See [privacy.md](privacy.md) | `90` |
+| `MODERATION_PROVIDER` | ✅ | Set to `rekognition` so photos are checked for harmful content, as the privacy policy says | `rekognition` |
 
 > ✅* = Required when the feature is enabled.

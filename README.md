@@ -199,6 +199,10 @@ Every external dependency defaults to a safe stub that requires no credentials i
 
 See `.env.example` for the full reference including all production settings, rotation schedules, and security notes.
 
+### Privacy and data retention
+
+`PHOTO_RETENTION_DAYS` (default `0`, off) sets how many days report photos are kept before a daily sweep deletes them from storage; `python -m app.cli purge-photos --dry-run` previews it. The public privacy policy promises a retention period, so set this before going live. [docs/privacy.md](docs/privacy.md) lists every setting the policy depends on.
+
 ---
 
 ## Authentication

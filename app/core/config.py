@@ -148,6 +148,11 @@ class Settings(BaseSettings):
     # Raise it temporarily for field tests where one phone files many reports.
     REPORT_SUBMISSIONS_PER_HOUR: int = 10
 
+    # Days a report photo is kept before the retention sweep deletes it from
+    # storage (app/workers/retention_tasks.py). 0 keeps photos indefinitely
+    # (the default); the report record itself is never deleted by the sweep.
+    PHOTO_RETENTION_DAYS: int = 0
+
     # Reported GPS accuracy assumed when a client sends none, used to turn
     # distances into match probabilities (see GISService._probabilities).
     GPS_DEFAULT_ACCURACY_M: float = 15.0

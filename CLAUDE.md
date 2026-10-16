@@ -45,6 +45,7 @@ celery -A app.workers.celery_app worker -Q notifications --concurrency 2 --logle
 python -m app.cli create-admin --email admin@example.org
 python -m app.cli list-accounts
 python -m app.cli deactivate-account --id <uuid>
+python -m app.cli purge-photos [--days 90] [--dry-run]   # photo retention sweep (PHOTO_RETENTION_DAYS)
 python -m app.cli.import_footprints --source path/to/footprints.geojson
 python -m app.cli.import_footprints --source-type osm --source path/to/osm-buildings.geojson
 ```
@@ -167,3 +168,4 @@ Copy `.env.example` to `.env` and fill in these five values at minimum.
 - `docs/frontend-integration-guide.md` — full endpoint reference, auth patterns, request/response examples.
 - `docs/deployment.md` — production compose overrides, MinIO bucket setup, footprint import.
 - `docs/hdx_schema.md` — export column schema (GeoJSON/CSV/Shapefile).
+- `docs/privacy.md` — what is stored, the settings the public privacy policy depends on, photo retention.
