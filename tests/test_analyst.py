@@ -217,6 +217,23 @@ class TestGetBuildingFootprintGeoJson:
         assert result == '{"type":"Polygon"}'
 
     @pytest.mark.asyncio
+    async def test_binds_building_id_as_uuid(self):
+        # asyncpg rejects ``uuid = varchar``: a str bind compiles to
+        # ``$1::VARCHAR`` and the detail endpoint 500s on Postgres.
+        import sqlalchemy as sa
+
+        from app.services.analyst_service import _get_building_footprint_geojson
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_rows_result([]))
+        building_id = uuid4()
+        await _get_building_footprint_geojson(db, building_id)
+        stmt = db.execute.call_args.args[0]
+        param = stmt._bindparams["building_id"]
+        assert isinstance(param.type, sa.Uuid)
+        assert param.value == building_id
+
+    @pytest.mark.asyncio
     async def test_returns_none_when_no_row(self):
         from app.services.analyst_service import _get_building_footprint_geojson
 
