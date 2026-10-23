@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Built and maintained by [Origin Africa Software Limited](https://www.origin.co.ke).
+Built and maintained by [Origin Apex Solutions Africa Limited](https://www.origin.co.ke) (trading as Origin).
 
 Frontend (reporter app and analyst dashboard): [Kubu-Ventures/Matata](https://github.com/Kubu-Ventures/Matata).
 
