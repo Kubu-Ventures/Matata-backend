@@ -180,7 +180,7 @@ Evidence base, in increasing order of strength:
   never touch the database directly; services never import the web layer).
 * Automated tests. 731 tests at about 81 percent line coverage, runnable
   with no external services (SQLite plus an in-memory Celery broker).
-* Independent engineering audit. `01-backend-audit.md`, a full read of the
+* Internal engineering audit. `01-backend-audit.md`, a full read of the
   service, worker, route and model layers. Two high-severity issues and a
   set of medium issues were found and remediated the same day (regional
   access scoping, deduplication hash consistency, export PII handling,

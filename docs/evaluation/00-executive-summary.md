@@ -40,13 +40,13 @@ with `docker compose up` and was validated inside a 3.4 GB VM.
 
 From a clean simulation run of 120 synthetic reports with ground-truth
 labels, driven through the live stack and graded, plus the automated suite
-and an independent audit.
+and an internal engineering audit.
 
 | | |
 |---|---|
 | Automated tests | 731 passing, about 81 percent line coverage, no external services required |
 | Static analysis | `flake8`, `mypy`, `black`, `isort` all clean; architectural layering enforced |
-| Independent engineering audit | 2 high-severity plus several medium issues found, all remediated the same day with regression tests (`01-backend-audit.md` section 5) |
+| Internal engineering audit | 2 high-severity plus several medium issues found, all remediated the same day with regression tests (`01-backend-audit.md` section 5) |
 | GIS building match | 100 percent of GPS reports matched to the correct footprint, mean confidence 0.996 |
 | AI routing consistency | 100 percent agreement between the pipeline's routing and an independent recomputation from stored fields |
 | Deduplication | precision 1.0, recall 1.0, F1 1.0 against 8 planted duplicate clusters; exactly one dedup outcome per report |
