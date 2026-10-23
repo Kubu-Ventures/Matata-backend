@@ -21,7 +21,7 @@ Three layers of evidence, weakest to strongest.
 
 1. Static analysis and the automated test suite. Does the code hold
    together, do the units behave.
-2. An independent engineering audit. A manual read of the service, worker,
+2. An internal engineering audit. A manual read of the service, worker,
    route and model layers, looking for the failure modes that unit tests
    cannot reach.
 3. An end-to-end crisis simulation. Synthetic reports carrying ground-truth
