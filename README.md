@@ -428,4 +428,4 @@ To report a vulnerability, email **collins.kubu@gmail.com** directly. Do not ope
 
 ## License
 
-[Apache 2.0](LICENSE) -- Copyright 2026 Kubu Ventures
+[Apache 2.0](LICENSE) -- Copyright 2026 Origin Africa Software Limited
