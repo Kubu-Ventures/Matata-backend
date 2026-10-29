@@ -155,7 +155,8 @@ _COMMON_PARAMS = dict(
     description=(
         "Returns a GeoJSON FeatureCollection of filtered reports. "
         "If ``include_footprints=true`` is set, building footprint polygons are "
-        "appended as a separate FeatureCollection. "
+        "added to the same FeatureCollection, each feature tagged with "
+        "``feature_type`` (``report`` or ``building_footprint``). "
         "Exports > 10,000 records are processed asynchronously — the endpoint "
         "returns a job ID immediately. "
         "Requires ``analyst`` or ``responder`` role."

@@ -493,7 +493,8 @@ class TestExportServiceGeoJSON:
 
     @pytest.mark.asyncio
     async def test_geojson_include_footprints_payload_shape(self):
-        """When include_footprints=True the response has 'reports'/'footprints'."""
+        """With include_footprints=True the file is still one plain
+        FeatureCollection, so standard GIS tools can open it."""
         report = _make_report(building_id=str(uuid.uuid4()))
         db = _make_db_mock([report])
 
@@ -514,8 +515,9 @@ class TestExportServiceGeoJSON:
         filters = ExportFilterParams(include_footprints=True)
         result = await svc.export_geojson(filters, "2024-06-01")
         data = json.loads(result)
-        assert "reports" in data
-        assert "footprints" in data
+        assert data["type"] == "FeatureCollection"
+        assert "reports" not in data and "footprints" not in data
+        assert [f["properties"]["feature_type"] for f in data["features"]] == ["report"]
 
     @pytest.mark.asyncio
     async def test_geojson_carries_footprint_attribution(self):
@@ -559,14 +561,18 @@ class TestExportServiceGeoJSON:
         filters = ExportFilterParams(include_footprints=True)
         data = json.loads(await svc.export_geojson(filters, "2024-06-01"))
 
+        assert data["type"] == "FeatureCollection"
         assert data["license"] == "ODbL-1.0"
-        assert data["footprints"]["license"] == "ODbL-1.0"
-        assert "OpenStreetMap contributors" in data["footprints"]["attribution"]
-        props = data["footprints"]["features"][0]["properties"]
-        assert props == {
+        assert "OpenStreetMap contributors" in data["attribution"]
+        report_feature, footprint_feature = data["features"]
+        assert report_feature["properties"]["feature_type"] == "report"
+        assert report_feature["geometry"]["type"] == "Point"
+        assert footprint_feature["geometry"]["type"] == "Polygon"
+        assert footprint_feature["properties"] == {
             "building_id": str(building_id),
             "source": "osm",
             "external_id": "osm:way/540131184",
+            "feature_type": "building_footprint",
         }
 
     @pytest.mark.asyncio
@@ -579,7 +585,8 @@ class TestExportServiceGeoJSON:
         result = await svc.export_geojson(filters, "2024-06-01")
         data = json.loads(result)
         # No footprint DB query needed; result should still be valid
-        assert "reports" in data or "features" in data
+        assert data["type"] == "FeatureCollection"
+        assert len(data["features"]) == 1
 
     @pytest.mark.asyncio
     async def test_geojson_is_valid_utf8(self):
@@ -676,6 +683,19 @@ class TestExportServiceCSV:
         result = await svc.export_csv(ExportFilterParams())
         content = result.decode("utf-8-sig")
         assert ",-2+3" not in content
+
+    @pytest.mark.asyncio
+    async def test_csv_negative_coordinates_stay_numeric(self):
+        """Latitudes south of the equator are numbers, not formulas: no tab
+        prefix, so spreadsheets and GIS tools can read them as coordinates."""
+        report = _make_report(lat=-1.3120, lng=36.788)
+        db = _make_db_mock([report])
+        svc = ExportService(db=db, analyst_id_hash="x")
+        result = await svc.export_csv(ExportFilterParams())
+        row = next(csv.DictReader(io.StringIO(result.decode("utf-8-sig"))))
+        assert not row["lat"].startswith("\t")
+        assert float(row["lat"]) < 0
+        assert float(row["lng"]) == pytest.approx(36.788)
 
     @pytest.mark.asyncio
     async def test_csv_timestamps_iso8601(self):
