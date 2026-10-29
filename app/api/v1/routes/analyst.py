@@ -762,6 +762,37 @@ async def analyst_stream(
 
 
 # ---------------------------------------------------------------------------
+# GET /analyst/damaged-buildings — map layer of damaged building outlines
+# ---------------------------------------------------------------------------
+
+
+@analyst_router.get(
+    "/damaged-buildings",
+    status_code=status.HTTP_200_OK,
+    summary="Damaged buildings map layer",
+    description=(
+        "GeoJSON FeatureCollection with one Polygon per building that has at "
+        "least one non-rejected report, coloured by the worst reported "
+        "severity. Properties: ``building_id``, ``external_id``, "
+        "``severity``, ``report_count``, ``last_report_at``, "
+        "``latest_report_id``, ``lat``/``lng`` (building centroid). "
+        "Regional responders only see buildings with reports inside their "
+        "region. Requires ``analyst``, ``responder`` or ``admin`` role."
+    ),
+)
+async def damaged_buildings(
+    current_user: dict = Depends(
+        require_role(Role.analyst, Role.responder, Role.admin)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Return damaged building outlines for the map."""
+    return await analyst_service.get_damaged_buildings(
+        db, region_geojson=_region_geojson(current_user)
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /stats/summary — public, cached 60 s
 # ---------------------------------------------------------------------------
 
