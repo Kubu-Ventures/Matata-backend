@@ -2084,3 +2084,109 @@ class TestGetAiAccuracy:
 
         redis.lpush.assert_awaited_once()
         redis.ltrim.assert_awaited_once()
+
+
+# ============================================================
+# Damaged buildings map layer
+# ============================================================
+
+
+def _damaged_row(rank, geojson='{"type":"Polygon","coordinates":[]}', count=2):
+    from datetime import datetime, timezone
+
+    row = MagicMock()
+    row.building_id = uuid4()
+    row.external_id = "osm:way/871337677"
+    row.geojson = geojson
+    row.lat = -1.3135
+    row.lng = 36.783
+    row.rank = rank
+    row.report_count = count
+    row.last_report_at = datetime(2026, 10, 29, 6, 0, tzinfo=timezone.utc)
+    row.latest_report_id = uuid4()
+    return row
+
+
+class TestGetDamagedBuildings:
+    @pytest.mark.asyncio
+    async def test_one_polygon_per_building_with_worst_severity(self):
+        from app.services.analyst_service import get_damaged_buildings
+
+        rows = [_damaged_row(3), _damaged_row(1, count=1)]
+        result_mock = MagicMock()
+        result_mock.all = MagicMock(return_value=rows)
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=result_mock)
+
+        data = await get_damaged_buildings(db)
+
+        assert data["type"] == "FeatureCollection"
+        assert [f["properties"]["severity"] for f in data["features"]] == [
+            "destroyed",
+            "minimal",
+        ]
+        first = data["features"][0]
+        assert first["geometry"]["type"] == "Polygon"
+        props = first["properties"]
+        assert props["external_id"] == "osm:way/871337677"
+        assert props["report_count"] == 2
+        assert props["latest_report_id"] == str(rows[0].latest_report_id)
+        assert props["last_report_at"].startswith("2026-10-29")
+        assert (props["lat"], props["lng"]) == (-1.3135, 36.783)
+
+    @pytest.mark.asyncio
+    async def test_rejected_reports_excluded_and_region_applied(self):
+        from app.services.analyst_service import get_damaged_buildings
+
+        result_mock = MagicMock()
+        result_mock.all = MagicMock(return_value=[])
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=result_mock)
+
+        await get_damaged_buildings(db, region_geojson='{"type":"Polygon"}')
+
+        sql, params = db.execute.await_args.args
+        assert "<> 'rejected'" in str(sql)
+        assert "ST_Within" in str(sql)
+        assert params == {"region_geojson": '{"type":"Polygon"}'}
+
+    @pytest.mark.asyncio
+    async def test_skips_unparseable_footprint(self):
+        from app.services.analyst_service import get_damaged_buildings
+
+        result_mock = MagicMock()
+        result_mock.all = MagicMock(return_value=[_damaged_row(2, geojson=None)])
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=result_mock)
+
+        data = await get_damaged_buildings(db)
+        assert data["features"] == []
+
+
+class TestDamagedBuildingsRoute:
+    def test_analyst_gets_layer(self, mock_redis):
+        from fastapi.testclient import TestClient
+
+        from app.services import analyst_service
+
+        user = {"sub": "a" * 64, "role": "responder", "tier": 0}
+        client = TestClient(_make_app(user, mock_redis))
+        layer = {"type": "FeatureCollection", "features": []}
+        with patch.object(
+            analyst_service,
+            "get_damaged_buildings",
+            new=AsyncMock(return_value=layer),
+        ) as svc:
+            resp = client.get("/api/v1/analyst/damaged-buildings")
+
+        assert resp.status_code == 200
+        assert resp.json() == layer
+        svc.assert_awaited_once()
+
+    def test_reporter_is_forbidden(self, mock_redis):
+        from fastapi.testclient import TestClient
+
+        user = {"sub": "r" * 64, "role": "reporter", "tier": 0}
+        client = TestClient(_make_app(user, mock_redis), raise_server_exceptions=False)
+        resp = client.get("/api/v1/analyst/damaged-buildings")
+        assert resp.status_code == 403

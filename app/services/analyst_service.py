@@ -1378,3 +1378,93 @@ async def get_heatmap(
 
     await redis.set(_STATS_HEATMAP_KEY, json.dumps(geojson), ex=_STATS_CACHE_TTL)
     return geojson
+
+
+# ---------------------------------------------------------------------------
+# Damaged buildings map layer
+# ---------------------------------------------------------------------------
+
+_SEVERITY_RANK_SQL = (
+    "CASE r.damage_severity::text "
+    "WHEN 'destroyed' THEN 3 WHEN 'partial' THEN 2 WHEN 'minimal' THEN 1 "
+    "ELSE 0 END"
+)
+_RANK_TO_SEVERITY = {3: "destroyed", 2: "partial", 1: "minimal"}
+
+
+async def get_damaged_buildings(
+    db: AsyncSession,
+    region_geojson: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return every building with at least one live report as GeoJSON.
+
+    One Polygon feature per building, coloured by the worst severity among
+    its non-rejected reports. Computed from the reports directly, so a
+    rejected report stops colouring its building straight away.
+
+    Properties: ``building_id``, ``external_id`` (e.g. ``osm:way/123``),
+    ``severity``, ``report_count``, ``last_report_at``,
+    ``latest_report_id`` (to open the report), and the building centroid
+    as ``lat``/``lng`` (for directions links).
+
+    Args:
+        db:             Async database session.
+        region_geojson: Responder geographic scope; when set, only reports
+                        inside it count.
+
+    Returns:
+        GeoJSON FeatureCollection dict.
+    """
+    region_clause = ""
+    params: Dict[str, Any] = {}
+    if region_geojson:
+        region_clause = (
+            " AND ST_Within("
+            "ST_SetSRID(ST_Point(r.lng, r.lat), 4326), "
+            "ST_SetSRID(ST_GeomFromGeoJSON(:region_geojson), 4326))"
+        )
+        params["region_geojson"] = region_geojson
+
+    sql = text(f"""
+        SELECT
+            b.id                                   AS building_id,
+            b.external_id                          AS external_id,
+            ST_AsGeoJSON(b.footprint)              AS geojson,
+            ST_Y(b.centroid)                       AS lat,
+            ST_X(b.centroid)                       AS lng,
+            MAX({_SEVERITY_RANK_SQL})              AS rank,
+            COUNT(r.id)                            AS report_count,
+            MAX(r.created_at)                      AS last_report_at,
+            (ARRAY_AGG(r.id ORDER BY r.created_at DESC))[1] AS latest_report_id
+        FROM report r
+        JOIN building b ON b.id = r.building_id
+        WHERE r.status::text <> 'rejected'
+          AND r.damage_severity IS NOT NULL{region_clause}
+        GROUP BY b.id
+        """)
+    result = await db.execute(sql, params)
+
+    features = []
+    for row in result.all():
+        try:
+            geometry = json.loads(row.geojson)
+        except (TypeError, ValueError):
+            continue
+        last = row.last_report_at
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "building_id": str(row.building_id),
+                    "external_id": row.external_id,
+                    "severity": _RANK_TO_SEVERITY.get(int(row.rank or 0), "minimal"),
+                    "report_count": int(row.report_count),
+                    "last_report_at": last.isoformat() if last is not None else None,
+                    "latest_report_id": str(row.latest_report_id),
+                    "lat": row.lat,
+                    "lng": row.lng,
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
