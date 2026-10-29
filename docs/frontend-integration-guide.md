@@ -1215,7 +1215,7 @@ Additional parameter:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `include_footprints` | boolean | false | Append building footprint polygons to the export |
+| `include_footprints` | boolean | false | Add building footprint polygons to the same FeatureCollection (each feature tagged `feature_type`: `report` or `building_footprint`) |
 
 **Response: 200**
 

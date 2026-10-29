@@ -169,11 +169,14 @@ Building Footprints, both under the
   contributors and Microsoft Global ML Building Footprints, available under
   the Open Database License (ODbL) 1.0."
 - **GeoJSON with `include_footprints=true`** joins reports to footprint
-  polygons, which makes it an *adapted database*. The payload and its
-  `footprints` collection also carry `license: "ODbL-1.0"` and `license_url`.
-  If you publish it, publish it under the ODbL with the attribution above.
-  Each footprint feature has `building_id`, `source` (`osm`,
-  `microsoft_africa` or `manual`) and `external_id` (for OSM,
+  polygons, which makes it an *adapted database*. It is still one plain
+  FeatureCollection, so QGIS, ArcGIS, geojson.io and Kepler open it
+  directly: report points and footprint polygons sit side by side, and every
+  feature has `feature_type` (`report` or `building_footprint`) to split or
+  style them. The collection also carries `license: "ODbL-1.0"` and
+  `license_url`. If you publish it, publish it under the ODbL with the
+  attribution above. Each footprint feature has `building_id`, `source`
+  (`osm`, `microsoft_africa` or `manual`) and `external_id` (for OSM,
   `osm:way/<id>`), so it can be traced back to its source.
 - **CSV and Shapefile** exports contain report points only, not footprint
   geometry. Credit the footprint sources wherever you show them on a map

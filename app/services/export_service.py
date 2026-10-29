@@ -350,7 +350,11 @@ class ExportService:
         """Return a GeoJSON FeatureCollection as UTF-8 bytes.
 
         If ``filters.include_footprints`` is True, building footprint polygons
-        are appended as a second FeatureCollection in the response payload.
+        are added to the same FeatureCollection. Every feature then carries a
+        ``feature_type`` property (``"report"`` or ``"building_footprint"``)
+        so GIS tools can split or style the two. One plain FeatureCollection
+        keeps the file valid GeoJSON (RFC 7946), which QGIS, ArcGIS, geojson.io
+        and Kepler all open.
 
         Args:
             filters:  Active filter state.
@@ -362,7 +366,7 @@ class ExportService:
         records = await self._fetch_records(filters)
         await self._write_audit_log(filters, len(records), "geojson")
 
-        features = []
+        features: List[Dict[str, Any]] = []
         for rec in records:
             props = rec.to_dict()
             # Remove geometry fields from properties (they live in geometry).
@@ -391,27 +395,27 @@ class ExportService:
         }
 
         if filters.include_footprints:
+            for feature in features:
+                feature["properties"]["feature_type"] = "report"
             footprint_features = await self._fetch_footprint_features(records)
-            footprint_collection: Dict[str, Any] = {
+            for feature in footprint_features:
+                feature["properties"]["feature_type"] = "building_footprint"
+            collection = {
                 "type": "FeatureCollection",
                 **FOOTPRINT_LICENSE,
-                "features": footprint_features,
+                "features": features + footprint_features,
             }
-            payload = {
-                **FOOTPRINT_LICENSE,
-                "reports": collection,
-                "footprints": footprint_collection,
-            }
-        else:
-            payload = collection  # type: ignore[assignment]
 
-        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        return json.dumps(collection, ensure_ascii=False).encode("utf-8")
 
     async def export_csv(self, filters: ExportFilterParams) -> bytes:
         """Return a UTF-8 CSV with header row as bytes.
 
-        Enforces anti-formula-injection: field values beginning with
+        Enforces anti-formula-injection: text values beginning with
         ``=``, ``+``, ``-``, or ``@`` are prefixed with a tab character.
+        Numbers are written as-is: a negative latitude such as ``-1.31`` is
+        not a formula, and prefixing it would make spreadsheets and GIS tools
+        read every coordinate south of the equator as text.
 
         Args:
             filters: Active filter state.
@@ -443,6 +447,8 @@ class ExportService:
                     row[key] = "TRUE" if val else "FALSE"
                 elif val is None:
                     row[key] = ""
+                elif isinstance(val, (int, float)):
+                    row[key] = str(val)
                 else:
                     # Anti-formula injection
                     str_val = str(val)
