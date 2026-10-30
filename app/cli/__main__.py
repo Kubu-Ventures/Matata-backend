@@ -34,6 +34,20 @@ sweep Celery beat runs daily. --dry-run only counts what would be deleted:
 
     python -m app.cli purge-photos [--days 90] [--limit 500] [--dry-run]
 
+Register a paid field reporter under a code (the pilot organiser keeps
+the list matching codes to people; only the email hash and code are stored):
+
+    python -m app.cli add-field-reporter --email r@example.org --code KIB-01
+
+List field reporters, or deactivate one by code:
+
+    python -m app.cli list-field-reporters
+    python -m app.cli deactivate-field-reporter --code KIB-01
+
+Print the per-code report counts used for paying field reporters (CSV):
+
+    python -m app.cli field-reporter-summary [--from 2026-11-01] [--to 2026-11-08]
+
 All commands connect to the database defined by DATABASE_URL in the
 environment (or .env file).  No running server is required.
 """
@@ -245,6 +259,155 @@ def _purge_photos(days: int | None, limit: int, dry_run: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Field reporters
+# ---------------------------------------------------------------------------
+
+
+def _session_factory():
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.core.config import settings
+
+    engine = create_async_engine(settings.DATABASE_URL, echo=False)
+    return engine, async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def _add_field_reporter(email: str, code: str) -> None:
+    import sqlalchemy as sa
+
+    from app.models.field_reporter import FieldReporter
+    from app.services.auth_service import hash_identifier
+    from app.services.field_reporter_service import normalise_code
+
+    email = email.strip()
+    if not _EMAIL_RE.match(email):
+        print(f"ERROR: '{email}' is not a valid email address.")
+        sys.exit(1)
+    try:
+        code = normalise_code(code)
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(1)
+
+    email_hash = hash_identifier(email.lower())
+    engine, factory = _session_factory()
+    async with factory() as session:
+        clash = (
+            await session.execute(
+                sa.select(FieldReporter).where(
+                    sa.or_(
+                        FieldReporter.email_hash == email_hash,
+                        FieldReporter.code == code,
+                    )
+                )
+            )
+        ).scalar_one_or_none()
+        if clash is not None:
+            await engine.dispose()
+            if clash.email_hash == email_hash:
+                print(f"ERROR: This email is already registered as {clash.code}.")
+            else:
+                print(f"ERROR: Code {code} is already in use.")
+            sys.exit(1)
+
+        session.add(
+            FieldReporter(
+                id=uuid.uuid4(),
+                code=code,
+                email_hash=email_hash,
+                created_by_sub="cli",
+                is_active=True,
+            )
+        )
+        await session.commit()
+    await engine.dispose()
+    print(f"SUCCESS: Field reporter {code} registered.")
+    print("Reports they send after signing in with this email are tagged with")
+    print("the code. If they were already signed in, they must sign out and in.")
+
+
+async def _list_field_reporters() -> None:
+    import sqlalchemy as sa
+
+    from app.models.field_reporter import FieldReporter
+
+    engine, factory = _session_factory()
+    async with factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    sa.select(FieldReporter).order_by(FieldReporter.code)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    await engine.dispose()
+
+    if not rows:
+        print("No field reporters registered.")
+        return
+    fmt = "{:<10}  {:<8}  {}"
+    print(fmt.format("CODE", "ACTIVE", "REGISTERED AT"))
+    print("-" * 44)
+    for row in rows:
+        print(
+            fmt.format(
+                row.code,
+                "yes" if row.is_active else "no",
+                str(row.created_at)[:19] if row.created_at else "—",
+            )
+        )
+
+
+async def _deactivate_field_reporter(code: str) -> None:
+    import sqlalchemy as sa
+
+    from app.models.field_reporter import FieldReporter
+
+    code = code.strip().upper()
+    engine, factory = _session_factory()
+    async with factory() as session:
+        row = (
+            await session.execute(
+                sa.select(FieldReporter).where(FieldReporter.code == code)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            await engine.dispose()
+            print(f"ERROR: No field reporter with code {code}.")
+            sys.exit(1)
+        row.is_active = False
+        await session.commit()
+    await engine.dispose()
+    print(f"SUCCESS: Field reporter {code} deactivated. New reports are no")
+    print("longer tagged with this code; past reports keep it.")
+
+
+async def _field_reporter_summary(date_from: str | None, date_to: str | None) -> None:
+    from datetime import datetime, timezone
+
+    from app.services.field_reporter_service import payment_summary, summary_to_csv
+
+    def _parse(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+        except ValueError:
+            print(f"ERROR: '{value}' is not a date like 2026-11-01.")
+            sys.exit(1)
+
+    engine, factory = _session_factory()
+    async with factory() as session:
+        rows = await payment_summary(
+            session, date_from=_parse(date_from), date_to=_parse(date_to)
+        )
+    await engine.dispose()
+    print(summary_to_csv(rows), end="")
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -362,6 +525,28 @@ def main() -> None:
         help="Count expired photos without deleting anything.",
     )
 
+    # field reporters
+    p_fr = sub.add_parser(
+        "add-field-reporter",
+        help="Register a paid field reporter's email under a code like KIB-01.",
+    )
+    p_fr.add_argument("--email", required=True, metavar="EMAIL")
+    p_fr.add_argument("--code", required=True, metavar="CODE")
+
+    sub.add_parser("list-field-reporters", help="List registered field reporters.")
+
+    p_fr_deact = sub.add_parser(
+        "deactivate-field-reporter", help="Stop tagging reports with a code."
+    )
+    p_fr_deact.add_argument("--code", required=True, metavar="CODE")
+
+    p_fr_sum = sub.add_parser(
+        "field-reporter-summary",
+        help="CSV of report counts per field reporter code, for payment.",
+    )
+    p_fr_sum.add_argument("--from", dest="date_from", default=None, metavar="DATE")
+    p_fr_sum.add_argument("--to", dest="date_to", default=None, metavar="DATE")
+
     args = parser.parse_args()
 
     if args.command == "create-admin":
@@ -376,6 +561,14 @@ def main() -> None:
         _reconcile(args.grace_minutes, args.limit)
     elif args.command == "purge-photos":
         _purge_photos(args.days, args.limit, args.dry_run)
+    elif args.command == "add-field-reporter":
+        asyncio.run(_add_field_reporter(args.email, args.code))
+    elif args.command == "list-field-reporters":
+        asyncio.run(_list_field_reporters())
+    elif args.command == "deactivate-field-reporter":
+        asyncio.run(_deactivate_field_reporter(args.code))
+    elif args.command == "field-reporter-summary":
+        asyncio.run(_field_reporter_summary(args.date_from, args.date_to))
     else:
         parser.print_help()
         sys.exit(1)

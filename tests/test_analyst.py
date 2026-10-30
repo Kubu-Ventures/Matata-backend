@@ -79,6 +79,12 @@ def _make_report(
     r.possible_duplicate_of_id = None
     r.duplicate_score = None
     r.analyst_severity_override = None
+    r.field_reporter_code = None
+    r.medical_help_needed = None
+    r.info_request_message = None
+    r.info_requested_at = None
+    r.reporter_followup = None
+    r.info_responded_at = None
     r.review_priority = ReviewPriority.normal
     r.analyst_notes = []
     r.created_at = datetime.now(tz=timezone.utc)

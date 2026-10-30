@@ -281,7 +281,8 @@ These are the only accepted string values for enum fields. Sending any other val
 | `flood` | Flooding event |
 | `earthquake` | Seismic event |
 | `conflict` | Armed conflict or civil unrest |
-| `wildfire` | Fire event |
+| `wildfire` | Vegetation or bush fire |
+| `fire` | Building or settlement fire (common in informal settlements) |
 | `other` | Any other crisis type |
 
 ### infrastructure_type
@@ -337,9 +338,22 @@ These are the only accepted string values for enum fields. Sending any other val
 
 `functional` | `non_functional` | `unknown`
 
-### health_services_status
+### medical_help_needed
+
+`urgent` | `not_urgent` | `none`
+
+Asked as "Does anyone here need medical help?". `urgent` puts the report at
+the top of the analyst queue (`review_priority=critical`), and the AI worker
+never lowers it. When the answer is `urgent` or `not_urgent`, show the nearest
+health facilities (`GET /api/v1/gis/health-facilities/nearby`, section 5.6)
+and the emergency numbers.
+
+### health_services_status (legacy)
 
 `accessible` | `inaccessible` | `unknown`
+
+No longer asked by the app; still accepted so older offline-queued reports
+sync, and still returned for older reports.
 
 ### rejection reason codes (used when rejecting a report)
 
@@ -589,6 +603,70 @@ Form fields:
 | 403 | The report belongs to a different session |
 | 404 | Report ID does not exist |
 | 422 | Photo rejected by content moderation |
+
+### 5.6 Nearest Health Facilities
+
+```
+GET /api/v1/gis/health-facilities/nearby?lat=-1.3133&lng=36.7870&limit=3
+```
+
+No login needed. Returns up to `limit` (1 to 10, default 3) hospitals,
+clinics and health centres within 5 km, nearest first, from OpenStreetMap
+data loaded with `python -m app.cli.import_health_facilities`.
+
+```json
+{
+  "items": [
+    {
+      "name": "Kibera Clinic",
+      "facility_type": "clinic",
+      "lat": -1.3115,
+      "lng": 36.7881,
+      "distance_m": 230.4,
+      "phone": null,
+      "opening_hours": null
+    }
+  ],
+  "attribution": "© OpenStreetMap contributors"
+}
+```
+
+`facility_type` is one of `hospital`, `clinic`, `health_centre`, `doctors`.
+Show the `attribution` text wherever the list appears. Opening times may be
+missing or out of date, so tell the reporter to check the facility is open
+and to call 999 or 112 in an emergency.
+
+### 5.7 Answer a Request for More Information
+
+An analyst can ask the reporter for more detail. `GET /api/v1/reports` and
+`GET /api/v1/reports/{id}` then return:
+
+| Field | Meaning |
+|---|---|
+| `info_request_message` | The analyst's question |
+| `info_requested_at` | When it was asked |
+| `reporter_followup` | The reporter's answer, once sent |
+| `info_responded_at` | When the answer was sent (null = still waiting) |
+
+A report needs an answer when `info_requested_at` is set and
+`info_responded_at` is null. Show a "More info needed" badge and a reply box.
+
+```
+POST /api/v1/reports/{id}/additional-info
+Content-Type: application/json
+
+{ "text": "The roof is gone on the left side." }
+```
+
+Returns the updated report (same shape as 5.4). To add or replace the photo,
+use `PATCH /api/v1/reports/{id}/photo` (5.5). The original report fields are
+never changed.
+
+| Code | Meaning |
+|---|---|
+| 403 | The report belongs to a different session |
+| 404 | Report ID does not exist |
+| 409 | No open request (never asked, or already answered) |
 
 ---
 
@@ -973,6 +1051,51 @@ Authorization: Bearer <analyst-token>
 
 This endpoint also applies the recommended divergence threshold to the live system when `high_confidence_feedback_count >= min_sample_for_calibration`. Call it periodically (e.g. once per analyst session) to keep the AI calibration current.
 
+### 6.9 Ask the Reporter for More Information
+
+```
+POST /api/v1/analyst/reports/{id}/request-info
+Authorization: Bearer <analyst token>
+
+{ "message": "Please add a photo of the roof." }
+```
+
+Only for reports still awaiting review (`pending` or `pending_merge_review`);
+otherwise 409. The reporter sees the message in My reports. Asking again
+replaces the open question; every question and answer is also kept in the
+analyst notes and the audit log. When the reporter answers, the report moves
+to at least `high` priority, and `GET /analyst/reports/{id}` returns
+`info_request_message`, `info_requested_at`, `reporter_followup` and
+`info_responded_at`. The list feed returns `info_requested_at` and
+`info_responded_at` so the UI can mark reports waiting for or with a reply.
+
+### 6.10 Field Reporter Codes and Payment Summary
+
+Registered pilot reporters are tagged with a code such as `KIB-01`
+(`field_reporter_code` in the analyst list and detail; never in exports or
+public endpoints). Register them with
+`python -m app.cli add-field-reporter --email <their login email> --code KIB-01`.
+
+```
+GET /api/v1/analyst/field-reporters/summary?date_from=2026-11-02T00:00:00Z&date_to=2026-11-09T00:00:00Z
+GET /api/v1/analyst/field-reporters/summary?format=csv
+```
+
+Requires `analyst` or `admin`. One row per registered code, including codes
+with no reports in the period:
+
+```json
+{
+  "date_from": "2026-11-02T00:00:00Z",
+  "date_to": "2026-11-09T00:00:00Z",
+  "items": [
+    { "code": "KIB-01", "total": 14, "verified": 11, "pending": 1, "rejected": 1, "duplicate": 1 }
+  ]
+}
+```
+
+`pending` includes reports waiting for a duplicate-merge decision.
+
 ---
 
 ## 7. Admin Flow
@@ -1126,6 +1249,7 @@ GET /api/v1/stats/summary
     "earthquake": 80,
     "conflict": 142,
     "wildfire": 60,
+    "fire": 0,
     "other": 40
   },
   "pending_duplicate_count": 7,

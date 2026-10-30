@@ -14,6 +14,8 @@ settings that policy depends on, so a deployment does what the policy says.
 | Photo fingerprint | `report.photo_phash` | Used for duplicate detection; not an image |
 | Reporter identity | `report.reporter_token_hash` | Salted SHA-256 of the session token, never the token |
 | Login identifiers (email, Privy DID, phone) | `analyst_accounts`, JWT `sub` | Salted SHA-256 only; plaintext never stored or logged |
+| Field reporter code (e.g. `KIB-01`) | `field_reporters`, `report.field_reporter_code` | Only for registered, paid pilot reporters. The code and a salted email hash are stored; names and phone numbers stay with the organisation running the pilot. Shown to analysts only, never exported or shown on the public map |
+| Reporter's reply to a request for more information | `report.reporter_followup` | Free text, HTML-stripped. Shown to analysts only, never exported |
 | Analyst notes | `analyst_note` | Never exported |
 | Audit trail | `audit_log` | Hashed actor ids only |
 

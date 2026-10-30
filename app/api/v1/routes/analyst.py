@@ -72,6 +72,10 @@ from app.schemas.analyst_schemas import (
     AnalystNoteCreateRequest,
     AnalystNoteOut,
     ConfirmMergeResponse,
+    FieldReporterSummaryItem,
+    FieldReporterSummaryResponse,
+    InfoRequestCreate,
+    InfoRequestResponse,
     MergeRequest,
     MergeResponse,
     PaginatedReports,
@@ -82,7 +86,7 @@ from app.schemas.analyst_schemas import (
     StatsSummaryResponse,
     StatusTransitionRequest,
 )
-from app.services import analyst_service
+from app.services import analyst_service, field_reporter_service
 from app.services.auth_service import Role
 from app.services.storage_service import StorageError, get_storage_service
 
@@ -465,6 +469,106 @@ async def create_note(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# POST /analyst/reports/{id}/request-info — ask the reporter for more detail
+# ---------------------------------------------------------------------------
+
+
+@analyst_router.post(
+    "/reports/{report_id}/request-info",
+    response_model=InfoRequestResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Ask the reporter for more information",
+    description=(
+        "Sends a short message to the reporter, shown in their My reports "
+        "page, asking them to add detail or a photo. The original report is "
+        "never edited. Only reports still awaiting review (pending or "
+        "pending_merge_review) can be sent back. The request is also saved "
+        "as an analyst note and in the audit log. Requires ``analyst`` role."
+    ),
+)
+async def request_info(
+    report_id: UUID,
+    body: InfoRequestCreate,
+    current_user: dict = Depends(require_role(Role.analyst, Role.admin)),
+    db: AsyncSession = Depends(get_db),
+) -> InfoRequestResponse:
+    """Ask the reporter of *report_id* for more information."""
+    try:
+        report = await analyst_service.request_more_info(
+            db,
+            report_id,
+            message=body.message,
+            analyst_id_hash=_analyst_id_hash(current_user),
+        )
+        await db.commit()
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+
+    return InfoRequestResponse(
+        id=report.id,
+        info_request_message=report.info_request_message or "",
+        info_requested_at=report.info_requested_at or datetime.now(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /analyst/field-reporters/summary — report counts per reporter code
+# ---------------------------------------------------------------------------
+
+
+@analyst_router.get(
+    "/field-reporters/summary",
+    status_code=status.HTTP_200_OK,
+    summary="Report counts per field reporter code",
+    description=(
+        "For paying registered field reporters. Returns, for each reporter "
+        "code, how many reports were sent in the period and how many were "
+        "verified, are still pending, were rejected, or were duplicates. "
+        "Contains codes only, never names or contact details. Pass "
+        "``format=csv`` to download a spreadsheet. Requires ``analyst`` or "
+        "``admin`` role."
+    ),
+    response_model=FieldReporterSummaryResponse,
+)
+async def field_reporter_summary(
+    date_from: Optional[datetime] = Query(
+        default=None, description="Count reports created at or after this time."
+    ),
+    date_to: Optional[datetime] = Query(
+        default=None, description="Count reports created before this time."
+    ),
+    format: str = Query(default="json", pattern="^(json|csv)$"),
+    current_user: dict = Depends(require_role(Role.analyst, Role.admin)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return per-code report counts as JSON or CSV."""
+    rows = await field_reporter_service.payment_summary(
+        db, date_from=date_from, date_to=date_to
+    )
+    if format == "csv":
+        return Response(
+            content=field_reporter_service.summary_to_csv(rows),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": (
+                    'attachment; filename="field-reporter-summary.csv"'
+                )
+            },
+        )
+    return FieldReporterSummaryResponse(
+        date_from=date_from,
+        date_to=date_to,
+        items=[FieldReporterSummaryItem(**vars(r)) for r in rows],
+    )
 
 
 # ---------------------------------------------------------------------------

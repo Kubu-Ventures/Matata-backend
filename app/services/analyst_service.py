@@ -477,6 +477,7 @@ async def get_report_detail(
         landmark_description=report.landmark_description,
         electricity_status=report.electricity_status,
         health_services_status=report.health_services_status,
+        medical_help_needed=report.medical_help_needed,
         most_pressing_needs=report.most_pressing_needs,
         debris_clearing_needed=report.debris_clearing_needed,
         photo_url=report.photo_url,
@@ -487,6 +488,11 @@ async def get_report_detail(
         ai_divergence=report.ai_divergence,
         status=report.status,
         reporter_trust_tier=report.reporter_trust_tier,
+        field_reporter_code=report.field_reporter_code,
+        info_request_message=report.info_request_message,
+        info_requested_at=report.info_requested_at,
+        reporter_followup=report.reporter_followup,
+        info_responded_at=report.info_responded_at,
         analyst_notes=notes_out,
         building_timeline=building_timeline,
         created_at=cast(datetime, report.created_at),
@@ -829,6 +835,81 @@ async def create_analyst_note(
     await db.flush()
 
     return AnalystNoteOut.model_validate(note)
+
+
+# ---------------------------------------------------------------------------
+# Public API — ask the reporter for more information
+# ---------------------------------------------------------------------------
+
+# Only reports still awaiting a decision can be sent back to the reporter.
+_INFO_REQUEST_STATUSES = frozenset(
+    {ReportStatus.pending.value, ReportStatus.pending_merge_review.value}
+)
+
+
+async def request_more_info(
+    db: AsyncSession,
+    report_id: UUID,
+    *,
+    message: str,
+    analyst_id_hash: str,
+) -> Report:
+    """Ask the reporter to add detail to a report awaiting review.
+
+    The message is shown to the reporter in My reports. Any earlier reply is
+    cleared from the report (it stays in the analyst notes and audit log), so
+    the report waits for an answer to the new question. The request is also
+    saved as an analyst note so the history reads in order.
+
+    Raises:
+        LookupError: The report does not exist.
+        ValueError:  The report has already been decided.
+    """
+    from app.services.submission_service import _sanitise_text
+
+    clean = _sanitise_text(message, 1000)
+    if not clean:
+        raise ValueError("The message cannot be empty.")
+
+    result = await db.execute(sa.select(Report).where(Report.id == report_id))
+    report = result.scalar_one_or_none()
+    if report is None:
+        raise LookupError(f"Report {report_id} not found.")
+
+    current_status = getattr(report.status, "value", report.status)
+    if str(current_status) not in _INFO_REQUEST_STATUSES:
+        raise ValueError(
+            "More information can only be requested on a report that is "
+            "still awaiting review."
+        )
+
+    before = {
+        "info_request_message": report.info_request_message,
+        "reporter_followup": report.reporter_followup,
+    }
+    now = datetime.now(timezone.utc)
+    report.info_request_message = clean
+    report.info_requested_at = now
+    report.reporter_followup = None
+    report.info_responded_at = None
+
+    db.add(
+        AnalystNote(
+            report_id=report_id,
+            analyst_id_hash=analyst_id_hash,
+            body=f"Asked the reporter for more information: {clean}",
+        )
+    )
+    await _write_audit_log(
+        db,
+        operation="report.info_requested",
+        actor_id_hash=analyst_id_hash,
+        record_id=report_id,
+        before_state=before,
+        after_state={"info_request_message": clean},
+    )
+    await db.flush()
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -1282,6 +1363,7 @@ async def get_stats_summary(
         "earthquake": 0,
         "conflict": 0,
         "wildfire": 0,
+        "fire": 0,
         "other": 0,
     }
     for crisis_row in crisis_rows:

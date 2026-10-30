@@ -211,6 +211,30 @@ def _publish_analyst_event(payload: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+_PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2, "critical": 3}
+
+
+def _apply_priority_floor(
+    priority: str,
+    *,
+    medical_help_needed: Optional[object] = None,
+    info_responded_at: Optional[object] = None,
+) -> str:
+    """Never let the AI score lower a priority the reporter's answers set.
+
+    Someone needing urgent medical help keeps the report at ``critical``.
+    A reporter's reply to a request for more info keeps it at ``high``.
+    """
+    floor = "low"
+    if str(getattr(medical_help_needed, "value", medical_help_needed)) == "urgent":
+        floor = "critical"
+    elif info_responded_at is not None:
+        floor = "high"
+    if _PRIORITY_RANK.get(priority, 1) < _PRIORITY_RANK[floor]:
+        return floor
+    return priority
+
+
 def _compute_review_priority(
     *,
     ai_confidence: Optional[float],
@@ -472,7 +496,8 @@ def _process_report_image_impl(
         row = db.execute(
             text("""
                 SELECT id, photo_url, damage_severity, lat, lng,
-                       crisis_type, infrastructure_type
+                       crisis_type, infrastructure_type,
+                       medical_help_needed, info_responded_at
                 FROM report
                 WHERE id = :report_id
             """),
@@ -554,6 +579,11 @@ def _process_report_image_impl(
                 ai_quality_score=result.quality_score,
                 ai_divergence=False,
             )
+            priority = _apply_priority_floor(
+                priority,
+                medical_help_needed=getattr(row, "medical_help_needed", None),
+                info_responded_at=getattr(row, "info_responded_at", None),
+            )
             db.execute(
                 text("""
                     UPDATE report
@@ -605,6 +635,11 @@ def _process_report_image_impl(
             ai_confidence=result.ai_confidence,
             ai_quality_score=result.quality_score,
             ai_divergence=divergence,
+        )
+        priority = _apply_priority_floor(
+            priority,
+            medical_help_needed=getattr(row, "medical_help_needed", None),
+            info_responded_at=getattr(row, "info_responded_at", None),
         )
 
         # ── 7. Write AI results back to report (Stage 3.2) ────────────────────

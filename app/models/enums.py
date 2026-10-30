@@ -26,6 +26,7 @@ class CrisisType(str, enum.Enum):
     earthquake = "earthquake"
     conflict = "conflict"
     wildfire = "wildfire"
+    fire = "fire"
     other = "other"
 
 
@@ -54,6 +55,18 @@ class HealthServicesStatus(str, enum.Enum):
     accessible = "accessible"
     inaccessible = "inaccessible"
     unknown = "unknown"
+
+
+class MedicalHelpNeeded(str, enum.Enum):
+    """Whether someone at the reported location needs medical help.
+
+    Replaces the old ``HealthServicesStatus`` question on the form. ``urgent``
+    raises the report's review priority so an analyst sees it first.
+    """
+
+    urgent = "urgent"
+    not_urgent = "not_urgent"
+    none = "none"
 
 
 class PhotoStatus(str, enum.Enum):

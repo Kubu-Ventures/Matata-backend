@@ -72,16 +72,19 @@ from app.schemas.report_submission import (
     ReportCreateResponse,
     ReportCreateSchema,
     ReportDetailResponse,
+    ReporterFollowupRequest,
     ReportPhotoResponse,
 )
 from app.services.queue_service import RedisQueueService
 from app.services.submission_service import (
     ModerationRejectionError,
+    NoInfoRequestError,
     RateLimitExceededError,
     ReportNotFoundError,
     ReportOwnershipError,
     SubmissionError,
     add_photo_to_report,
+    add_reporter_followup,
     create_report,
     get_nearby_reports,
     get_own_report,
@@ -226,6 +229,9 @@ async def submit_report(
                 if meta.health_services_status
                 else None
             ),
+            medical_help_needed=(
+                meta.medical_help_needed.value if meta.medical_help_needed else None
+            ),
             most_pressing_needs=meta.most_pressing_needs,
             debris_clearing_needed=meta.debris_clearing_needed,
             offline_queued_at=meta.offline_queued_at,
@@ -327,6 +333,67 @@ async def list_my_reports(
         limit=limit,
         items=[ReportDetailResponse.model_validate(r) for r in reports],
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /reports/{id}/additional-info — answer an analyst's question
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{report_id}/additional-info",
+    response_model=ReportDetailResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Answer a request for more information",
+    description=(
+        "Lets the reporter answer an analyst's request for more detail. The "
+        "original report is not changed; the answer is stored beside it and "
+        "the report moves up the analyst queue. To add or replace the photo, "
+        "use ``PATCH /reports/{id}/photo``. The caller must be the original "
+        "submitter, and the report must have an unanswered request (409 "
+        "otherwise)."
+    ),
+)
+async def add_additional_info(
+    report_id: UUID,
+    body: ReporterFollowupRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    lang: str = Depends(get_locale),
+) -> ReportDetailResponse:
+    """Store the reporter's reply to an analyst's request for more info."""
+    try:
+        report = await add_reporter_followup(
+            report_id=report_id,
+            reporter_token=current_user.get("sub", ""),
+            text_body=body.text,
+            db=db,
+        )
+        await db.commit()
+    except ReportNotFoundError as exc:
+        raise LocalisedHTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            message_key="errors.report_not_found",
+            lang=lang,
+        ) from exc
+    except ReportOwnershipError as exc:
+        raise LocalisedHTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            message_key="errors.report_ownership",
+            lang=lang,
+        ) from exc
+    except NoInfoRequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This report has no open request for more information.",
+        ) from exc
+    except SubmissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="The reply cannot be empty.",
+        ) from exc
+
+    return ReportDetailResponse.model_validate(report)
 
 
 # ---------------------------------------------------------------------------

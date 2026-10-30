@@ -27,6 +27,7 @@ from app.models.enums import (
     ElectricityStatus,
     HealthServicesStatus,
     InfrastructureType,
+    MedicalHelpNeeded,
     PhotoStatus,
     ReportDamageSeverity,
     ReportStatus,
@@ -88,6 +89,11 @@ class Report(TimestampMixin, Base):
     health_services_status: Mapped[Optional[HealthServicesStatus]] = mapped_column(
         sa.Enum(HealthServicesStatus, name="health_services_status_enum"), nullable=True
     )
+    # Asked on the form in place of health_services_status, which is kept so
+    # older reports still read correctly.
+    medical_help_needed: Mapped[Optional[MedicalHelpNeeded]] = mapped_column(
+        sa.Enum(MedicalHelpNeeded, name="medical_help_needed_enum"), nullable=True
+    )
     most_pressing_needs: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
     debris_clearing_needed: Mapped[Optional[bool]] = mapped_column(
         sa.Boolean, nullable=True
@@ -116,6 +122,25 @@ class Report(TimestampMixin, Base):
     reporter_token_hash: Mapped[str] = mapped_column(sa.String, nullable=False)
     reporter_trust_tier: Mapped[int] = mapped_column(
         sa.Integer, nullable=False, default=0, server_default="0"
+    )
+    # Code of the registered field reporter who sent this report (e.g.
+    # "KIB-01"), or None for members of the public. Shown to analysts only,
+    # never in public map data or exports. The pilot organiser keeps the
+    # list matching codes to people; Matata stores no names.
+    field_reporter_code: Mapped[Optional[str]] = mapped_column(
+        sa.String(32), nullable=True, index=True
+    )
+
+    # ── Request for more information ─────────────────────────────────────────
+    # An analyst can ask the reporter for more detail. The reporter sees the
+    # message in "My reports" and replies; the original report is unchanged.
+    info_request_message: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
+    info_requested_at: Mapped[Optional[datetime]] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    reporter_followup: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
+    info_responded_at: Mapped[Optional[datetime]] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
     )
 
     # ── Offline sync ──────────────────────────────────────────────────────────

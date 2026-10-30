@@ -58,7 +58,7 @@ class TestEnums:
     def test_crisis_type_values(self):
         from app.models.enums import CrisisType
 
-        expected = {"flood", "earthquake", "conflict", "wildfire", "other"}
+        expected = {"flood", "earthquake", "conflict", "wildfire", "fire", "other"}
         assert {e.value for e in CrisisType} == expected
 
     def test_infrastructure_type_values(self):

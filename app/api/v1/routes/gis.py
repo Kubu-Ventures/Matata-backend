@@ -26,9 +26,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_redis, get_sync_db
+from app.core.dependencies import get_db, get_redis, get_sync_db
 from app.services.geocoding_service import get_geocoding_provider
 from app.services.gis_service import BuildingMatch, GISService
 
@@ -143,3 +144,50 @@ async def match_building(
     )
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# GET /gis/health-facilities/nearby
+# ---------------------------------------------------------------------------
+
+
+class HealthFacilityResponse(BaseModel):
+    name: Optional[str]
+    facility_type: str
+    lat: float
+    lng: float
+    distance_m: float
+    phone: Optional[str] = None
+    opening_hours: Optional[str] = None
+
+
+class NearbyHealthFacilitiesResponse(BaseModel):
+    items: List[HealthFacilityResponse]
+    attribution: str = "© OpenStreetMap contributors"
+
+
+@router.get(
+    "/health-facilities/nearby",
+    response_model=NearbyHealthFacilitiesResponse,
+    summary="Nearest health facilities",
+    description=(
+        "Returns the hospitals, clinics and health centres nearest to a "
+        "point (within 5 km, nearest first), from OpenStreetMap data loaded "
+        "with ``python -m app.cli.import_health_facilities``. Used on the "
+        "report form when someone needs medical help. Public data, so no "
+        "login is needed. Opening times may be missing or out of date."
+    ),
+)
+async def nearby_health_facilities(
+    lat: float = Query(..., ge=-90.0, le=90.0, description="WGS84 latitude."),
+    lng: float = Query(..., ge=-180.0, le=180.0, description="WGS84 longitude."),
+    limit: int = Query(default=3, ge=1, le=10),
+    db: AsyncSession = Depends(get_db),
+) -> NearbyHealthFacilitiesResponse:
+    """Return the health facilities closest to (lat, lng)."""
+    from app.services.health_facility_service import nearest_facilities
+
+    found = await nearest_facilities(db, lat=lat, lng=lng, limit=limit)
+    return NearbyHealthFacilitiesResponse(
+        items=[HealthFacilityResponse(**asdict(f)) for f in found]
+    )

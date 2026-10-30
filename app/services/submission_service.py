@@ -55,7 +55,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, cast  # cast added here
 from uuid import UUID
 
@@ -66,7 +66,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.audit_log import AuditLog
-from app.models.enums import PhotoStatus, ReportStatus
+from app.models.enums import (
+    MedicalHelpNeeded,
+    PhotoStatus,
+    ReportStatus,
+    ReviewPriority,
+)
 from app.models.report import Report
 from app.services.image_service import compress_image
 from app.services.moderation_service import ModerationProvider, get_moderation_provider
@@ -83,6 +88,9 @@ logger = logging.getLogger(__name__)
 _RATE_LIMIT_WINDOW_SECONDS = 3600  # 1 hour
 
 _NS = "crisismap:submission"
+
+# Analyst queue order, lowest to highest.
+_PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2, "critical": 3}
 
 # Tags whose entire content (not just the tag) should be discarded.
 _DANGEROUS_TAG_RE = re.compile(
@@ -265,6 +273,7 @@ async def create_report(
     most_pressing_needs: Optional[str],
     debris_clearing_needed: Optional[bool],
     offline_queued_at,
+    medical_help_needed: Optional[str] = None,
     # Photo
     image_bytes: Optional[bytes],
     image_content_type: str = "image/jpeg",
@@ -307,7 +316,9 @@ async def create_report(
         gps_accuracy_m:        Device-reported horizontal accuracy in metres.
         landmark_description:  Free-text landmark (required when lat/lng absent).
         electricity_status:    Optional enum value string.
-        health_services_status: Optional enum value string.
+        health_services_status: Optional enum value string (legacy question).
+        medical_help_needed:   Optional enum value string. ``urgent`` puts the
+                               report at the top of the analyst queue.
         most_pressing_needs:   Optional free text.
         debris_clearing_needed: Optional boolean.
         offline_queued_at:     Timestamp from offline queue (None for live submissions).
@@ -413,6 +424,12 @@ async def create_report(
         report_id = _uuid.uuid4()
 
     # ── 5. Create Report record ──────────────────────────────────────────────
+    # Registered field reporters' token subject is their email hash; tag the
+    # report with their code so the pilot organiser can count their work.
+    from app.services.field_reporter_service import code_for_subject
+
+    field_reporter_code = await code_for_subject(reporter_token, db)
+
     report = Report(
         id=report_id,
         crisis_type=crisis_type,
@@ -426,13 +443,20 @@ async def create_report(
         reporter_building_missing=building_not_on_map,
         electricity_status=electricity_status,
         health_services_status=health_services_status,
+        medical_help_needed=medical_help_needed,
         most_pressing_needs=most_pressing_needs,
         debris_clearing_needed=debris_clearing_needed,
+        review_priority=(
+            ReviewPriority.critical
+            if medical_help_needed == MedicalHelpNeeded.urgent.value
+            else ReviewPriority.normal
+        ),
         photo_url=photo_url,
         photo_status=photo_status,
         status=ReportStatus.pending,
         reporter_token_hash=token_hash,
         reporter_trust_tier=reporter_trust_tier,
+        field_reporter_code=field_reporter_code,
         offline_queued_at=offline_queued_at,
     )
     db.add(report)
@@ -681,6 +705,76 @@ async def get_own_report(
     if report.reporter_token_hash != token_hash:
         raise ReportOwnershipError("You do not have permission to view this report.")
 
+    return report
+
+
+class NoInfoRequestError(SubmissionError):
+    """The report has no open request for more information."""
+
+
+_MAX_FOLLOWUP = 2000
+
+
+async def add_reporter_followup(
+    *,
+    report_id: UUID,
+    reporter_token: str,
+    text_body: str,
+    db: AsyncSession,
+) -> Report:
+    """Save the reporter's answer to an analyst's request for more info.
+
+    The original report fields are never changed. The answer is stored
+    beside them, the report moves up the analyst queue to at least ``high``
+    priority, and the answer is copied into the analyst notes so earlier
+    rounds are kept if the analyst asks again.
+
+    Raises:
+        ReportNotFoundError:  Report does not exist.
+        ReportOwnershipError: Report belongs to a different token.
+        NoInfoRequestError:   Nothing was asked, or it was already answered.
+        SubmissionError:      The answer is empty after sanitising.
+    """
+    from app.models.analyst_note import AnalystNote
+
+    report = await get_own_report(
+        report_id=report_id, reporter_token=reporter_token, db=db
+    )
+    if report.info_requested_at is None or report.info_responded_at is not None:
+        raise NoInfoRequestError(
+            "This report has no open request for more information."
+        )
+
+    clean = _sanitise_text(text_body, _MAX_FOLLOWUP)
+    if not clean:
+        raise SubmissionError("The reply cannot be empty.")
+
+    token_hash = _hash_token(reporter_token)
+    report.reporter_followup = clean
+    report.info_responded_at = datetime.now(timezone.utc)
+    current = str(getattr(report.review_priority, "value", report.review_priority))
+    if _PRIORITY_RANK.get(current, 0) < _PRIORITY_RANK["high"]:
+        report.review_priority = ReviewPriority.high
+
+    db.add(
+        AnalystNote(
+            report_id=report_id,
+            analyst_id_hash="reporter",
+            body=f"Reporter replied: {clean}",
+        )
+    )
+    await _write_audit_log(
+        db=db,
+        operation="report.reporter_followup",
+        actor_id_hash=token_hash,
+        record_id=report_id,
+        before_state=None,
+        after_state={"reporter_followup": clean},
+    )
+    await db.flush()
+    # updated_at is set by the database on flush; reload it so the caller
+    # can serialise the report without a lazy load.
+    await db.refresh(report)
     return report
 
 
