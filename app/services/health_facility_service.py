@@ -77,3 +77,24 @@ async def nearest_facilities(
             )
     found.sort(key=lambda f: f.distance_m)
     return found[:limit]
+
+
+async def all_facilities(db: AsyncSession) -> List[list]:
+    """Every facility as ``[name, facility_type, lat, lng, phone]``.
+
+    Compact on purpose: the phone saves the whole list (a few thousand rows
+    for Kenya) so the nearest clinics can be shown without a connection.
+    """
+    result = await db.execute(
+        sa.select(
+            HealthFacility.name,
+            HealthFacility.facility_type,
+            HealthFacility.lat,
+            HealthFacility.lng,
+            HealthFacility.phone,
+        )
+    )
+    return [
+        [name, ftype, round(lat, 6), round(lng, 6), phone]
+        for name, ftype, lat, lng, phone in result.all()
+    ]

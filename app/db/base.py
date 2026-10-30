@@ -6,4 +6,5 @@ from app.models.building import Building  # noqa: F401
 from app.models.field_reporter import FieldReporter  # noqa: F401
 from app.models.health_facility import HealthFacility  # noqa: F401
 from app.models.notification import Notification  # noqa: F401
+from app.models.offline_area import OfflineArea  # noqa: F401
 from app.models.report import Report  # noqa: F401

@@ -520,6 +520,43 @@ class GISService:
         )
 
     # ------------------------------------------------------------------
+    # Offline download
+    # ------------------------------------------------------------------
+
+    def buildings_in_bbox(
+        self,
+        min_lat: float,
+        min_lng: float,
+        max_lat: float,
+        max_lng: float,
+        limit: int = 20000,
+    ) -> List[list]:
+        """Footprints whose centroid lies in the box, for saving on the phone.
+
+        Each row is ``[building_id, external_id, footprint_geojson]``, the
+        same fields the picker gets from ``match_building`` candidates, so a
+        building picked offline has the same id the server knows.
+        """
+        rows = self._db.execute(
+            text("""
+                SELECT id, external_id, ST_AsGeoJSON(footprint, 6) AS geojson
+                FROM building
+                WHERE centroid && ST_MakeEnvelope(
+                    :min_lng, :min_lat, :max_lng, :max_lat, 4326
+                )
+                LIMIT :limit
+                """),
+            {
+                "min_lat": min_lat,
+                "min_lng": min_lng,
+                "max_lat": max_lat,
+                "max_lng": max_lng,
+                "limit": limit,
+            },
+        ).fetchall()
+        return [[str(r.id), r.external_id, r.geojson] for r in rows]
+
+    # ------------------------------------------------------------------
     # Radius helper
     # ------------------------------------------------------------------
 

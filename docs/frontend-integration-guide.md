@@ -636,6 +636,40 @@ Show the `attribution` text wherever the list appears. Opening times may be
 missing or out of date, so tell the reporter to check the facility is open
 and to call 999 or 112 in an emergency.
 
+### 5.6b Offline Downloads
+
+The app saves two things on the phone so the report form works without a
+connection. Both are public, cacheable and gzipped when the client accepts it.
+
+```
+GET /api/v1/gis/health-facilities/all
+```
+
+Every facility as compact rows (a few thousand for Kenya, about 100 KB
+gzipped):
+
+```json
+{
+  "fields": ["name", "facility_type", "lat", "lng", "phone"],
+  "items": [["Kibera Clinic", "clinic", -1.3115, 36.7881, null]],
+  "attribution": "© OpenStreetMap contributors"
+}
+```
+
+```
+GET /api/v1/gis/buildings?min_lat=-1.315&min_lng=36.785&max_lat=-1.31&max_lng=36.79
+```
+
+Footprints whose centroid lies in the box, at most 0.011 degrees (about
+1.1 km) on each side, else 422. Rows are `[building_id, external_id,
+footprint_geojson]`, the same ids and GeoJSON the building match endpoint
+returns, so a building picked offline is sent as `confirmed_building_id`
+exactly as online. `truncated` is true when the 20,000-row cap was hit.
+
+The app fetches buildings in tiles of 0.005 degrees, the 3 x 3 tiles
+around wherever it is used online, and matches offline with the same
+search radius, edge distance and probability rules as `GISService`.
+
 ### 5.7 Answer a Request for More Information
 
 An analyst can ask the reporter for more detail. `GET /api/v1/reports` and
