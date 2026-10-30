@@ -48,6 +48,19 @@ Print the per-code report counts used for paying field reporters (CSV):
 
     python -m app.cli field-reporter-summary [--from 2026-11-01] [--to 2026-11-08]
 
+Areas whose building outlines phones save in advance, so the building
+picker works there offline. Field reporters whose code starts with the
+prefix (KIB-01, KIB-02, ...) always download their home area; phones within
+about 30 km download risk areas when on Wi-Fi. Boxes are min_lat,min_lng,
+max_lat,max_lng and at most 0.05 degrees (about 5.5 km) a side:
+
+    python -m app.cli add-offline-area --name Kibera \\
+        --bbox=-1.322,36.770,-1.304,36.800 --code-prefix KIB
+    python -m app.cli add-offline-area --name "Budalangi west" \\
+        --bbox=0.10,33.95,0.15,34.00 --kind risk
+    python -m app.cli list-offline-areas
+    python -m app.cli deactivate-offline-area --name Kibera
+
 All commands connect to the database defined by DATABASE_URL in the
 environment (or .env file).  No running server is required.
 """
@@ -407,6 +420,112 @@ async def _field_reporter_summary(date_from: str | None, date_to: str | None) ->
     print(summary_to_csv(rows), end="")
 
 
+async def _add_offline_area(
+    name: str, bbox: str, kind: str, code_prefix: str | None
+) -> None:
+    import sqlalchemy as sa
+
+    from app.models.offline_area import OfflineArea
+    from app.services.offline_area_service import validate_bbox
+
+    try:
+        min_lat, min_lng, max_lat, max_lng = (float(v) for v in bbox.split(","))
+        validate_bbox(min_lat, min_lng, max_lat, max_lng)
+    except ValueError as exc:
+        print(f"ERROR: {exc}" if str(exc) else "ERROR: bbox must be 4 numbers.")
+        sys.exit(1)
+    prefix = code_prefix.strip().upper() if code_prefix else None
+
+    engine, factory = _session_factory()
+    async with factory() as session:
+        existing = (
+            await session.execute(
+                sa.select(OfflineArea).where(OfflineArea.name == name)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.min_lat, existing.min_lng = min_lat, min_lng
+            existing.max_lat, existing.max_lng = max_lat, max_lng
+            existing.kind, existing.code_prefix = kind, prefix
+            existing.is_active = True
+            verb = "updated"
+        else:
+            session.add(
+                OfflineArea(
+                    id=uuid.uuid4(),
+                    name=name,
+                    kind=kind,
+                    code_prefix=prefix,
+                    min_lat=min_lat,
+                    min_lng=min_lng,
+                    max_lat=max_lat,
+                    max_lng=max_lng,
+                    is_active=True,
+                )
+            )
+            verb = "added"
+        await session.commit()
+    await engine.dispose()
+    print(
+        f"SUCCESS: Offline area '{name}' {verb} ({kind}"
+        + (f", home area for {prefix}- codes" if prefix else "")
+        + ")."
+    )
+    print("Phones pick it up the next time the app is opened online.")
+
+
+async def _list_offline_areas() -> None:
+    import sqlalchemy as sa
+
+    from app.models.offline_area import OfflineArea
+
+    engine, factory = _session_factory()
+    async with factory() as session:
+        rows = (
+            (await session.execute(sa.select(OfflineArea).order_by(OfflineArea.name)))
+            .scalars()
+            .all()
+        )
+    await engine.dispose()
+    if not rows:
+        print("No offline areas.")
+        return
+    fmt = "{:<24}  {:<5}  {:<6}  {:<7}  {}"
+    print(fmt.format("NAME", "KIND", "PREFIX", "ACTIVE", "BBOX"))
+    for r in rows:
+        print(
+            fmt.format(
+                r.name[:24],
+                r.kind,
+                r.code_prefix or "—",
+                "yes" if r.is_active else "no",
+                f"{r.min_lat},{r.min_lng},{r.max_lat},{r.max_lng}",
+            )
+        )
+
+
+async def _deactivate_offline_area(name: str) -> None:
+    import sqlalchemy as sa
+
+    from app.models.offline_area import OfflineArea
+
+    engine, factory = _session_factory()
+    async with factory() as session:
+        row = (
+            await session.execute(
+                sa.select(OfflineArea).where(OfflineArea.name == name)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            await engine.dispose()
+            print(f"ERROR: No offline area named '{name}'.")
+            sys.exit(1)
+        row.is_active = False
+        await session.commit()
+    await engine.dispose()
+    print(f"SUCCESS: Offline area '{name}' deactivated.")
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -547,6 +666,24 @@ def main() -> None:
     p_fr_sum.add_argument("--from", dest="date_from", default=None, metavar="DATE")
     p_fr_sum.add_argument("--to", dest="date_to", default=None, metavar="DATE")
 
+    p_area = sub.add_parser(
+        "add-offline-area",
+        help="Add or update an area phones save for offline use.",
+    )
+    p_area.add_argument("--name", required=True)
+    p_area.add_argument(
+        "--bbox", required=True, metavar="MIN_LAT,MIN_LNG,MAX_LAT,MAX_LNG"
+    )
+    p_area.add_argument("--kind", choices=("home", "risk"), default=None)
+    p_area.add_argument("--code-prefix", default=None, metavar="PREFIX")
+
+    sub.add_parser("list-offline-areas", help="List offline areas.")
+
+    p_area_deact = sub.add_parser(
+        "deactivate-offline-area", help="Stop phones downloading an area."
+    )
+    p_area_deact.add_argument("--name", required=True)
+
     args = parser.parse_args()
 
     if args.command == "create-admin":
@@ -569,6 +706,13 @@ def main() -> None:
         asyncio.run(_deactivate_field_reporter(args.code))
     elif args.command == "field-reporter-summary":
         asyncio.run(_field_reporter_summary(args.date_from, args.date_to))
+    elif args.command == "add-offline-area":
+        kind = args.kind or ("home" if args.code_prefix else "risk")
+        asyncio.run(_add_offline_area(args.name, args.bbox, kind, args.code_prefix))
+    elif args.command == "list-offline-areas":
+        asyncio.run(_list_offline_areas())
+    elif args.command == "deactivate-offline-area":
+        asyncio.run(_deactivate_offline_area(args.name))
     else:
         parser.print_help()
         sys.exit(1)
