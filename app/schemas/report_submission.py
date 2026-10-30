@@ -24,6 +24,7 @@ from app.models.enums import (
     ElectricityStatus,
     HealthServicesStatus,
     InfrastructureType,
+    MedicalHelpNeeded,
     PhotoStatus,
     ReportDamageSeverity,
     ReportStatus,
@@ -108,7 +109,17 @@ class ReportCreateSchema(BaseModel):
     )
     health_services_status: Optional[HealthServicesStatus] = Field(
         default=None,
-        description="Accessibility of health services.",
+        description=(
+            "Legacy question, no longer asked by the app. Still accepted so "
+            "older offline-queued reports sync."
+        ),
+    )
+    medical_help_needed: Optional[MedicalHelpNeeded] = Field(
+        default=None,
+        description=(
+            "Does anyone at this location need medical help? 'urgent' puts "
+            "the report at the top of the analyst queue."
+        ),
     )
     most_pressing_needs: Optional[str] = Field(
         default=None,
@@ -187,9 +198,15 @@ class ReportDetailResponse(BaseModel):
     landmark_description: Optional[str] = None
     electricity_status: Optional[ElectricityStatus] = None
     health_services_status: Optional[HealthServicesStatus] = None
+    medical_help_needed: Optional[MedicalHelpNeeded] = None
     most_pressing_needs: Optional[str] = None
     debris_clearing_needed: Optional[bool] = None
     photo_url: Optional[str] = None
+    # An analyst's request for more detail, and the reporter's answer.
+    info_request_message: Optional[str] = None
+    info_requested_at: Optional[datetime] = None
+    reporter_followup: Optional[str] = None
+    info_responded_at: Optional[datetime] = None
     photo_status: PhotoStatus
     status: ReportStatus
     reporter_trust_tier: int
@@ -200,6 +217,17 @@ class ReportDetailResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ReporterFollowupRequest(BaseModel):
+    """Request body for ``POST /reports/{id}/additional-info``."""
+
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="The reporter's answer to the analyst's question.",
+    )
 
 
 class NearbyReportItem(BaseModel):

@@ -46,6 +46,10 @@ python -m app.cli create-admin --email admin@example.org
 python -m app.cli list-accounts
 python -m app.cli deactivate-account --id <uuid>
 python -m app.cli purge-photos [--days 90] [--dry-run]   # photo retention sweep (PHOTO_RETENTION_DAYS)
+python -m app.cli add-field-reporter --email r@example.org --code KIB-01   # paid pilot reporter code
+python -m app.cli list-field-reporters | deactivate-field-reporter --code KIB-01
+python -m app.cli field-reporter-summary [--from 2026-11-01] [--to 2026-11-08]   # per-code counts (CSV)
+python -m app.cli.import_health_facilities --source overpass.json   # OSM hospitals/clinics
 python -m app.cli.import_footprints --source path/to/footprints.geojson
 python -m app.cli.import_footprints --source-type osm --source path/to/osm-buildings.geojson
 ```

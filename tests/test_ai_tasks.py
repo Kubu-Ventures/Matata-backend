@@ -87,6 +87,8 @@ def _make_session_factory():
                 photo_phash             TEXT,
                 photo_status            TEXT NOT NULL DEFAULT 'processing',
                 review_priority         TEXT NOT NULL DEFAULT 'normal',
+                medical_help_needed     TEXT,
+                info_responded_at       TEXT,
                 updated_at              TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """))

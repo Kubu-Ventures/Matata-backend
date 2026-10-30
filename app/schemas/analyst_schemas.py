@@ -9,7 +9,9 @@ Spec §13.4 — analyst endpoint response contracts.
 Privacy rules enforced here
 ---------------------------
 * ``reporter_trust_tier`` is the **only** reporter identifier ever exported —
-  never the hash, never the raw token.
+  never the hash, never the raw token. ``field_reporter_code`` (e.g. KIB-01)
+  is shown to analysts so registered reporters can be paid, but
+  it is left out of public map data and exports.
 * ``AnalystNoteOut`` omits ``analyst_id_hash`` — notes are visible to all
   analysts but author identity is never exported (spec §11, issue #15).
 """
@@ -27,6 +29,7 @@ from app.models.enums import (
     ElectricityStatus,
     HealthServicesStatus,
     InfrastructureType,
+    MedicalHelpNeeded,
     PhotoStatus,
     ReportDamageSeverity,
     ReportStatus,
@@ -97,6 +100,10 @@ class ReportSummarySchema(BaseModel):
     ai_severity_prediction: Optional[ReportDamageSeverity] = None
     ai_divergence: Optional[bool] = None
     analyst_severity_override: Optional[ReportDamageSeverity] = None
+    field_reporter_code: Optional[str] = None
+    medical_help_needed: Optional[MedicalHelpNeeded] = None
+    info_requested_at: Optional[datetime] = None
+    info_responded_at: Optional[datetime] = None
     review_priority: ReviewPriority = ReviewPriority.normal
     reporter_trust_tier: int
     created_at: datetime
@@ -161,8 +168,18 @@ class ReportDetailSchema(BaseModel):
     # Optional operational detail
     electricity_status: Optional[ElectricityStatus] = None
     health_services_status: Optional[HealthServicesStatus] = None
+    medical_help_needed: Optional[MedicalHelpNeeded] = None
     most_pressing_needs: Optional[str] = None
     debris_clearing_needed: Optional[bool] = None
+
+    # Registered field reporter code (analysts only, never exported)
+    field_reporter_code: Optional[str] = None
+
+    # Request for more information and the reporter's reply
+    info_request_message: Optional[str] = None
+    info_requested_at: Optional[datetime] = None
+    reporter_followup: Optional[str] = None
+    info_responded_at: Optional[datetime] = None
 
     # Photo pipeline
     photo_url: Optional[str] = None
@@ -281,6 +298,7 @@ class CrisisTypeBreakdown(BaseModel):
     earthquake: int = 0
     conflict: int = 0
     wildfire: int = 0
+    fire: int = 0
     other: int = 0
 
 
@@ -422,3 +440,48 @@ class AIAccuracyResponse(BaseModel):
             " throughput may have dropped and recalibration is overdue."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Request more information from the reporter
+# ---------------------------------------------------------------------------
+
+
+class InfoRequestCreate(BaseModel):
+    """Request body for ``POST /api/v1/analyst/reports/{id}/request-info``."""
+
+    message: str = Field(
+        ...,
+        min_length=3,
+        max_length=1000,
+        description=(
+            "What the reporter should add, in plain words. The reporter sees "
+            "this message in My reports."
+        ),
+    )
+
+
+class InfoRequestResponse(BaseModel):
+    id: UUID
+    info_request_message: str
+    info_requested_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Field reporter payment summary
+# ---------------------------------------------------------------------------
+
+
+class FieldReporterSummaryItem(BaseModel):
+    code: str
+    total: int
+    verified: int
+    pending: int
+    rejected: int
+    duplicate: int
+
+
+class FieldReporterSummaryResponse(BaseModel):
+    date_from: Optional[datetime] = None
+    date_to: Optional[datetime] = None
+    items: List[FieldReporterSummaryItem]

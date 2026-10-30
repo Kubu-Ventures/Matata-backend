@@ -68,7 +68,7 @@ identically across GeoJSON, CSV and Shapefile.
 | --- | --- | --- | --- | --- |
 | `id` | `report_id` | `#meta+id` | string (UUID) | Stable report identifier. |
 | `building_id` | `building_id` | `#loc+code` | string (UUID) or `null` | PostGIS footprint the report was matched to, if any. |
-| `crisis_type` | `crisis_type` | `#crisis+type` | enum | `flood`, `earthquake`, `conflict`, `wildfire`, `other`. |
+| `crisis_type` | `crisis_type` | `#crisis+type` | enum | `flood`, `earthquake`, `conflict`, `wildfire`, `fire`, `other`. `fire` is a building or settlement fire; `wildfire` is a vegetation fire. |
 | `infrastructure_type` | `infrastructure_type` | `#infra+type` | enum | `residential`, `commercial`, `government`, `utilities`, `transport`, `community`. |
 | `damage_severity` | `damage_severity` | `#damage+level` | enum | Reporter's classification: `minimal`, `partial`, `destroyed`. **Never** overwritten by AI. |
 | `ai_severity_prediction` | `ai_severity_prediction` | `#damage+level+ai` | enum or `null` | Model's independent estimate; advisory only. |

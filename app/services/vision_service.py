@@ -142,15 +142,17 @@ it is unusable.
 2. DAMAGE SEVERITY: judge only what is visible in the photo.
    minimal: standing and usable. No visible damage, or surface damage only: \
 stains, cracked plaster, a few loose roof sheets, debris around the building. \
-Flood: water or mud marks below knee height, wet floors, no structural harm.
+Flood: water or mud marks below knee height, wet floors, no structural harm. \
+Fire: smoke or scorch marks on the outside only.
    partial: significant damage but still standing. Part of the roof gone; \
 walls cracked through, leaning or partly collapsed; doors or windows torn out. \
 Flood: a water line above knee height or water inside living space; wall bases \
 eroded or undermined; parts of mud or wattle walls washed away. Fire: partly \
-burned.
+burned; part of the roof or a wall burned through, or the inside charred.
    destroyed: collapsed or no longer habitable. Roof and walls largely down, \
 only rubble or foundations left, the structure washed away, or completely \
-burned out.
+burned out. Fire in iron-sheet and timber settlements: sheets twisted and \
+fallen, only charred posts or ash left.
 
 How to set ai_confidence:
    0.85-1.0  the damage, or its absence, is clearly visible and fits one level.

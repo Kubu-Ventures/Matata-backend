@@ -643,6 +643,16 @@ async def verify_privy_and_issue_tokens(
             resolved_tier = 0
             sub = email_hash
             region_geojson = account.region_geojson
+        else:
+            # Registered field reporters stay plain reporters, but are keyed
+            # by their email hash so their reports can be tagged with their
+            # reporter code (see field_reporter_service).
+            from app.services.field_reporter_service import (
+                lookup_active_by_email_hash,
+            )
+
+            if await lookup_active_by_email_hash(email_hash, db) is not None:
+                sub = email_hash
 
     access_token = _build_access_token(
         sub=sub, role=role, tier=resolved_tier, region_geojson=region_geojson

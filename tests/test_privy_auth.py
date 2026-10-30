@@ -451,6 +451,45 @@ class TestVerifyPrivyAndIssueTokens:
         )["sub"]
         assert privy_sub == cli_sub
 
+    @pytest.mark.asyncio
+    async def test_field_reporter_keyed_by_email_hash(
+        self, privy_settings, _es256_keys
+    ):
+        """A registered field reporter stays a reporter but is keyed by email
+        hash, so create_report can find their reporter code."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from jose import jwt as _jwt
+
+        from app.core.config import settings
+        from app.services.auth_service import (
+            Role,
+            hash_identifier,
+            verify_privy_and_issue_tokens,
+        )
+
+        priv, _ = _es256_keys
+        field_reporter = MagicMock(code="KIB-01", is_active=True)
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=field_reporter)),
+            ]
+        )
+        access, _, role = await verify_privy_and_issue_tokens(
+            privy_token=_access_token(priv),
+            identity_token=_identity_token(priv, email=_EMAIL),
+            redis=_FakeRedis(),
+            db=db,
+        )
+        claims = _jwt.decode(
+            access, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+        )
+        assert role == Role.reporter
+        assert claims["role"] == "reporter"
+        assert claims["sub"] == hash_identifier(_EMAIL)
+
 
 # ---------------------------------------------------------------------------
 # check_rate_limit
