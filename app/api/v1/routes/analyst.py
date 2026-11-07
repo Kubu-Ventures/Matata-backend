@@ -407,6 +407,9 @@ async def transition_status(
 ) -> StatusTransitionResponse:
     """Apply a status transition with audit logging and trust-tier side-effects."""
     try:
+        await analyst_service.ensure_report_in_region(
+            db, report_id, _region_geojson(current_user)
+        )
         report = await analyst_service.transition_report_status(
             db,
             report_id,
@@ -507,6 +510,9 @@ async def request_info(
 ) -> InfoRequestResponse:
     """Ask the reporter of *report_id* for more information."""
     try:
+        await analyst_service.ensure_report_in_region(
+            db, report_id, _region_geojson(current_user)
+        )
         report = await analyst_service.request_more_info(
             db,
             report_id,
@@ -562,7 +568,10 @@ async def field_reporter_summary(
 ):
     """Return per-code report counts as JSON or CSV."""
     rows = await field_reporter_service.payment_summary(
-        db, date_from=date_from, date_to=date_to
+        db,
+        date_from=date_from,
+        date_to=date_to,
+        region_geojson=_region_geojson(current_user),
     )
     if format == "csv":
         return Response(
@@ -607,6 +616,9 @@ async def set_severity_override(
 ) -> SeverityOverrideResponse:
     """Record an analyst's corrected severity assessment."""
     try:
+        await analyst_service.ensure_report_in_region(
+            db, report_id, _region_geojson(current_user)
+        )
         result = await analyst_service.set_severity_override(
             db,
             report_id,
@@ -646,10 +658,14 @@ async def confirm_merge(
 ) -> ConfirmMergeResponse:
     """Confirm and execute a pending duplicate merge."""
     try:
+        await analyst_service.ensure_report_in_region(
+            db, report_id, _region_geojson(current_user)
+        )
         result = await analyst_service.confirm_pending_merge(
             db,
             report_id,
             analyst_id_hash=_analyst_id_hash(current_user),
+            region_geojson=_region_geojson(current_user),
         )
         await db.commit()
         return result
@@ -686,6 +702,9 @@ async def reject_merge(
 ) -> RejectMergeResponse:
     """Reject a pending duplicate merge and restore the report to pending."""
     try:
+        await analyst_service.ensure_report_in_region(
+            db, report_id, _region_geojson(current_user)
+        )
         result = await analyst_service.reject_pending_merge(
             db,
             report_id,
@@ -727,6 +746,16 @@ async def ai_accuracy(
     redis: Redis = Depends(get_redis),
 ) -> AIAccuracyResponse:
     """Return AI accuracy metrics and apply the recommended divergence threshold."""
+    # The metrics cover every area and the call re-tunes a threshold shared
+    # by everyone, so it stays with analysts who are not limited to an area.
+    if _region_geojson(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "AI accuracy covers all areas, so it is only available to "
+                "analysts who are not limited to an area."
+            ),
+        )
     return await analyst_service.get_ai_accuracy(db, redis)
 
 

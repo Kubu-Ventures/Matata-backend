@@ -2311,3 +2311,158 @@ class TestDamagedBuildingsRoute:
         client = TestClient(_make_app(user, mock_redis), raise_server_exceptions=False)
         resp = client.get("/api/v1/analyst/damaged-buildings")
         assert resp.status_code == 403
+
+
+# ============================================================
+# AREA-LIMITED ANALYSTS — actions stay inside the area
+# ============================================================
+
+_AREA = json.dumps(
+    {
+        "type": "Polygon",
+        "coordinates": [
+            [[36.0, -2.0], [38.0, -2.0], [38.0, 0.0], [36.0, 0.0], [36.0, -2.0]]
+        ],
+    }
+)
+
+
+def _loc_result(lat, lng):
+    res = MagicMock()
+    res.one_or_none = MagicMock(
+        return_value=None if lat is None else MagicMock(lat=lat, lng=lng)
+    )
+    return res
+
+
+class TestEnsureReportInRegion:
+    @pytest.mark.asyncio
+    async def test_no_area_skips_db(self):
+        from app.services.analyst_service import ensure_report_in_region
+
+        db = AsyncMock()
+        await ensure_report_in_region(db, uuid4(), None)
+        db.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_inside_passes(self):
+        from app.services.analyst_service import ensure_report_in_region
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_loc_result(-1.0, 37.0))
+        await ensure_report_in_region(db, uuid4(), _AREA)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lat,lng", [(0.5, 37.0), (None, None)])
+    async def test_outside_or_missing_is_not_found(self, lat, lng):
+        from app.services.analyst_service import ensure_report_in_region
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_loc_result(lat, lng))
+        with pytest.raises(LookupError):
+            await ensure_report_in_region(db, uuid4(), _AREA)
+
+
+class TestAreaLimitedMerges:
+    @pytest.mark.asyncio
+    async def test_manual_merge_refuses_report_outside_area(self):
+        from app.services.analyst_service import merge_reports
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[_loc_result(-1.0, 37.0), _loc_result(0.5, 37.0)]
+        )
+        with pytest.raises(LookupError):
+            await merge_reports(
+                db,
+                primary_id=uuid4(),
+                duplicate_ids=[uuid4()],
+                analyst_id_hash="a",
+                region_geojson=_AREA,
+            )
+
+    @pytest.mark.asyncio
+    async def test_confirm_merge_refuses_primary_outside_area(self):
+        from app.services.analyst_service import confirm_pending_merge
+
+        report = _make_report(status="pending_merge_review")
+        report.possible_duplicate_of_id = uuid4()
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[_scalar_result(report), _loc_result(0.5, 37.0)]
+        )
+        with pytest.raises(ValueError, match="outside your area"):
+            await confirm_pending_merge(
+                db, report.id, analyst_id_hash="a", region_geojson=_AREA
+            )
+        assert report.status == ReportStatus.pending_merge_review
+
+
+class TestAreaLimitedActionRoutes:
+    """Every analyst action answers 404 for a report outside the area."""
+
+    _USER = {"sub": "a" * 64, "role": "analyst", "region_geojson": _AREA}
+
+    @pytest.mark.parametrize(
+        "method,path,body,service_fn",
+        [
+            ("patch", "status", {"status": "verified"}, "transition_report_status"),
+            ("post", "request-info", {"message": "Add a photo"}, "request_more_info"),
+            (
+                "post",
+                "severity-override",
+                {"analyst_severity_override": "partial"},
+                "set_severity_override",
+            ),
+            ("post", "confirm-merge", None, "confirm_pending_merge"),
+            ("post", "reject-merge", None, "reject_pending_merge"),
+        ],
+    )
+    def test_outside_area_is_404_and_service_not_called(
+        self, mock_redis, method, path, body, service_fn
+    ):
+        from fastapi.testclient import TestClient
+
+        from app.services import analyst_service
+
+        client = TestClient(_make_app(self._USER, mock_redis))
+        with (
+            patch.object(
+                analyst_service,
+                "ensure_report_in_region",
+                new=AsyncMock(side_effect=LookupError("Report x not found.")),
+            ) as guard,
+            patch.object(analyst_service, service_fn, new=AsyncMock()) as action,
+        ):
+            url = f"/api/v1/analyst/reports/{uuid4()}/{path}"
+            resp = getattr(client, method)(url, json=body)
+
+        assert resp.status_code == 404
+        assert guard.await_args.args[2] == _AREA
+        action.assert_not_called()
+
+    def test_ai_accuracy_forbidden_for_area_limited_analyst(self, mock_redis):
+        from fastapi.testclient import TestClient
+
+        from app.services import analyst_service
+
+        client = TestClient(_make_app(self._USER, mock_redis))
+        with patch.object(
+            analyst_service, "get_ai_accuracy", new=AsyncMock()
+        ) as accuracy:
+            resp = client.get("/api/v1/analyst/ai-accuracy")
+        assert resp.status_code == 403
+        accuracy.assert_not_called()
+
+    def test_payment_summary_passes_area(self, mock_redis):
+        from fastapi.testclient import TestClient
+
+        from app.services import field_reporter_service
+
+        client = TestClient(_make_app(self._USER, mock_redis))
+        with patch.object(
+            field_reporter_service, "payment_summary", new=AsyncMock(return_value=[])
+        ) as summary:
+            resp = client.get("/api/v1/analyst/field-reporters/summary")
+        assert resp.status_code == 200
+        assert summary.await_args.kwargs["region_geojson"] == _AREA

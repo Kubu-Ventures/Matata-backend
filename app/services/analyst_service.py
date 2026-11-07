@@ -700,6 +700,26 @@ async def _recompute_building_severity(db: AsyncSession, building_id: UUID) -> N
 # ---------------------------------------------------------------------------
 
 
+async def ensure_report_in_region(
+    db: AsyncSession, report_id: UUID, region_geojson: Optional[str]
+) -> None:
+    """Raise ``LookupError`` unless the report lies inside the caller's area.
+
+    No-op for accounts without an area. For an area-limited account a report
+    outside the area (or with no GPS point) is indistinguishable from one
+    that does not exist, so callers map this to HTTP 404 as usual.
+    """
+    if not region_geojson:
+        return
+    row = (
+        await db.execute(
+            sa.select(Report.lat, Report.lng).where(Report.id == report_id)
+        )
+    ).one_or_none()
+    if row is None or not point_in_region(row.lat, row.lng, region_geojson):
+        raise LookupError(f"Report {report_id} not found.")
+
+
 async def merge_reports(
     db: AsyncSession,
     primary_id: UUID,
@@ -726,6 +746,10 @@ async def merge_reports(
     Raises:
         LookupError: If any ID is not found or out of scope.
     """
+    # Every report in the merge must be inside an area-limited caller's area.
+    for rid in [primary_id, *duplicate_ids]:
+        await ensure_report_in_region(db, rid, region_geojson)
+
     # Validate primary exists
     primary_result = await db.execute(sa.select(Report).where(Report.id == primary_id))
     primary = primary_result.scalar_one_or_none()
@@ -989,6 +1013,7 @@ async def confirm_pending_merge(
     report_id: UUID,
     *,
     analyst_id_hash: str,
+    region_geojson: Optional[str] = None,
 ) -> ConfirmMergeResponse:
     """Confirm a system-flagged pending merge, executing the actual merge.
 
@@ -1028,6 +1053,16 @@ async def confirm_pending_merge(
         raise ValueError(f"Report {report_id} has no possible_duplicate_of_id set.")
 
     primary_id = report.possible_duplicate_of_id
+
+    # An area-limited analyst may only merge into a report inside their area.
+    if region_geojson:
+        try:
+            await ensure_report_in_region(db, primary_id, region_geojson)
+        except LookupError as exc:
+            raise ValueError(
+                "The matching report is outside your area, so this merge must "
+                "be confirmed by an analyst who covers both areas."
+            ) from exc
 
     # Execute the merge
     report.status = ReportStatus.duplicate

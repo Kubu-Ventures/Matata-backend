@@ -15,11 +15,13 @@ is reported and left unchanged):
 
     python -m app.cli create-account --email a@example.org --role analyst [--label ...]
 
-A responder only sees reports inside their area, so --bbox is required for
---role responder. Repeat it to cover several places (min_lat,min_lng,max_lat,
-max_lng, the same order as offline areas):
+--bbox limits an account to an area: it only sees, verifies and exports
+reports inside it. Required for --role responder, optional for --role analyst
+(an analyst without one covers all areas), not allowed for admin. Repeat it
+to cover several places (min_lat,min_lng,max_lat,max_lng, the same order as
+offline areas):
 
-    python -m app.cli create-account --email z@example.org --role responder \\
+    python -m app.cli create-account --email z@example.org --role analyst \\
         --label map-kibera --bbox=-1.3256,36.7647,-1.2993,36.8066 \\
         --bbox=-1.2674,36.8389,-1.2495,36.8790
 
@@ -141,8 +143,8 @@ async def _create_account(
             "--bbox=min_lat,min_lng,max_lat,max_lng."
         )
         sys.exit(1)
-    if role != "responder" and bboxes:
-        print(f"ERROR: --bbox only applies to responders; an {role} sees all areas.")
+    if role == "admin" and bboxes:
+        print("ERROR: An admin always sees all areas; --bbox is not allowed.")
         sys.exit(1)
     region_geojson = _region_from_args(bboxes)
 
@@ -193,7 +195,7 @@ async def _create_account(
     print(f"  Label      : {label or '—'}")
     print(f"  Role       : {role}")
     if bboxes:
-        print(f"  Area       : {len(bboxes)} box(es); sees only reports inside")
+        print(f"  Area       : {len(bboxes)} box(es); limited to reports inside")
     print()
     print(f"The {role} can now log in through the frontend's Privy email OTP flow,")
     print("which posts the resulting tokens to POST /api/v1/auth/privy/verify.")
@@ -270,12 +272,9 @@ async def _set_account_area(
             await engine.dispose()
             print(f"ERROR: No account with ID {account_id}.")
             sys.exit(1)
-        if account.role != "responder" and not clear:
+        if account.role == "admin" and not clear:
             await engine.dispose()
-            print(
-                f"ERROR: This account is an {account.role}; only responders "
-                "can be limited to an area."
-            )
+            print("ERROR: An admin always sees all areas.")
             sys.exit(1)
         if account.role == "responder" and clear:
             await engine.dispose()
@@ -688,15 +687,15 @@ def main() -> None:
         default=None,
         metavar="MIN_LAT,MIN_LNG,MAX_LAT,MAX_LNG",
         help=(
-            "Area a responder may see; repeat for several places. Required "
-            "for --role responder."
+            "Limit the account to this area; repeat for several places. "
+            "Required for responders, optional for analysts."
         ),
     )
 
     # set-account-area
     p_set_area = sub.add_parser(
         "set-account-area",
-        help="Set or clear the area a responder account may see.",
+        help="Set or clear the area an analyst or responder account covers.",
     )
     p_set_area.add_argument("--id", required=True, dest="account_id", metavar="UUID")
     p_set_area.add_argument(
