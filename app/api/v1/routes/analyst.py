@@ -65,7 +65,7 @@ from pydantic import BaseModel
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.routes.auth import require_role
+from app.api.v1.routes.auth import get_optional_user, require_role
 from app.core.dependencies import get_db, get_redis
 from app.schemas.analyst_schemas import (
     AIAccuracyResponse,
@@ -88,6 +88,7 @@ from app.schemas.analyst_schemas import (
 )
 from app.services import analyst_service, field_reporter_service
 from app.services.auth_service import Role
+from app.services.region_scope import point_in_region
 from app.services.storage_service import StorageError, get_storage_service
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,14 @@ class StatusTransitionResponse(BaseModel):
 def _region_geojson(current_user: dict) -> Optional[str]:
     """Extract the optional ``region_geojson`` claim from the JWT payload."""
     return current_user.get("region_geojson")
+
+
+def _as_float(value: object) -> Optional[float]:
+    """Coerce an event's lat/lng to float, or None if it is not a number."""
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _analyst_id_hash(current_user: dict) -> str:
@@ -398,6 +407,9 @@ async def transition_status(
 ) -> StatusTransitionResponse:
     """Apply a status transition with audit logging and trust-tier side-effects."""
     try:
+        await analyst_service.ensure_report_in_region(
+            db, report_id, _region_geojson(current_user)
+        )
         report = await analyst_service.transition_report_status(
             db,
             report_id,
@@ -461,6 +473,7 @@ async def create_note(
             report_id,
             body=body.body,
             analyst_id_hash=_analyst_id_hash(current_user),
+            region_geojson=_region_geojson(current_user),
         )
         await db.commit()
         return note
@@ -497,6 +510,9 @@ async def request_info(
 ) -> InfoRequestResponse:
     """Ask the reporter of *report_id* for more information."""
     try:
+        await analyst_service.ensure_report_in_region(
+            db, report_id, _region_geojson(current_user)
+        )
         report = await analyst_service.request_more_info(
             db,
             report_id,
@@ -552,7 +568,10 @@ async def field_reporter_summary(
 ):
     """Return per-code report counts as JSON or CSV."""
     rows = await field_reporter_service.payment_summary(
-        db, date_from=date_from, date_to=date_to
+        db,
+        date_from=date_from,
+        date_to=date_to,
+        region_geojson=_region_geojson(current_user),
     )
     if format == "csv":
         return Response(
@@ -597,6 +616,9 @@ async def set_severity_override(
 ) -> SeverityOverrideResponse:
     """Record an analyst's corrected severity assessment."""
     try:
+        await analyst_service.ensure_report_in_region(
+            db, report_id, _region_geojson(current_user)
+        )
         result = await analyst_service.set_severity_override(
             db,
             report_id,
@@ -636,10 +658,14 @@ async def confirm_merge(
 ) -> ConfirmMergeResponse:
     """Confirm and execute a pending duplicate merge."""
     try:
+        await analyst_service.ensure_report_in_region(
+            db, report_id, _region_geojson(current_user)
+        )
         result = await analyst_service.confirm_pending_merge(
             db,
             report_id,
             analyst_id_hash=_analyst_id_hash(current_user),
+            region_geojson=_region_geojson(current_user),
         )
         await db.commit()
         return result
@@ -676,6 +702,9 @@ async def reject_merge(
 ) -> RejectMergeResponse:
     """Reject a pending duplicate merge and restore the report to pending."""
     try:
+        await analyst_service.ensure_report_in_region(
+            db, report_id, _region_geojson(current_user)
+        )
         result = await analyst_service.reject_pending_merge(
             db,
             report_id,
@@ -717,6 +746,16 @@ async def ai_accuracy(
     redis: Redis = Depends(get_redis),
 ) -> AIAccuracyResponse:
     """Return AI accuracy metrics and apply the recommended divergence threshold."""
+    # The metrics cover every area and the call re-tunes a threshold shared
+    # by everyone, so it stays with analysts who are not limited to an area.
+    if _region_geojson(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "AI accuracy covers all areas, so it is only available to "
+                "analysts who are not limited to an area."
+            ),
+        )
     return await analyst_service.get_ai_accuracy(db, redis)
 
 
@@ -786,20 +825,14 @@ async def _sse_event_generator(
 
                 event_type = event_data.get("event", "report.updated")
 
-                # Responder geographic scope filter (best-effort in Python)
-                if region_geojson and "lat" in event_data and "lng" in event_data:
-                    try:
-                        from shapely.geometry import (  # type: ignore[import]
-                            Point,
-                            shape,
-                        )
-
-                        region = shape(json.loads(region_geojson))
-                        point = Point(event_data["lng"], event_data["lat"])
-                        if not region.contains(point):
-                            continue
-                    except Exception:
-                        pass  # If shapely unavailable, forward all events
+                # Responder geographic scope filter. Fails closed: an event
+                # with no usable location is not sent to a regional responder.
+                if region_geojson and not point_in_region(
+                    _as_float(event_data.get("lat")),
+                    _as_float(event_data.get("lng")),
+                    region_geojson,
+                ):
+                    continue
 
                 yield (f"event: {event_type}\n" f"data: {json.dumps(event_data)}\n\n")
 
@@ -913,11 +946,14 @@ async def damaged_buildings(
     ),
 )
 async def stats_summary(
+    current_user: Optional[dict] = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> StatsSummaryResponse:
-    """Return cached statistics summary."""
-    return await analyst_service.get_stats_summary(db, redis)
+    """Return statistics: all areas, or a regional responder's area only."""
+    return await analyst_service.get_stats_summary(
+        db, redis, region_geojson=_region_geojson(current_user or {})
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -935,8 +971,11 @@ async def stats_summary(
     ),
 )
 async def stats_heatmap(
+    current_user: Optional[dict] = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> dict:
-    """Return cached GeoJSON heatmap feature collection."""
-    return await analyst_service.get_heatmap(db, redis)
+    """Return heatmap points: all areas, or a regional responder's area only."""
+    return await analyst_service.get_heatmap(
+        db, redis, region_geojson=_region_geojson(current_user or {})
+    )

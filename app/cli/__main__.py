@@ -15,6 +15,22 @@ is reported and left unchanged):
 
     python -m app.cli create-account --email a@example.org --role analyst [--label ...]
 
+--bbox limits an account to an area: it only sees, verifies and exports
+reports inside it. Required for --role responder, optional for --role analyst
+(an analyst without one covers all areas), not allowed for admin. Repeat it
+to cover several places (min_lat,min_lng,max_lat,max_lng, the same order as
+offline areas):
+
+    python -m app.cli create-account --email z@example.org --role analyst \\
+        --label map-kibera --bbox=-1.3256,36.7647,-1.2993,36.8066 \\
+        --bbox=-1.2674,36.8389,-1.2495,36.8790
+
+Change or remove the area of an existing account (takes effect the next time
+that person signs in):
+
+    python -m app.cli set-account-area --id <uuid> --bbox=... [--bbox=...]
+    python -m app.cli set-account-area --id <uuid> --clear
+
 List all provisioned analyst/responder/admin accounts:
 
     python -m app.cli list-accounts
@@ -86,7 +102,25 @@ async def _create_admin(email: str, label: str | None = None) -> None:
     await _create_account(email, "admin", label)
 
 
-async def _create_account(email: str, role: str, label: str | None = None) -> None:
+def _region_from_args(bboxes: list[str] | None) -> str | None:
+    """Turn repeated --bbox values into a region GeoJSON, or exit on error."""
+    if not bboxes:
+        return None
+    from app.services.region_scope import bboxes_to_region, parse_bbox
+
+    try:
+        return bboxes_to_region(parse_bbox(b) for b in bboxes)
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(1)
+
+
+async def _create_account(
+    email: str,
+    role: str,
+    label: str | None = None,
+    bboxes: list[str] | None = None,
+) -> None:
     import sqlalchemy as sa
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -102,6 +136,17 @@ async def _create_account(email: str, role: str, label: str | None = None) -> No
     if role not in _ELEVATED_ROLES:
         print(f"ERROR: '{role}' is not one of: {', '.join(_ELEVATED_ROLES)}.")
         sys.exit(1)
+
+    if role == "responder" and not bboxes:
+        print(
+            "ERROR: A responder needs an area. Add one or more "
+            "--bbox=min_lat,min_lng,max_lat,max_lng."
+        )
+        sys.exit(1)
+    if role == "admin" and bboxes:
+        print("ERROR: An admin always sees all areas; --bbox is not allowed.")
+        sys.exit(1)
+    region_geojson = _region_from_args(bboxes)
 
     email_hash = hash_identifier(email.strip().lower())
 
@@ -136,7 +181,7 @@ async def _create_account(email: str, role: str, label: str | None = None) -> No
             email_hash=email_hash,
             label=label,
             role=role,
-            region_geojson=None,
+            region_geojson=region_geojson,
             created_by_sub="cli-bootstrap",
             is_active=True,
         )
@@ -149,6 +194,8 @@ async def _create_account(email: str, role: str, label: str | None = None) -> No
     print(f"  Account ID : {account.id}")
     print(f"  Label      : {label or '—'}")
     print(f"  Role       : {role}")
+    if bboxes:
+        print(f"  Area       : {len(bboxes)} box(es); limited to reports inside")
     print()
     print(f"The {role} can now log in through the frontend's Privy email OTP flow,")
     print("which posts the resulting tokens to POST /api/v1/auth/privy/verify.")
@@ -181,9 +228,9 @@ async def _list_accounts() -> None:
         print("No analyst accounts found.")
         return
 
-    fmt = "{:<36}  {:<20}  {:<12}  {:<8}  {}"
-    print(fmt.format("ID", "LABEL", "ROLE", "ACTIVE", "CREATED AT"))
-    print("-" * 96)
+    fmt = "{:<36}  {:<20}  {:<12}  {:<8}  {:<9}  {}"
+    print(fmt.format("ID", "LABEL", "ROLE", "ACTIVE", "AREA", "CREATED AT"))
+    print("-" * 107)
     for row in rows:
         print(
             fmt.format(
@@ -191,9 +238,60 @@ async def _list_accounts() -> None:
                 row.label or "—",
                 row.role,
                 "yes" if row.is_active else "no",
+                "limited" if row.region_geojson else "all",
                 str(row.created_at)[:19] if row.created_at else "—",
             )
         )
+
+
+async def _set_account_area(
+    account_id: str, bboxes: list[str] | None, clear: bool
+) -> None:
+    import sqlalchemy as sa
+
+    from app.models.analyst_account import AnalystAccount
+
+    try:
+        uid = uuid.UUID(account_id)
+    except ValueError:
+        print(f"ERROR: '{account_id}' is not a valid UUID.")
+        sys.exit(1)
+    if clear == bool(bboxes):
+        print("ERROR: Give either one or more --bbox values or --clear.")
+        sys.exit(1)
+    region_geojson = None if clear else _region_from_args(bboxes)
+
+    engine, factory = _session_factory()
+    async with factory() as session:
+        account = (
+            await session.execute(
+                sa.select(AnalystAccount).where(AnalystAccount.id == uid)
+            )
+        ).scalar_one_or_none()
+        if account is None:
+            await engine.dispose()
+            print(f"ERROR: No account with ID {account_id}.")
+            sys.exit(1)
+        if account.role == "admin" and not clear:
+            await engine.dispose()
+            print("ERROR: An admin always sees all areas.")
+            sys.exit(1)
+        if account.role == "responder" and clear:
+            await engine.dispose()
+            print(
+                "ERROR: A responder must keep an area. Deactivate the account "
+                "or change its role instead."
+            )
+            sys.exit(1)
+        account.region_geojson = region_geojson
+        await session.commit()
+    await engine.dispose()
+    if clear:
+        print("SUCCESS: Area removed.")
+    else:
+        print(f"SUCCESS: Area set ({len(bboxes or [])} box(es)).")
+    print("It applies the next time this person signs in. To apply it now,")
+    print("ask them to sign out and back in.")
 
 
 async def _deactivate_account(account_id: str) -> None:
@@ -583,6 +681,30 @@ def main() -> None:
         metavar="LABEL",
         help="Optional display name shown in list-accounts. Never the email.",
     )
+    p_account.add_argument(
+        "--bbox",
+        action="append",
+        default=None,
+        metavar="MIN_LAT,MIN_LNG,MAX_LAT,MAX_LNG",
+        help=(
+            "Limit the account to this area; repeat for several places. "
+            "Required for responders, optional for analysts."
+        ),
+    )
+
+    # set-account-area
+    p_set_area = sub.add_parser(
+        "set-account-area",
+        help="Set or clear the area an analyst or responder account covers.",
+    )
+    p_set_area.add_argument("--id", required=True, dest="account_id", metavar="UUID")
+    p_set_area.add_argument(
+        "--bbox",
+        action="append",
+        default=None,
+        metavar="MIN_LAT,MIN_LNG,MAX_LAT,MAX_LNG",
+    )
+    p_set_area.add_argument("--clear", action="store_true")
 
     # list-accounts
     sub.add_parser(
@@ -689,7 +811,9 @@ def main() -> None:
     if args.command == "create-admin":
         asyncio.run(_create_admin(args.email, args.label))
     elif args.command == "create-account":
-        asyncio.run(_create_account(args.email, args.role, args.label))
+        asyncio.run(_create_account(args.email, args.role, args.label, args.bbox))
+    elif args.command == "set-account-area":
+        asyncio.run(_set_account_area(args.account_id, args.bbox, args.clear))
     elif args.command == "list-accounts":
         asyncio.run(_list_accounts())
     elif args.command == "deactivate-account":

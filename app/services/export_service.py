@@ -60,6 +60,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
 from app.models.report import Report
+from app.services.region_scope import within_region
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +316,9 @@ class ExportFilterParams:
     location_precision: str = field(default="exact")
     # Only reports whose reporter said the building is not on the map.
     not_on_map_only: bool = field(default=False)
+    # Regional responder scope (GeoJSON Polygon/MultiPolygon). Set from the
+    # caller's JWT, never from query params, so a responder cannot widen it.
+    region_geojson: Optional[str] = field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +526,8 @@ class ExportService:
             q = q.where(Report.ai_confidence >= filters.min_ai_confidence)
         if filters.not_on_map_only:
             q = q.where(Report.reporter_building_missing.is_(True))
+        if filters.region_geojson:
+            q = q.where(within_region(filters.region_geojson))
 
         return q.order_by(Report.created_at.desc())
 

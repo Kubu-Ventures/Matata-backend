@@ -723,7 +723,9 @@ async def register_analyst_account(
         role:           Must be analyst, responder, or admin.
         created_by_sub: JWT ``sub`` claim of the provisioning admin.
         db:             Async SQLAlchemy session.
-        region_geojson: GeoJSON string for responder geographic scope.
+        region_geojson: GeoJSON Polygon/MultiPolygon limiting the account to
+                        an area. Required for responders, optional for
+                        analysts, not allowed for admins.
         label:          Optional operator-supplied display name (never the
                         email) so admins can recognise the account later.
 
@@ -731,16 +733,24 @@ async def register_analyst_account(
         The created ``AnalystAccount`` instance.
 
     Raises:
-        ValueError: If role is not elevated, or email is already registered.
+        ValueError: If role is not elevated, the email is already registered,
+            or the area is invalid or not allowed for the role.
     """
     import sqlalchemy as sa
 
     from app.models.analyst_account import AnalystAccount
+    from app.services.region_scope import (
+        check_region_for_role,
+        validate_region_geojson,
+    )
 
     if role not in (Role.analyst, Role.responder, Role.admin):
         raise ValueError(
             f"register_analyst_account requires an elevated role, got: {role}"
         )
+    if region_geojson:
+        region_geojson = validate_region_geojson(region_geojson)
+    check_region_for_role(role.value, region_geojson)
 
     email_hash = hash_identifier(_normalise_email(email))
 
@@ -772,6 +782,60 @@ async def register_analyst_account(
         "Analyst account registered role=%s (identifier: %s…)",
         role.value,
         email_hash[:8],
+    )
+    return account
+
+
+async def update_analyst_account_area(
+    account_id: str,
+    region_geojson: Optional[str],
+    db: "AsyncSession",
+) -> Optional["AnalystAccount"]:
+    """Set or clear the area an active analyst or responder account covers.
+
+    Takes effect the next time the person signs in (the area travels in the
+    access and refresh tokens).
+
+    Returns:
+        The updated account, or ``None`` if no active account has that ID.
+
+    Raises:
+        ValueError: The area is invalid, or not allowed for the account's
+            role (admins cannot have one; responders must keep one).
+    """
+    import sqlalchemy as sa
+
+    from app.models.analyst_account import AnalystAccount
+    from app.services.region_scope import (
+        check_region_for_role,
+        validate_region_geojson,
+    )
+
+    if region_geojson:
+        region_geojson = validate_region_geojson(region_geojson)
+    try:
+        account_uuid = uuid.UUID(str(account_id))
+    except ValueError:
+        return None
+
+    result = await db.execute(
+        sa.select(AnalystAccount).where(
+            AnalystAccount.id == account_uuid,
+            AnalystAccount.is_active.is_(True),
+        )
+    )
+    account = result.scalar_one_or_none()
+    if account is None:
+        return None
+    check_region_for_role(account.role, region_geojson)
+
+    account.region_geojson = region_geojson
+    await db.flush()
+    await db.commit()
+    logger.info(
+        "Analyst account area %s (id: %s…)",
+        "set" if region_geojson else "cleared",
+        str(account_id)[:8],
     )
     return account
 

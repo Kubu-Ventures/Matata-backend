@@ -1395,6 +1395,7 @@ class TestExportRoutes:
             "status": JOB_STATUS_COMPLETE,
             "download_url": "http://presigned",
             "expires_at": "2025-01-01T00:00:00Z",
+            "analyst_id_hash": "analyst_hash_xyz",
         }
         mock_redis = AsyncMock()
         with patch(
@@ -1438,6 +1439,7 @@ class TestExportRoutes:
             "status": JOB_STATUS_PROCESSING,
             "download_url": None,
             "expires_at": None,
+            "analyst_id_hash": "analyst_hash_xyz",
         }
         mock_redis = AsyncMock()
         with patch(
@@ -1452,6 +1454,70 @@ class TestExportRoutes:
             )
         assert result["status"] == JOB_STATUS_PROCESSING
         assert result["download_url"] is None
+
+    @pytest.mark.asyncio
+    async def test_job_status_hidden_from_other_accounts(self, mock_responder_user):
+        from fastapi import HTTPException
+
+        from app.api.v1.routes.export import get_export_job
+
+        job_data = {
+            "status": JOB_STATUS_COMPLETE,
+            "download_url": "http://presigned",
+            "expires_at": "2025-01-01T00:00:00Z",
+            "analyst_id_hash": "analyst_hash_xyz",
+        }
+        with patch(
+            "app.api.v1.routes.export.get_export_job_status",
+            new_callable=AsyncMock,
+            return_value=job_data,
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await get_export_job(
+                    job_id="someone-elses-job",
+                    current_user=mock_responder_user,
+                    redis=AsyncMock(),
+                )
+        assert exc.value.status_code == 404
+
+    def test_region_filter_applied_to_export_query(self):
+        from app.services.export_service import ExportFilterParams, ExportService
+
+        svc = ExportService(db=AsyncMock(), analyst_id_hash="r")
+        scoped = svc._build_query(ExportFilterParams(region_geojson='{"x": 1}'))
+        unscoped = svc._build_query(ExportFilterParams())
+        assert "ST_Within" in str(scoped)
+        assert "ST_Within" not in str(unscoped)
+
+    def test_region_survives_async_job_round_trip(self):
+        from app.api.v1.routes.export import _build_filters, _filters_to_dict
+
+        filters = _build_filters(
+            None, None, None, None, None, None, None, region_geojson='{"x": 1}'
+        )
+        assert _filters_to_dict(filters)["region_geojson"] == '{"x": 1}'
+
+    @pytest.mark.asyncio
+    async def test_responder_export_carries_jwt_region(self):
+        from app.api.v1.routes.export import export_csv
+
+        responder = {"sub": "r", "role": "responder", "region_geojson": '{"x": 1}'}
+        svc = _make_export_service_mock(record_count=1)
+        with patch("app.api.v1.routes.export.ExportService", return_value=svc):
+            await export_csv(
+                crisis_type=None,
+                damage_severity=None,
+                infrastructure_type=None,
+                report_status=None,
+                time_from=None,
+                time_to=None,
+                min_ai_confidence=None,
+                current_user=responder,
+                db=AsyncMock(),
+                redis=AsyncMock(),
+            )
+        filters = svc.count_records.await_args.args[0]
+        assert filters.region_geojson == '{"x": 1}'
 
     # -- Responder role access --
 

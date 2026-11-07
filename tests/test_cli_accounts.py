@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import sys
+import uuid
 
 import pytest
 import sqlalchemy as sa
@@ -45,11 +47,123 @@ async def test_create_account_stores_hashed_email_and_role(account_db, capsys):
     assert "Analyst account created" in capsys.readouterr().out
 
 
+KIBERA = "-1.3256,36.7647,-1.2993,36.8066"
+MATHARE = "-1.2674,36.8389,-1.2495,36.8790"
+
+
+async def _regions(engine):
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            sa.select(
+                AnalystAccount.__table__.c.id,
+                AnalystAccount.__table__.c.region_geojson,
+            )
+        )
+        return result.all()
+
+
 async def test_create_account_responder_role(account_db):
-    await cli._create_account("responder@example.org", "responder")
+    await cli._create_account(
+        "responder@example.org", "responder", bboxes=[KIBERA, MATHARE]
+    )
 
     rows = await _rows(account_db)
     assert [r.role for r in rows] == ["responder"]
+    region = json.loads((await _regions(account_db))[0].region_geojson)
+    assert region["type"] == "MultiPolygon"
+    assert len(region["coordinates"]) == 2
+    # GeoJSON order is [lng, lat]: Kibera's SW corner.
+    assert region["coordinates"][0][0][0] == [36.7647, -1.3256]
+
+
+async def test_create_responder_without_area_is_refused(account_db, capsys):
+    with pytest.raises(SystemExit) as exc:
+        await cli._create_account("responder@example.org", "responder")
+    assert exc.value.code == 1
+    assert "needs an area" in capsys.readouterr().out
+    assert await _rows(account_db) == []
+
+
+async def test_analyst_with_area(account_db):
+    await cli._create_account("a@example.org", "analyst", bboxes=[KIBERA])
+    rows = await _regions(account_db)
+    assert json.loads(rows[0].region_geojson)["type"] == "MultiPolygon"
+
+
+async def test_analyst_without_area_covers_everything(account_db):
+    await cli._create_account("a@example.org", "analyst")
+    assert (await _regions(account_db))[0].region_geojson is None
+
+
+async def test_bbox_on_admin_is_refused(account_db, capsys):
+    with pytest.raises(SystemExit) as exc:
+        await cli._create_account("a@example.org", "admin", bboxes=[KIBERA])
+    assert exc.value.code == 1
+    assert await _rows(account_db) == []
+
+
+async def test_bad_bbox_is_refused(account_db, capsys):
+    with pytest.raises(SystemExit) as exc:
+        await cli._create_account(
+            "r@example.org", "responder", bboxes=["-1.29,36.76,-1.32,36.80"]
+        )
+    assert exc.value.code == 1
+    assert "latitudes" in capsys.readouterr().out
+    assert await _rows(account_db) == []
+
+
+async def test_set_account_area_replaces_region(account_db, capsys):
+    await cli._create_account("r@example.org", "responder", bboxes=[KIBERA])
+    account_id = str((await _regions(account_db))[0].id)
+
+    await cli._set_account_area(account_id, [KIBERA, MATHARE], clear=False)
+
+    region = json.loads((await _regions(account_db))[0].region_geojson)
+    assert len(region["coordinates"]) == 2
+    assert "sign out and back in" in capsys.readouterr().out
+
+
+async def test_set_account_area_on_existing_analyst(account_db, capsys):
+    await cli._create_account("a@example.org", "analyst")
+    account_id = str((await _regions(account_db))[0].id)
+
+    await cli._set_account_area(account_id, [KIBERA, MATHARE], clear=False)
+    assert (await _regions(account_db))[0].region_geojson is not None
+
+    await cli._set_account_area(account_id, None, clear=True)
+    assert (await _regions(account_db))[0].region_geojson is None
+
+
+async def test_set_account_area_refuses_admin(account_db, capsys):
+    await cli._create_account("a@example.org", "admin")
+    account_id = str((await _regions(account_db))[0].id)
+    with pytest.raises(SystemExit) as exc:
+        await cli._set_account_area(account_id, [KIBERA], clear=False)
+    assert exc.value.code == 1
+    assert (await _regions(account_db))[0].region_geojson is None
+
+
+async def test_set_account_area_refuses_clearing_responder(account_db):
+    await cli._create_account("r@example.org", "responder", bboxes=[KIBERA])
+    account_id = str((await _regions(account_db))[0].id)
+    with pytest.raises(SystemExit):
+        await cli._set_account_area(account_id, None, clear=True)
+    assert (await _regions(account_db))[0].region_geojson is not None
+
+
+async def test_set_account_area_needs_bbox_or_clear(account_db, capsys):
+    with pytest.raises(SystemExit):
+        await cli._set_account_area(str(uuid.uuid4()), None, clear=False)
+    assert "either" in capsys.readouterr().out
+
+
+async def test_list_accounts_shows_area(account_db, capsys):
+    await cli._create_account("r@example.org", "responder", bboxes=[KIBERA])
+    await cli._create_account("a@example.org", "analyst")
+    capsys.readouterr()
+    await cli._list_accounts()
+    out = capsys.readouterr().out
+    assert "AREA" in out and "limited" in out and " all " in out
 
 
 async def test_create_account_is_idempotent(account_db, capsys):
@@ -104,8 +218,8 @@ async def test_create_admin_delegates_with_admin_role(account_db):
 def test_main_dispatches_create_account(monkeypatch):
     calls = []
 
-    async def fake_create_account(email, role, label):
-        calls.append((email, role, label))
+    async def fake_create_account(email, role, label, bboxes):
+        calls.append((email, role, label, bboxes))
 
     monkeypatch.setattr(cli, "_create_account", fake_create_account)
     monkeypatch.setattr(
@@ -118,9 +232,11 @@ def test_main_dispatches_create_account(monkeypatch):
             "r@example.org",
             "--role",
             "responder",
+            f"--bbox={KIBERA}",
+            f"--bbox={MATHARE}",
         ],
     )
 
     cli.main()
 
-    assert calls == [("r@example.org", "responder", None)]
+    assert calls == [("r@example.org", "responder", None, [KIBERA, MATHARE])]

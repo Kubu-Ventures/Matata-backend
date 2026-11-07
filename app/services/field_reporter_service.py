@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.enums import ReportStatus
 from app.models.field_reporter import FieldReporter
 from app.models.report import Report
+from app.services.region_scope import within_region
 
 # Two to five letters, a dash, then one to four digits: KIB-01, MAT-3, MUK-10.
 _CODE_RE = re.compile(r"^[A-Z]{2,5}-\d{1,4}$")
@@ -97,11 +98,17 @@ async def payment_summary(
     *,
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
+    region_geojson: Optional[str] = None,
 ) -> List[FieldReporterSummaryRow]:
     """Count reports per field reporter code, grouped by review outcome.
 
     Every registered code appears, including ones with no reports in the
     period, so a reporter who sent nothing is visible rather than missing.
+
+    For an area-limited analyst (``region_geojson`` set) only reports inside
+    the area are counted, and only codes that have ever reported inside it
+    are listed, so one organisation never sees another's reporters. A newly
+    registered code therefore appears after its first report in the area.
 
     Args:
         db:        Async database session.
@@ -118,13 +125,27 @@ async def payment_summary(
         query = query.where(Report.created_at >= date_from)
     if date_to is not None:
         query = query.where(Report.created_at < date_to)
+    if region_geojson:
+        query = query.where(within_region(region_geojson))
     query = query.group_by(Report.field_reporter_code, Report.status)
 
     rows: dict[str, FieldReporterSummaryRow] = {}
 
-    codes = (await db.execute(sa.select(FieldReporter.code))).scalars().all()
+    if region_geojson:
+        codes_query = (
+            sa.select(Report.field_reporter_code)
+            .where(
+                Report.field_reporter_code.is_not(None),
+                within_region(region_geojson),
+            )
+            .distinct()
+        )
+    else:
+        codes_query = sa.select(FieldReporter.code)
+    codes = (await db.execute(codes_query)).scalars().all()
     for code in codes:
-        rows[code] = FieldReporterSummaryRow(code=code)
+        if code:
+            rows[code] = FieldReporterSummaryRow(code=code)
 
     for code, report_status, count in (await db.execute(query)).all():
         row = rows.setdefault(code, FieldReporterSummaryRow(code=code))
