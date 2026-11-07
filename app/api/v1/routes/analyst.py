@@ -65,7 +65,7 @@ from pydantic import BaseModel
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.routes.auth import require_role
+from app.api.v1.routes.auth import get_optional_user, require_role
 from app.core.dependencies import get_db, get_redis
 from app.schemas.analyst_schemas import (
     AIAccuracyResponse,
@@ -88,6 +88,7 @@ from app.schemas.analyst_schemas import (
 )
 from app.services import analyst_service, field_reporter_service
 from app.services.auth_service import Role
+from app.services.region_scope import point_in_region
 from app.services.storage_service import StorageError, get_storage_service
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,14 @@ class StatusTransitionResponse(BaseModel):
 def _region_geojson(current_user: dict) -> Optional[str]:
     """Extract the optional ``region_geojson`` claim from the JWT payload."""
     return current_user.get("region_geojson")
+
+
+def _as_float(value: object) -> Optional[float]:
+    """Coerce an event's lat/lng to float, or None if it is not a number."""
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _analyst_id_hash(current_user: dict) -> str:
@@ -461,6 +470,7 @@ async def create_note(
             report_id,
             body=body.body,
             analyst_id_hash=_analyst_id_hash(current_user),
+            region_geojson=_region_geojson(current_user),
         )
         await db.commit()
         return note
@@ -786,20 +796,14 @@ async def _sse_event_generator(
 
                 event_type = event_data.get("event", "report.updated")
 
-                # Responder geographic scope filter (best-effort in Python)
-                if region_geojson and "lat" in event_data and "lng" in event_data:
-                    try:
-                        from shapely.geometry import (  # type: ignore[import]
-                            Point,
-                            shape,
-                        )
-
-                        region = shape(json.loads(region_geojson))
-                        point = Point(event_data["lng"], event_data["lat"])
-                        if not region.contains(point):
-                            continue
-                    except Exception:
-                        pass  # If shapely unavailable, forward all events
+                # Responder geographic scope filter. Fails closed: an event
+                # with no usable location is not sent to a regional responder.
+                if region_geojson and not point_in_region(
+                    _as_float(event_data.get("lat")),
+                    _as_float(event_data.get("lng")),
+                    region_geojson,
+                ):
+                    continue
 
                 yield (f"event: {event_type}\n" f"data: {json.dumps(event_data)}\n\n")
 
@@ -913,11 +917,14 @@ async def damaged_buildings(
     ),
 )
 async def stats_summary(
+    current_user: Optional[dict] = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> StatsSummaryResponse:
-    """Return cached statistics summary."""
-    return await analyst_service.get_stats_summary(db, redis)
+    """Return statistics: all areas, or a regional responder's area only."""
+    return await analyst_service.get_stats_summary(
+        db, redis, region_geojson=_region_geojson(current_user or {})
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -935,8 +942,11 @@ async def stats_summary(
     ),
 )
 async def stats_heatmap(
+    current_user: Optional[dict] = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> dict:
-    """Return cached GeoJSON heatmap feature collection."""
-    return await analyst_service.get_heatmap(db, redis)
+    """Return heatmap points: all areas, or a regional responder's area only."""
+    return await analyst_service.get_heatmap(
+        db, redis, region_geojson=_region_geojson(current_user or {})
+    )

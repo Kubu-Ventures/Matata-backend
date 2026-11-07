@@ -186,6 +186,26 @@ async def get_current_user(
         ) from exc
 
 
+async def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    x_session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    redis: Redis = Depends(get_redis),
+) -> dict | None:
+    """Like ``get_current_user`` but for public endpoints: no token, or an
+    invalid one, gives ``None`` instead of a 401.
+
+    Used where a public response is narrowed for some callers, e.g. the
+    stats endpoints, which a regional responder sees for their area only.
+    """
+    raw_token = credentials.credentials if credentials else x_session_token
+    if not raw_token:
+        return None
+    try:
+        return await auth_service.verify_access_token(raw_token, redis)
+    except InvalidTokenError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Role-based access control dependency factory
 # ---------------------------------------------------------------------------

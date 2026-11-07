@@ -67,6 +67,7 @@ from app.schemas.analyst_schemas import (
     StatsSummaryResponse,
     TimelineReportItem,
 )
+from app.services.region_scope import point_in_region, within_region
 
 logger = logging.getLogger(__name__)
 
@@ -200,16 +201,7 @@ def _build_report_filters(
         query = query.where(Report.ai_divergence.is_(True))
     if region_geojson:
         # PostGIS geographic scope for regional responders.
-        # The filter uses a raw text clause to avoid importing geoalchemy2
-        # into the service layer.
-        query = query.where(
-            text(
-                "ST_Within("
-                "ST_SetSRID(ST_Point(report.lng, report.lat), 4326), "
-                "ST_SetSRID(ST_GeomFromGeoJSON(:region_geojson), 4326)"
-                ")"
-            ).bindparams(region_geojson=region_geojson)
-        )
+        query = query.where(within_region(region_geojson))
     return query
 
 
@@ -428,19 +420,10 @@ async def get_report_detail(
     if report is None:
         return None
 
-    # Responder scope check — done in Python to avoid complex PostGIS subquery
-    if region_geojson and report.lat is not None and report.lng is not None:
-        try:
-            from shapely.geometry import Point, shape  # type: ignore[import]
-
-            region = shape(json.loads(region_geojson))
-            point = Point(report.lng, report.lat)
-            if not region.contains(point):
-                return None
-        except Exception:
-            # If shapely is unavailable or parsing fails, fall through —
-            # the PostGIS filter on the list endpoint is the primary gate.
-            pass
+    # Responder scope check. Fails closed: a report with no GPS point, or a
+    # region that cannot be parsed, is treated as outside the area.
+    if region_geojson and not point_in_region(report.lat, report.lng, region_geojson):
+        return None
 
     # Building footprint GeoJSON
     footprint_geojson = await _get_building_footprint_geojson(db, report.building_id)
@@ -804,6 +787,7 @@ async def create_analyst_note(
     *,
     body: str,
     analyst_id_hash: str,
+    region_geojson: Optional[str] = None,
 ) -> AnalystNoteOut:
     """Create an analyst note on a report.
 
@@ -825,6 +809,17 @@ async def create_analyst_note(
     report_result = await db.execute(sa.select(Report.id).where(Report.id == report_id))
     if report_result.scalar_one_or_none() is None:
         raise LookupError(f"Report {report_id} not found.")
+
+    # A regional responder may only annotate reports inside their area; any
+    # other report looks the same to them as one that does not exist.
+    if region_geojson:
+        loc = (
+            await db.execute(
+                sa.select(Report.lat, Report.lng).where(Report.id == report_id)
+            )
+        ).one()
+        if not point_in_region(loc.lat, loc.lng, region_geojson):
+            raise LookupError(f"Report {report_id} not found.")
 
     note = AnalystNote(
         report_id=report_id,
@@ -1314,6 +1309,8 @@ async def get_ai_accuracy(db: AsyncSession, redis: Redis) -> AIAccuracyResponse:
 async def get_stats_summary(
     db: AsyncSession,
     redis: Redis,
+    *,
+    region_geojson: Optional[str] = None,
 ) -> StatsSummaryResponse:
     """Return aggregated statistics, cached in Redis for 60 seconds.
 
@@ -1324,8 +1321,15 @@ async def get_stats_summary(
     Returns:
         ``StatsSummaryResponse`` with total, by_severity, by_crisis_type,
         and last_updated.
+
+    A regional responder (``region_geojson`` set) gets counts for their area
+    only. Those are computed live and never read from or written to the
+    shared cache, which holds the all-areas figures.
     """
-    cached = await redis.get(_STATS_SUMMARY_KEY)
+    # Every count below is restricted to this area when one is given.
+    scope = [within_region(region_geojson)] if region_geojson else []
+
+    cached = None if region_geojson else await redis.get(_STATS_SUMMARY_KEY)
     if cached:
         try:
             return StatsSummaryResponse(**json.loads(cached))
@@ -1336,14 +1340,14 @@ async def get_stats_summary(
     total_result = await db.execute(
         sa.select(sa.func.count())
         .select_from(Report)
-        .where(Report.status != ReportStatus.rejected)
+        .where(Report.status != ReportStatus.rejected, *scope)
     )
     total = total_result.scalar_one()
 
     # By severity
     severity_rows = await db.execute(
         sa.select(Report.damage_severity, sa.func.count())
-        .where(Report.status != ReportStatus.rejected)
+        .where(Report.status != ReportStatus.rejected, *scope)
         .group_by(Report.damage_severity)
     )
     by_severity = {"minimal": 0, "partial": 0, "destroyed": 0}
@@ -1355,7 +1359,7 @@ async def get_stats_summary(
     # By crisis type
     crisis_rows = await db.execute(
         sa.select(Report.crisis_type, sa.func.count())
-        .where(Report.status != ReportStatus.rejected)
+        .where(Report.status != ReportStatus.rejected, *scope)
         .group_by(Report.crisis_type)
     )
     by_crisis_type = {
@@ -1380,7 +1384,7 @@ async def get_stats_summary(
     pending_dup_result = await db.execute(
         sa.select(sa.func.count())
         .select_from(Report)
-        .where(Report.status == ReportStatus.pending_merge_review)
+        .where(Report.status == ReportStatus.pending_merge_review, *scope)
     )
     pending_duplicate_count = pending_dup_result.scalar_one()
 
@@ -1393,11 +1397,12 @@ async def get_stats_summary(
         last_updated=now,
     )
 
-    await redis.set(
-        _STATS_SUMMARY_KEY,
-        response.model_dump_json(),
-        ex=_STATS_CACHE_TTL,
-    )
+    if not region_geojson:
+        await redis.set(
+            _STATS_SUMMARY_KEY,
+            response.model_dump_json(),
+            ex=_STATS_CACHE_TTL,
+        )
     return response
 
 
@@ -1409,6 +1414,8 @@ async def get_stats_summary(
 async def get_heatmap(
     db: AsyncSession,
     redis: Redis,
+    *,
+    region_geojson: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return GeoJSON FeatureCollection of heatmap points, cached 60 s.
 
@@ -1421,8 +1428,13 @@ async def get_heatmap(
 
     Returns:
         GeoJSON FeatureCollection dict.
+
+    A regional responder (``region_geojson`` set) only gets points inside
+    their area, computed live and kept out of the shared cache.
     """
-    cached = await redis.get(_STATS_HEATMAP_KEY)
+    scope = [within_region(region_geojson)] if region_geojson else []
+
+    cached = None if region_geojson else await redis.get(_STATS_HEATMAP_KEY)
     if cached:
         try:
             return json.loads(cached)
@@ -1434,6 +1446,7 @@ async def get_heatmap(
             Report.lat.isnot(None),
             Report.lng.isnot(None),
             Report.status != ReportStatus.rejected,
+            *scope,
         )
     )
     rows = rows_result.all()
@@ -1458,7 +1471,8 @@ async def get_heatmap(
 
     geojson = {"type": "FeatureCollection", "features": features}
 
-    await redis.set(_STATS_HEATMAP_KEY, json.dumps(geojson), ex=_STATS_CACHE_TTL)
+    if not region_geojson:
+        await redis.set(_STATS_HEATMAP_KEY, json.dumps(geojson), ex=_STATS_CACHE_TTL)
     return geojson
 
 

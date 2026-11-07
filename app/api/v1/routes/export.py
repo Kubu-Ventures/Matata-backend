@@ -72,6 +72,7 @@ def _build_filters(
     include_footprints: bool = False,
     location_precision: str = "exact",
     not_on_map_only: bool = False,
+    region_geojson: Optional[str] = None,
 ) -> ExportFilterParams:
     """Parse comma-separated filter strings into an ``ExportFilterParams``."""
 
@@ -95,6 +96,7 @@ def _build_filters(
             else "exact"
         ),
         not_on_map_only=not_on_map_only,
+        region_geojson=region_geojson,
     )
 
 
@@ -118,6 +120,8 @@ def _filters_to_dict(filters: ExportFilterParams) -> dict:
     d["include_footprints"] = filters.include_footprints
     d["location_precision"] = filters.location_precision
     d["not_on_map_only"] = filters.not_on_map_only
+    if filters.region_geojson:
+        d["region_geojson"] = filters.region_geojson
     return d
 
 
@@ -213,6 +217,7 @@ async def export_geojson(
         include_footprints,
         location_precision,
         not_on_map_only,
+        region_geojson=current_user.get("region_geojson"),
     )
     svc = ExportService(db=db, analyst_id_hash=_analyst_id_hash(current_user))
     count = await svc.count_records(filters)
@@ -300,6 +305,7 @@ async def export_csv(
         min_ai_confidence,
         location_precision=location_precision,
         not_on_map_only=not_on_map_only,
+        region_geojson=current_user.get("region_geojson"),
     )
     svc = ExportService(db=db, analyst_id_hash=_analyst_id_hash(current_user))
     count = await svc.count_records(filters)
@@ -387,6 +393,7 @@ async def export_shapefile(
         min_ai_confidence,
         location_precision=location_precision,
         not_on_map_only=not_on_map_only,
+        region_geojson=current_user.get("region_geojson"),
     )
     svc = ExportService(db=db, analyst_id_hash=_analyst_id_hash(current_user))
     count = await svc.count_records(filters)
@@ -449,6 +456,10 @@ async def get_export_job(
     redis: Redis = Depends(get_redis),
 ) -> dict:
     job = await get_export_job_status(redis, job_id)
+    # A job is only visible to the account that started it, so a regional
+    # responder cannot pick up the download link of a wider export.
+    if job is not None and job.get("analyst_id_hash") != _analyst_id_hash(current_user):
+        job = None
     if job is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

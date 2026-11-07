@@ -182,6 +182,7 @@ def _run_export_sync(
         include_footprints=filter_params.get("include_footprints", False),
         location_precision=filter_params.get("location_precision", "exact"),
         not_on_map_only=bool(filter_params.get("not_on_map_only", False)),
+        region_geojson=filter_params.get("region_geojson"),
     )
 
     iso_date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")

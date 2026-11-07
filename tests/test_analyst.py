@@ -435,13 +435,8 @@ class TestGetReportDetail:
             }
         )
 
-        try:
-            import shapely  # noqa
-
-            result = await get_report_detail(db, report.id, region_geojson=region)
-            assert result is None
-        except ImportError:
-            pytest.skip("shapely not installed — scope filter not exercised")
+        result = await get_report_detail(db, report.id, region_geojson=region)
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_responder_scope_allows_report_inside_region(self):
@@ -466,11 +461,8 @@ class TestGetReportDetail:
             "app.services.analyst_service._get_building_footprint_geojson",
             new=AsyncMock(return_value=None),
         ):
-            try:
-                result = await get_report_detail(db, report.id, region_geojson=region)
-                assert result is not None
-            except ImportError:
-                pytest.skip("shapely not installed")
+            result = await get_report_detail(db, report.id, region_geojson=region)
+            assert result is not None
 
     @pytest.mark.asyncio
     async def test_analyst_notes_attached(self):
@@ -1121,6 +1113,129 @@ class TestGetStatsSummary:
         result = await get_stats_summary(db, redis)
         assert result.by_severity.partial == 3
         assert result.pending_duplicate_count == 2
+
+
+class TestRegionalStats:
+    """A regional responder's stats are scoped and never use the shared cache."""
+
+    _REGION = json.dumps(
+        {
+            "type": "Polygon",
+            "coordinates": [
+                [[36.0, -2.0], [38.0, -2.0], [38.0, 0.0], [36.0, 0.0], [36.0, -2.0]]
+            ],
+        }
+    )
+
+    @staticmethod
+    def _sql(call) -> str:
+        return str(call.args[0].compile(compile_kwargs={"literal_binds": False}))
+
+    @pytest.mark.asyncio
+    async def test_summary_scoped_and_uncached(self):
+        from app.services.analyst_service import get_stats_summary
+
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value='{"poisoned": true}')
+        redis.set = AsyncMock()
+
+        count = MagicMock()
+        count.scalar_one = MagicMock(return_value=1)
+        empty = MagicMock()
+        empty.__iter__ = MagicMock(return_value=iter([]))
+        empty2 = MagicMock()
+        empty2.__iter__ = MagicMock(return_value=iter([]))
+        db = AsyncMock()
+        db.execute = AsyncMock(side_effect=[count, empty, empty2, count])
+
+        result = await get_stats_summary(db, redis, region_geojson=self._REGION)
+
+        assert result.total == 1
+        redis.get.assert_not_called()
+        redis.set.assert_not_called()
+        assert db.execute.await_count == 4
+        for call in db.execute.await_args_list:
+            assert "ST_Within" in self._sql(call)
+
+    @pytest.mark.asyncio
+    async def test_heatmap_scoped_and_uncached(self):
+        from app.services.analyst_service import get_heatmap
+
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value='{"type": "FeatureCollection"}')
+        redis.set = AsyncMock()
+        rows = MagicMock()
+        rows.all = MagicMock(return_value=[])
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=rows)
+
+        await get_heatmap(db, redis, region_geojson=self._REGION)
+
+        redis.get.assert_not_called()
+        redis.set.assert_not_called()
+        assert "ST_Within" in self._sql(db.execute.await_args_list[0])
+
+    @pytest.mark.asyncio
+    async def test_unscoped_summary_has_no_region_filter(self):
+        from app.services.analyst_service import get_stats_summary
+
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+        redis.set = AsyncMock()
+        count = MagicMock()
+        count.scalar_one = MagicMock(return_value=0)
+        empty = MagicMock()
+        empty.__iter__ = MagicMock(return_value=iter([]))
+        empty2 = MagicMock()
+        empty2.__iter__ = MagicMock(return_value=iter([]))
+        db = AsyncMock()
+        db.execute = AsyncMock(side_effect=[count, empty, empty2, count])
+
+        await get_stats_summary(db, redis)
+
+        redis.set.assert_awaited_once()
+        for call in db.execute.await_args_list:
+            assert "ST_Within" not in self._sql(call)
+
+    @pytest.mark.asyncio
+    async def test_note_outside_region_is_not_found(self):
+        from app.services.analyst_service import create_analyst_note
+
+        exists = _scalar_result(uuid4())
+        loc = MagicMock()
+        loc.one = MagicMock(return_value=MagicMock(lat=10.0, lng=10.0))
+        db = AsyncMock()
+        db.execute = AsyncMock(side_effect=[exists, loc])
+
+        with pytest.raises(LookupError):
+            await create_analyst_note(
+                db,
+                uuid4(),
+                body="hello",
+                analyst_id_hash="r",
+                region_geojson=self._REGION,
+            )
+        db.add.assert_not_called()
+
+    def test_stats_route_passes_responder_region(self, mock_redis):
+        from fastapi.testclient import TestClient
+
+        from app.api.v1.routes.auth import get_optional_user
+        from app.services import analyst_service
+
+        responder = {"sub": "r", "role": "responder", "region_geojson": self._REGION}
+        app = _make_app(responder, mock_redis)
+        app.dependency_overrides[get_optional_user] = lambda: responder
+        client = TestClient(app)
+        with patch.object(
+            analyst_service,
+            "get_heatmap",
+            new=AsyncMock(return_value={"type": "FeatureCollection"}),
+        ) as mock_heatmap:
+            resp = client.get("/api/v1/stats/heatmap")
+
+        assert resp.status_code == 200
+        assert mock_heatmap.await_args.kwargs["region_geojson"] == self._REGION
 
 
 class TestGetHeatmap:
