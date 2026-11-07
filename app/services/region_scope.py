@@ -123,3 +123,64 @@ def bboxes_to_region(boxes: Iterable[BBox]) -> str:
     if not polygons:
         raise ValueError("At least one box is required.")
     return json.dumps({"type": "MultiPolygon", "coordinates": polygons})
+
+
+def validate_region_geojson(region_geojson: str) -> str:
+    """Check a region is a usable Polygon / MultiPolygon and return it compact.
+
+    Accepts a bare geometry or a Feature wrapping one; the stored value is
+    always the bare geometry. Every ring needs at least four [lng, lat]
+    positions within world bounds.
+
+    Raises:
+        ValueError: with a message suitable for showing to an admin.
+    """
+    try:
+        geom = json.loads(region_geojson)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("The area is not valid JSON.") from exc
+    if isinstance(geom, dict) and geom.get("type") == "Feature":
+        geom = geom.get("geometry")
+    if not isinstance(geom, dict) or geom.get("type") not in (
+        "Polygon",
+        "MultiPolygon",
+    ):
+        raise ValueError("The area must be a GeoJSON Polygon or MultiPolygon.")
+    coords = geom.get("coordinates")
+    if not isinstance(coords, list) or not coords:
+        raise ValueError("The area has no shapes.")
+    polygons = [coords] if geom["type"] == "Polygon" else coords
+    for rings in polygons:
+        if not isinstance(rings, list) or not rings:
+            raise ValueError("Each shape in the area needs an outline.")
+        for ring in rings:
+            if not isinstance(ring, list) or len(ring) < 4:
+                raise ValueError("Each outline needs at least four points.")
+            for pos in ring:
+                if (
+                    not isinstance(pos, list)
+                    or len(pos) < 2
+                    or not all(
+                        isinstance(v, (int, float)) and not isinstance(v, bool)
+                        for v in pos[:2]
+                    )
+                ):
+                    raise ValueError("Each point must be [longitude, latitude].")
+                lng, lat = pos[0], pos[1]
+                if not (-180 <= lng <= 180 and -90 <= lat <= 90):
+                    raise ValueError("A point in the area is outside world bounds.")
+    return json.dumps(
+        {"type": geom["type"], "coordinates": coords}, separators=(",", ":")
+    )
+
+
+def check_region_for_role(role: str, region_geojson: str | None) -> None:
+    """Enforce which roles may or must carry an area.
+
+    Raises:
+        ValueError: admin with an area, or responder without one.
+    """
+    if role == "admin" and region_geojson:
+        raise ValueError("An admin always covers all areas and cannot have one.")
+    if role == "responder" and not region_geojson:
+        raise ValueError("A responder must be limited to an area.")

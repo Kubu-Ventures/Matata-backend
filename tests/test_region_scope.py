@@ -110,3 +110,64 @@ def test_within_region_binds_geojson():
     clause = within_region(SQUARE)
     assert "ST_Within" in str(clause)
     assert clause.compile().params["region_geojson"] == SQUARE
+
+
+# --- validation used by the admin account endpoints ---
+
+from app.services.region_scope import (  # noqa: E402
+    check_region_for_role,
+    validate_region_geojson,
+)
+
+
+def test_validate_accepts_polygon_multipolygon_and_feature():
+    multi = bboxes_to_region([parse_bbox("-1.3256,36.7647,-1.2993,36.8066")])
+    assert json.loads(validate_region_geojson(SQUARE))["type"] == "Polygon"
+    assert json.loads(validate_region_geojson(multi))["type"] == "MultiPolygon"
+    feature = json.dumps({"type": "Feature", "geometry": json.loads(SQUARE)})
+    assert json.loads(validate_region_geojson(feature))["type"] == "Polygon"
+
+
+@pytest.mark.parametrize(
+    "region,message",
+    [
+        ("nope", "not valid JSON"),
+        (json.dumps({"type": "Point", "coordinates": [1, 2]}), "Polygon"),
+        (json.dumps({"type": "Polygon", "coordinates": []}), "no shapes"),
+        (
+            json.dumps({"type": "Polygon", "coordinates": [[[0, 0], [1, 1], [0, 0]]]}),
+            "four points",
+        ),
+        (
+            json.dumps(
+                {
+                    "type": "Polygon",
+                    "coordinates": [[[0, 0], ["a", 1], [1, 1], [0, 0]]],
+                }
+            ),
+            "longitude, latitude",
+        ),
+        (
+            json.dumps(
+                {
+                    "type": "Polygon",
+                    "coordinates": [[[0, 0], [200, 1], [1, 1], [0, 0]]],
+                }
+            ),
+            "world bounds",
+        ),
+    ],
+)
+def test_validate_rejects_bad_areas(region, message):
+    with pytest.raises(ValueError, match=message):
+        validate_region_geojson(region)
+
+
+def test_role_rules():
+    check_region_for_role("analyst", None)
+    check_region_for_role("analyst", SQUARE)
+    check_region_for_role("responder", SQUARE)
+    with pytest.raises(ValueError):
+        check_region_for_role("responder", None)
+    with pytest.raises(ValueError):
+        check_region_for_role("admin", SQUARE)

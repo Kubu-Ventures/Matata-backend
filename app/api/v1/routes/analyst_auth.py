@@ -62,8 +62,9 @@ class RegisterRequest(BaseModel):
     region_geojson: Optional[str] = Field(
         default=None,
         description=(
-            "GeoJSON string defining the responder's geographic scope. "
-            "Required for role=responder; ignored for analyst and admin."
+            "GeoJSON Polygon or MultiPolygon limiting the account to an "
+            "area. Required for role=responder, optional for analyst (none "
+            "means all areas), not allowed for admin."
         ),
     )
     label: Optional[str] = Field(
@@ -101,6 +102,16 @@ class UpdateLabelRequest(BaseModel):
         description=(
             "New operator-facing display name, or omit/null to clear it. "
             "Never the email — that is never persisted."
+        ),
+    )
+
+
+class UpdateAreaRequest(BaseModel):
+    region_geojson: Optional[str] = Field(
+        default=None,
+        description=(
+            "GeoJSON Polygon or MultiPolygon the account is limited to, or "
+            "null for all areas (analysts only; a responder must keep one)."
         ),
     )
 
@@ -221,6 +232,60 @@ async def update_analyst_label(
         )
     logger.info(
         "analyst_account_label_updated id=%s by admin=%s…",
+        account_id,
+        current_user["sub"][:8],
+    )
+    return AccountResponse.model_validate(account)
+
+
+# ---------------------------------------------------------------------------
+# PUT /auth/analyst/accounts/{account_id}/area
+# ---------------------------------------------------------------------------
+
+
+@router.put(
+    "/accounts/{account_id}/area",
+    response_model=AccountResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Set or clear the area an account covers (admin only)",
+    description=(
+        "Limits an analyst or responder account to an area, or (analysts "
+        "only) removes the limit. The person sees, verifies and exports "
+        "only reports inside the area. Takes effect the next time they "
+        "sign in."
+    ),
+    responses={
+        200: {"description": "Area updated."},
+        404: {"description": "Account not found or inactive."},
+        403: {"description": "Caller does not have admin role."},
+        422: {"description": "Invalid area, or not allowed for the role."},
+    },
+)
+async def update_analyst_area(
+    account_id: uuid.UUID,
+    body: UpdateAreaRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role(Role.admin)),
+) -> AccountResponse:
+    """Set or clear a provisioned account's area."""
+    try:
+        account = await auth_service.update_analyst_account_area(
+            account_id=str(account_id),
+            region_geojson=body.region_geojson,
+            db=db,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active analyst account found with that ID.",
+        )
+    logger.info(
+        "analyst_account_area_updated id=%s by admin=%s…",
         account_id,
         current_user["sub"][:8],
     )
